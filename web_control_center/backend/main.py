@@ -1,0 +1,1039 @@
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File as FastAPIFile, Request
+from fastapi.responses import FileResponse
+import asyncio
+import uuid
+import json
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import requests
+import uvicorn
+import socket
+import logging
+import time
+import hashlib
+from typing import List, Dict, Any
+
+from device_manager import device_manager
+from script_generator import generate_script
+import proxy_parser
+
+# 引入自研高并发数据库管理系统
+import database
+database.start_heartbeat_flusher()
+
+app = FastAPI(title="Control Center API", description="Backend service for Web Control Center", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+class RunTaskRequest(BaseModel):
+    udid: str
+    ecmain_url: str = ""
+    actions: List[Dict[str, Any]] = None
+    raw_script: str = ""
+
+class DeviceConfigRequest(BaseModel):
+    config_ip: str
+    config_vpn: str
+    device_no: str = ""
+    country: str = ""
+    group_name: str = ""
+    exec_time: str = ""
+    apple_account: str = ""
+    apple_password: str = ""
+    tiktok_accounts: str = "[]"
+
+@app.get("/api/devices/{udid}/config")
+def get_device_config_api(udid: str):
+    config = database.get_device_config(udid)
+    return {"status": "ok", "config": config}
+
+@app.post("/api/devices/{udid}/config")
+def set_device_config_api(udid: str, req: DeviceConfigRequest):
+    success = database.set_device_config(
+        udid, req.config_ip, req.config_vpn, 
+        req.device_no, req.country, req.group_name, req.exec_time,
+        req.apple_account, req.apple_password, req.tiktok_accounts
+    )
+    if success:
+        return {"status": "ok", "message": "配置保存成功"}
+    raise HTTPException(status_code=500, detail="保存失败")
+
+# ================= 配置中心字典 =================
+
+class DictItemReq(BaseModel):
+    name: str
+
+@app.get("/api/countries")
+def get_countries_api():
+    return {"status": "ok", "data": database.get_all_countries()}
+
+@app.post("/api/countries")
+def create_country_api(req: DictItemReq):
+    if database.add_country(req.name):
+        return {"status": "ok"}
+    raise HTTPException(status_code=400, detail="添加国家失败，可能已存在")
+
+@app.delete("/api/countries/{cid}")
+def delete_country_api(cid: int):
+    database.delete_country(cid)
+    return {"status": "ok"}
+
+@app.get("/api/groups")
+def get_groups_api():
+    return {"status": "ok", "data": database.get_all_groups()}
+
+@app.post("/api/groups")
+def create_group_api(req: DictItemReq):
+    if database.add_group(req.name):
+        return {"status": "ok"}
+    raise HTTPException(status_code=400, detail="添加分组失败，可能已存在")
+
+@app.delete("/api/groups/{gid}")
+def delete_group_api(gid: int):
+    database.delete_group(gid)
+    return {"status": "ok"}
+
+# ==================== 执行时间配置 API ====================
+@app.get("/api/exec_times")
+def read_exec_times():
+    return {"status": "ok", "data": database.get_all_exec_times()}
+
+class NamePayloadExecTime(BaseModel):
+    name: str
+
+@app.post("/api/exec_times")
+def add_exec_time_api(payload: NamePayloadExecTime):
+    if database.add_exec_time(payload.name):
+        return {"status": "ok"}
+    raise HTTPException(status_code=400, detail="添加执行时间失败，可能已存在")
+
+@app.delete("/api/exec_times/{tid}")
+def delete_exec_time_api(tid: int):
+    database.delete_exec_time(tid)
+    return {"status": "ok"}
+
+
+@app.get("/")
+def read_root():
+    return {"status": "ok", "message": "Web Control Center Backend is running."}
+
+@app.get("/api/devices")
+def get_devices():
+    return {"devices": device_manager.get_all_devices()}
+
+@app.delete("/api/devices/{udid}")
+def api_delete_device(udid: str):
+    database.delete_device(udid)
+    return {"status": "ok", "message": f"Device {udid} deleted."}
+
+@app.get("/api/cloud/devices") # 提供给前端查询群控大盘设备列表的接口
+def get_cloud_devices():
+    # 合并云控设备和 USB 设备，使前端能统一展示和操控
+    cloud_devs = database.get_all_cloud_devices()
+    usb_devs = device_manager.get_all_devices()
+    
+    usb_udids = set(d['udid'] for d in usb_devs)
+    
+    # 用 UDID 作为主键合并
+    merged = {}
+    for d in cloud_devs:
+        d['source'] = 'cloud'
+        merged[d['udid']] = d
+    
+    for d in usb_devs:
+        udid = d['udid']
+        if udid in merged:
+            # 同一设备既有 USB 又有云控心跳 → 合并，标记为 usb
+            merged[udid].update(d)
+            merged[udid]['source'] = 'usb'
+        else:
+            # 纯 USB 设备（还没发送过心跳）
+            d['source'] = 'usb'
+            d['status'] = 'online'
+            merged[udid] = d
+            
+    # 新增：检测 3 种信道的实际可用性，直接抛给前端使用
+    active_ws_udids = set(ACTIVE_TUNNELS.keys())
+    for udid, d in merged.items():
+        d['can_usb'] = udid in usb_udids
+        d['can_lan'] = bool(d.get('local_ip') or d.get('ip'))
+        # 如果有活跃的隧道，或是云端上报过的设备，或存在局域网IP的，都可以被当作具备 WS 控制能力
+        d['can_ws'] = (udid in active_ws_udids) or (d.get('source') == 'cloud') or d['can_lan']
+    
+    return {"status": "ok", "devices": list(merged.values())}
+
+class ParseProxyRequest(BaseModel):
+    content: str
+    
+@app.post("/api/parse_proxy")
+def api_parse_proxy(req: ParseProxyRequest):
+    try:
+        nodes = proxy_parser.fetch_and_parse(req.content)
+        return {"status": "ok", "nodes": nodes}
+    except Exception as e:
+        return {"status": "error", "msg": str(e)}
+        return {"status": "error", "msg": str(e)}
+
+# ================= 脚本任务管理 (Global) =================
+
+class ScriptDataReq(BaseModel):
+    name: str
+    code: str
+    country: str = ""
+    group_name: str = ""
+    exec_time: str = ""
+
+class UpdateScriptReq(BaseModel):
+    name: str = None
+    code: str = None
+    country: str = None
+    group_name: str = None
+    exec_time: str = None
+
+class CommentDataReq(BaseModel):
+    language: str
+    content: str
+
+
+@app.get("/api/scripts")
+async def get_scripts_list():
+    """获取所有全局自动动作任务"""
+    return {"status": "ok", "data": database.get_all_scripts()}
+
+@app.post("/api/scripts")
+async def create_new_script(req: ScriptDataReq):
+    script_id = database.create_script(req.name, req.code, req.country, req.group_name, req.exec_time)
+    if script_id:
+        return {"status": "ok", "id": script_id}
+    raise HTTPException(status_code=500, detail="Failed to create script")
+
+@app.put("/api/scripts/{script_id}")
+async def update_existing_script(script_id: int, req: UpdateScriptReq):
+    success = database.update_script(script_id, req.name, req.code, req.country or "", req.group_name or "", req.exec_time or "")
+    if success:
+        return {"status": "ok"}
+    raise HTTPException(status_code=400, detail="Failed to update script or not found")
+
+@app.delete("/api/scripts/{script_id}")
+async def delete_existing_script(script_id: int):
+    success = database.delete_script(script_id)
+    if success:
+        return {"status": "ok"}
+    raise HTTPException(status_code=400, detail="Failed to delete script or not found")
+
+# ==================== 评论列表接口 ====================
+
+@app.get("/api/comments")
+async def get_comments_list(language: str = None):
+    """获取指定语言的评论数据（不传则获取所有）"""
+    return {"status": "ok", "data": database.get_all_comments(language=language)}
+
+@app.get("/api/comments/random")
+async def get_random_comments_list(language: str = None, count: int = 50):
+    """获取指定语言的一组随机评论数据，用于静态打包到脚本中"""
+    return {"status": "ok", "data": database.get_random_comments(language=language, limit=count)}
+
+@app.post("/api/comments")
+async def create_new_comment(req: CommentDataReq):
+    success = database.add_comment(req.language, req.content)
+    if success:
+        return {"status": "ok"}
+    raise HTTPException(status_code=500, detail="Failed to create comment")
+
+@app.delete("/api/comments/{comment_id}")
+async def delete_existing_comment(comment_id: int):
+    database.delete_comment(comment_id)
+    return {"status": "ok"}
+
+# ==================== TikTok 账号管理接口 ====================
+
+class UpdateTikTokAccountReq(BaseModel):
+    country: str = ""
+    fans_count: int = 0
+    is_for_sale: int = 0
+    is_window_opened: int = 0
+    add_time: str = ""
+    window_open_time: str = ""
+    sale_time: str = ""
+
+@app.get("/api/tiktok_accounts")
+async def get_tiktok_accounts_list():
+    """获取目前独立管理的全部 TikTok 账号列表及它们的设备关联号"""
+    return {"status": "ok", "data": database.get_all_tiktok_accounts()}
+
+@app.put("/api/tiktok_accounts/{account_id}")
+async def update_tiktok_account_info(account_id: int, req: UpdateTikTokAccountReq):
+    success = database.update_tiktok_account(
+        account_id, 
+        req.country, 
+        req.fans_count, 
+        req.is_for_sale, 
+        req.is_window_opened, 
+        req.add_time, 
+        req.window_open_time, 
+        req.sale_time
+    )
+    if success:
+        return {"status": "ok"}
+    raise HTTPException(status_code=400, detail="Failed to update tiktok account or not found")
+
+@app.delete("/api/tiktok_accounts/{account_id}")
+async def delete_tiktok_account_api(account_id: int):
+    """注意：由于前端手机列表依然存活，单独在此处删除只会影响本表的展示"""
+    success = database.delete_tiktok_account(account_id)
+    if success:
+        return {"status": "ok"}
+    raise HTTPException(status_code=400, detail="Failed to delete tiktok account")
+
+
+@app.get("/api/device/scripts")
+async def get_device_sync_scripts(
+    country: str = "",
+    group_name: str = ""
+):
+    """供 ECMAIN 客户端设备独立拉取全局控制脚本使用的接口
+    支持按 country/group_name 过滤：
+    - 脚本未设置该属性（空字符串或NULL）→ 对所有设备生效
+    - 脚本设置了属性 → 仅对属性匹配的设备生效
+    """
+    scripts = database.get_all_scripts()
+    filtered = []
+    for s in scripts:
+        s_country = (s.get("country") or "").strip()
+        s_group = (s.get("group_name") or "").strip()
+        # 脚本的每个过滤字段：为空则不限，有值则必须匹配
+        if s_country and s_country != country:
+            continue
+        if s_group and s_group != group_name:
+            continue
+        filtered.append(s)
+    return {"status": "ok", "tasks": filtered}
+
+# ================= 行动代理服务 =================
+
+class ActionProxyRequest(BaseModel):
+    udid: str = ""
+    ecmain_url: str
+    action_type: str
+    x: int = 0
+    y: int = 0
+    x1: int = 0
+    y1: int = 0
+    x2: int = 0
+    y2: int = 0
+    img_w: int = 0
+    img_h: int = 0
+    text: str = ""
+
+SESSION_CACHE = {}
+SIZE_CACHE = {}
+
+ACTIVE_TUNNELS: Dict[str, WebSocket] = {}
+PENDING_TASKS: Dict[str, asyncio.Future] = {}
+
+class WSTunnelManager:
+    async def connect(self, ws: WebSocket, device_key: str):
+        await ws.accept()
+        ACTIVE_TUNNELS[device_key] = ws
+        
+    def disconnect(self, device_key: str):
+        if device_key in ACTIVE_TUNNELS:
+            del ACTIVE_TUNNELS[device_key]
+
+tunnel_manager = WSTunnelManager()
+
+@app.websocket("/tunnel/ws/{device_key}")
+async def ws_tunnel_endpoint(websocket: WebSocket, device_key: str):
+    await tunnel_manager.connect(websocket, device_key)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            try:
+                msg = json.loads(data)
+                if msg.get("type") == "ping":
+                    await websocket.send_json({"type": "pong"})
+                elif "id" in msg:
+                    # 原生 iOS handleTunnelRequest 会原样弹回 id
+                    reply_id = msg["id"]
+                    if reply_id in PENDING_TASKS:
+                        if not PENDING_TASKS[reply_id].done():
+                            PENDING_TASKS[reply_id].set_result(msg)
+            except Exception as e:
+                logging.error(f"WS Parse error: {e}")
+    except WebSocketDisconnect:
+        tunnel_manager.disconnect(device_key)
+
+
+
+@app.post("/api/action_proxy")
+async def action_proxy(req: ActionProxyRequest):
+    with open("api_debug.log", "a") as f:
+        f.write(f"[{req.action_type}] RECVD: {req.dict()}\n")
+        
+    tunnel_ws = ACTIVE_TUNNELS.get(req.udid)
+    
+    # 构建一个挂起式异步 HTTP Over WebSocket 代理发射器
+    async def _async_wda_request(method, url, json_body=None, timeout=15.0):
+        if tunnel_ws:
+            task_id = str(uuid.uuid4())
+            loop = asyncio.get_event_loop()
+            future = loop.create_future()
+            PENDING_TASKS[task_id] = future
+            try:
+                await tunnel_ws.send_json({
+                    "id": task_id,
+                    "method": method,
+                    "url": url,
+                    "body": json_body
+                })
+                result = await asyncio.wait_for(future, timeout=timeout)
+                return result.get("status", 500), result.get("body", {})
+            except asyncio.TimeoutError:
+                return 504, {"error": "Gateway Timeout over WebSocket"}
+            except Exception as e:
+                return 500, {"error": str(e)}
+            finally:
+                PENDING_TASKS.pop(task_id, None)
+        else:
+            # 降级：走局域网物理 HTTP 请求（通过线程池避免阻塞）
+            def _sync_req():
+                if method.upper() == "GET":
+                    resp = requests.get(url, timeout=timeout)
+                else:
+                    resp = requests.post(url, json=json_body, timeout=timeout)
+                try:
+                    return resp.status_code, resp.json()
+                except:
+                    return resp.status_code, {"raw_text": resp.text}
+            return await asyncio.to_thread(_sync_req)
+            
+    try:
+        # Ping 可以回溯基础测试通道
+        if req.action_type == "ping":
+            base = req.ecmain_url.rstrip('/')
+            status, body = await _async_wda_request("GET", f"{base}/ping", timeout=3.0)
+            if status == 200:
+                 return {"status": "ok", "detail": "ECMAIN Ping Success"}
+
+        if not req.udid and not req.ecmain_url:
+            return {"status": "error", "msg": "Neither UDID nor WLAN IP provided"}
+        
+        import re
+        wlan_ip_match = re.search(r"http://([0-9\.]+)", req.ecmain_url)
+        wlan_ip = wlan_ip_match.group(1) if wlan_ip_match else None
+        
+        dev = device_manager.devices.get(req.udid)
+        
+        if dev:
+            wda_url = f"http://127.0.0.1:{dev.wda_port}"
+            cache_key = req.udid
+        elif wlan_ip:
+            wda_url = f"http://{wlan_ip}:10088"
+            cache_key = wlan_ip
+        else:
+            return {"status": "error", "msg": "Device not found in manager and no valid LAN IP."}
+            
+        # 激活/提取 WDA 通信 Session
+        sid = SESSION_CACHE.get(cache_key)
+        if sid:
+            status, _ = await _async_wda_request("GET", f"{wda_url}/session/{sid}", timeout=2.0)
+            if status != 200:
+                sid = None
+            
+        if not sid:
+            status, data = await _async_wda_request("POST", f"{wda_url}/session", json_body={"capabilities": {}}, timeout=5.0)
+            if status == 200 and isinstance(data, dict):
+                sid = data.get("sessionId") or data.get("value", {}).get("sessionId")
+                SESSION_CACHE[cache_key] = sid
+                
+        if not sid:
+             return {"status": "error", "msg": f"Failed to connect active WDA session at {wda_url}"}
+             
+        # 提取动态屏幕映射比例（如果前端上报了真实图片宽度）
+        scale = 1.0
+        if req.img_w > 0:
+            sz_val = SIZE_CACHE.get(cache_key)
+            if not sz_val:
+                 status, sz_resp = await _async_wda_request("GET", f"{wda_url}/session/{sid}/window/size", timeout=3.0)
+                 if status == 200 and isinstance(sz_resp, dict):
+                     sz_val = sz_resp.get("value", {})
+                     if "width" in sz_val:
+                          SIZE_CACHE[cache_key] = sz_val
+
+            if sz_val and "width" in sz_val and sz_val["width"] > 0:
+                 scale = req.img_w / sz_val["width"]
+                 
+        # 换算最终发向底层的精准 W3C Points 逻辑坐标
+        wda_x = int(req.x / scale)
+        wda_y = int(req.y / scale)
+        wda_x1 = int(req.x1 / scale)
+        wda_y1 = int(req.y1 / scale)
+        wda_x2 = int(req.x2 / scale)
+        wda_y2 = int(req.y2 / scale)
+
+        async def _safe_wda_post(target, **kwargs):
+             status, body = await _async_wda_request("POST", target, json_body=kwargs.get("json"), timeout=kwargs.get("timeout", 10.0))
+             if status == 200:
+                 return body
+             return {"raw_status": status, "raw_text": body}
+
+        # 分发给 WDA 自定义异步动作端点，避雷标准动作的闲置检测死锁霸屏
+        if req.action_type == "click":
+             status, res = await _async_wda_request("POST", f"{wda_url}/wda/tapByCoord", json_body={"x": wda_x, "y": wda_y}, timeout=3.0)
+             return {"status": "ok", "detail": f"Tap at ({wda_x}, {wda_y})"}
+            
+        elif req.action_type == "longPress":
+             status, res = await _async_wda_request("POST", f"{wda_url}/wda/longPress", json_body={"x": wda_x, "y": wda_y, "duration": 1.0}, timeout=3.0)
+             return {"status": "ok", "detail": f"LongPress at ({wda_x}, {wda_y})"}
+            
+        elif req.action_type == "swipe":
+             status, res = await _async_wda_request("POST", f"{wda_url}/wda/swipeByCoord", json_body={"fromX": wda_x1, "fromY": wda_y1, "toX": wda_x2, "toY": wda_y2, "duration": 0.5}, timeout=3.0)
+             return {"status": "ok", "detail": f"Swipe from ({wda_x1},{wda_y1}) to ({wda_x2},{wda_y2})"}
+            
+        elif req.action_type == "home":
+             status, res = await _async_wda_request("POST", f"{wda_url}/wda/homescreen", timeout=3.0)
+             return {"status": "ok", "detail": "Homescreen triggered"}
+             
+        elif req.action_type == "lock":
+             status, res = await _async_wda_request("POST", f"{wda_url}/session/{sid}/wda/lock", timeout=3.0)
+             return {"status": "ok", "detail": "Screen locked"}
+             
+        elif req.action_type == "volumeUp":
+             status, res = await _async_wda_request("POST", f"{wda_url}/session/{sid}/wda/pressButton", json_body={"name": "volumeUp"}, timeout=3.0)
+             return {"status": "ok", "detail": "Volume up pressed"}
+             
+        elif req.action_type == "volumeDown":
+             status, res = await _async_wda_request("POST", f"{wda_url}/session/{sid}/wda/pressButton", json_body={"name": "volumeDown"}, timeout=3.0)
+             return {"status": "ok", "detail": "Volume down pressed"}
+             
+        elif req.action_type == "launch":
+             resp = await _safe_wda_post(f"{wda_url}/session/{sid}/wda/apps/launch", json={"bundleId": req.text}, timeout=10.0)
+             return {"status": "ok", "detail": resp}
+             
+        elif req.action_type == "terminate":
+             resp = await _safe_wda_post(f"{wda_url}/session/{sid}/wda/apps/terminate", json={"bundleId": req.text}, timeout=10.0)
+             return {"status": "ok", "detail": resp}
+             
+        elif req.action_type == "ocr":
+             resp = await _safe_wda_post(f"{wda_url}/wda/ocr", json={}, timeout=15.0)
+             return {"status": "ok", "detail": resp}
+             
+        elif req.action_type == "findText":
+             resp = await _safe_wda_post(f"{wda_url}/wda/findText", json={"text": req.text}, timeout=15.0)
+             return {"status": "ok", "detail": resp}
+             
+        return {"status": "error", "msg": f"Unsupported action {req.action_type}"}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/run")
+def run_script(req: RunTaskRequest):
+    try:
+        base_js = generate_script(req.actions) if req.actions else ""
+        js_code = base_js + "\n\n" + (req.raw_script or "")
+        js_code = js_code.strip()
+        
+        if not js_code:
+             raise HTTPException(status_code=400, detail="发令拦截！动作区块图队及原始手打黑窗内皆空空如也，无车可发！长官！")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Script Generate Error: {str(e)}")
+    
+    # 通过心跳上报的云端数据库，精准捕获该兵团节点的局域网 IP
+    target_host_candidates = []
+    
+    # 1. 客户端手动携带的降级指令优先
+    if req.ecmain_url:
+        import re
+        m = re.search(r"http://([0-9\.]+)(?::(\d+))?", req.ecmain_url)
+        if m:
+            target_host_candidates.append((m.group(1), int(m.group(2)) if m.group(2) else 8089))
+            
+    # 获取 USB 状态
+    target_usb = next((d for d in device_manager.get_all_devices() if d["udid"] == req.udid), None)
+    
+    # 双重保险：即便 device_manager 发生心跳闪断漏报，只要底层 Tidevice 的 relay_8089 进程还在存活，我们依然强制走 USB
+    relay_uid = f"{req.udid}_8089"
+    relay_proc = _RELAY_PROCS.get(relay_uid)
+    is_relay_alive = relay_proc and relay_proc.poll() is None
+
+    # 2. 如果检测到 USB 物理连接或中继仍然存活，加入 127.0.0.1 本地环回
+    if target_usb or is_relay_alive:
+        target_host_candidates.append(("127.0.0.1", 8089))
+        
+    # 3. 尝试云端心跳上报的局域网 IP 作为兜底
+    cloud_devs = database.get_all_cloud_devices()
+    target_cloud = next((d for d in cloud_devs if d["udid"] == req.udid), None)
+    if target_cloud and target_cloud.get("ip"):
+        lan_ip = target_cloud.get("ip")
+        if (lan_ip, 8089) not in target_host_candidates:
+            target_host_candidates.append((lan_ip, 8089))
+         
+    if not target_host_candidates:
+         raise HTTPException(status_code=400, detail=f"Target Device [UDID: {req.udid}] went dark. Failed to resolve coordinate IP.")
+
+    # 同步阻塞下发：直接请求 ECMAIN，等待最长 60 秒的内部 JS 引擎闭合，收集最后日志和返回值一并打包回传
+    payload = {"type": "SCRIPT", "payload": js_code}
+    
+    last_error = None
+    for target_host, target_port in target_host_candidates:
+        target_url = f"http://{target_host}:{target_port}/task"
+        try:
+            resp = requests.post(target_url, json=payload, timeout=64) # 预留 4 秒网络容错
+            if resp.status_code == 200:
+                return resp.json()
+            else:
+                return {"status": "error", "message": f"ECMAIN 引擎返回未决状态码 {resp.status_code}", "detail": resp.text}
+        except requests.exceptions.Timeout:
+            return {"status": "error", "message": "脚本执行超时熔断 (超60秒)"}
+        except Exception as ex:
+            logging.warning(f"[run_script] 尝试下发到 {target_host}:{target_port} 失败: {ex}")
+            last_error = ex
+            # 单个链路崩塌，尝试下一个候选信道
+            continue
+            
+    return {"status": "error", "message": "连通性瘫痪，ECMAIN 所有寻址信道均不可达", "detail": str(last_error)}
+
+from fastapi.responses import StreamingResponse
+
+@app.get("/api/screen/{udid}")
+def get_screen_stream(udid: str, ip: str = None, usb: str = 'true'):
+    # Determine the target IP and PORT for the raw TCP socket
+    target_ip = "127.0.0.1"
+    target_port = 10089
+    
+    if usb.lower() == 'false' and ip:
+        target_ip = ip
+        target_port = 10089
+
+    # Raw TCP Generator to extract JPEG frames from non-HTTP naked stream
+    def iter_frames():
+        jwt_start = b"\xff\xd8"
+        jwt_end = b"\xff\xd9"
+        
+        retries = 0
+        while retries < 3:
+            s_current = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s_current.settimeout(3)
+            try:
+                s_current.connect((target_ip, target_port))
+                # Critical step: WDA purely drops raw jpeg only AFTER receiving a GET request
+                s_current.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            except Exception as e:
+                logging.warning(f"MJPEG connect warning: {e}")
+                s_current.close()
+                retries += 1
+                time.sleep(1.0)
+                continue
+                
+            buffer = b""
+            frames_yielded = 0
+            try:
+                while True:
+                    data = s_current.recv(8192)
+                    if not data:
+                        break
+                    buffer += data
+                    
+                    # Try to extract a full frame
+                    start_idx = buffer.find(jwt_start)
+                    end_idx = buffer.find(jwt_end)
+                    
+                    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                        # Found a complete JPEG frame
+                        frame = buffer[start_idx:end_idx + 2]
+                        buffer = buffer[end_idx + 2:]
+                        
+                        # Yield standard multipart chunk
+                        yield (
+                            b"--myboundary\r\n"
+                            b"Content-Type: image/jpeg\r\n"
+                            b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + 
+                            frame + b"\r\n"
+                        )
+                        frames_yielded += 1
+                        if frames_yielded > 5:
+                            # Connection is stable, reset retries
+                            retries = 0
+                    elif start_idx != -1 and end_idx == -1:
+                        # Strip trash before start
+                        buffer = buffer[start_idx:]
+                    elif len(buffer) > 2 * 1024 * 1024:
+                        # Prevent buffer overflow
+                        buffer = b""
+            except Exception as e:
+                logging.warning(f"MJPEG stream broken: {e}")
+            finally:
+                s_current.close()
+            
+            # If we reach here, stream collapsed.
+            retries += 1
+            time.sleep(1.0)
+            
+    return StreamingResponse(
+        iter_frames(), 
+        media_type="multipart/x-mixed-replace; boundary=myboundary"
+    )
+
+@app.get("/api/probe")
+def api_probe(ip: str):
+    import requests
+    import re
+    # 提取干净的 IP
+    m = re.search(r"([0-9\.]+)", ip)
+    target_ip = m.group(1) if m else "127.0.0.1"
+    
+    status_8089 = False
+    status_10088 = False
+    msg_8089 = ""
+    msg_10088 = ""
+    
+    # 探活 8089 (ECMAIN - 模拟下发空指令)
+    try:
+        r1 = requests.post(
+            f"http://{target_ip}:8089/task", 
+            json={"type":"SCRIPT", "payload":"console.log('Probe ping');"}, 
+            timeout=2.5
+        )
+        status_8089 = (r1.status_code == 200)
+        msg_8089 = "通畅" if status_8089 else f"异常 ({r1.status_code})"
+    except requests.exceptions.Timeout:
+        msg_8089 = "超时未响应"
+    except Exception as e:
+        msg_8089 = "离线阻断"
+        
+    # 探活 10088 (WDA / Status)
+    try:
+        r2 = requests.get(f"http://{target_ip}:10088/status", timeout=1.5)
+        status_10088 = (r2.status_code == 200)
+        msg_10088 = "通畅" if status_10088 else f"异常 ({r2.status_code})"
+    except Exception as e:
+        msg_10088 = "离线阻断"
+        
+    return {
+        "status": "ok",
+        "ip": target_ip,
+        "detail": f"ECMAIN (8089): {msg_8089} | WDA (10088): {msg_10088}",
+        "port_8089": status_8089,
+        "port_10088": status_10088
+    }
+
+_WDA_PROCS = {}
+_RELAY_PROCS = {}
+import os
+import shutil
+
+def _kill_previous_process(proc_dict, udid):
+    if udid in proc_dict:
+        try:
+            p = proc_dict[udid]
+            if p.poll() is None:
+                p.terminate()
+                p.wait(timeout=2)
+        except Exception:
+            pass
+        finally:
+            proc_dict.pop(udid, None)
+
+class LaunchReq(BaseModel):
+    udid: str
+
+@app.post("/api/launch_ecwda")
+def api_launch_ecwda(req: LaunchReq):
+    import subprocess
+    
+    try:
+        # 自动查找当前 USB 连接的设备
+        # ECMAIN 心跳 UDID (identifierForVendor) 和 USB 硬件 UDID 格式不同，不能直接匹配
+        # 所以优先使用 DeviceManager 检测到的 USB 设备
+        usb_devices = device_manager.get_all_devices()
+        
+        if not usb_devices:
+            raise HTTPException(status_code=400, detail="未检测到 USB 连接的设备，请确认数据线已插好")
+        
+        # 如果传入的 UDID 刚好匹配 USB 设备就用它，否则用第一个 USB 设备
+        udid = req.udid
+        usb_udids = [d['udid'] for d in usb_devices]
+        if udid not in usb_udids:
+            udid = usb_udids[0]
+            logging.info(f"传入 UDID {req.udid[:8]} 非 USB 设备，自动使用 USB 设备: {udid[:8]}")
+        
+        # 1. 净化历史引用遗留
+        _kill_previous_process(_WDA_PROCS, udid)
+        _kill_previous_process(_RELAY_PROCS, f"{udid}_10088")
+        _kill_previous_process(_RELAY_PROCS, f"{udid}_10089")
+        _kill_previous_process(_RELAY_PROCS, f"{udid}_8089")
+        
+        # 净化系统级残留（跨平台）
+        import platform_utils
+        for port in [10088, 10089, 8089]:
+            platform_utils.kill_port(port)
+        platform_utils.kill_process_by_keyword(f"tidevice -u {udid}")
+        
+        # 2. 跨平台定位 tidevice 可执行文件
+        t_path = platform_utils.find_tidevice()
+
+        env = platform_utils.get_env_with_path()
+
+        # 创建一个真实的伪输出缓冲文件（切忌给 DEVNULL，否则部分 C 级通信套件会判定通道阻塞自杀）
+        log_file_path = os.path.join(os.path.dirname(__file__), "wda_run.log")
+        wda_log = open(log_file_path, "a")
+
+        # 3. 长生存权：直接被 fastapi 内存池引用，保证 USB 连接稳定
+        cmd_wda = [t_path, "-u", udid, "wdaproxy", "-B", "com.facebook.WebDriverAgentRunner.ecwda", "--port", "0"]
+        _WDA_PROCS[udid] = subprocess.Popen(cmd_wda, stdout=wda_log, stderr=wda_log, env=env)
+        
+        # 4. 同步挂载中继专线
+        # 我们把 8089 加进去，让 ECMAIN 也能受到潮汐转发的恩泽
+        for port in ["10088", "10089", "8089"]:
+            relay_uid = f"{udid}_{port}"
+            cmd_relay = [t_path, "-u", udid, "relay", port, port]
+            _RELAY_PROCS[relay_uid] = subprocess.Popen(cmd_relay, stdout=wda_log, stderr=wda_log, env=env)
+
+        logging.info(f"ECWDA 全链舰队（主核+双重中继）已加入全局羁绊！USB UDID: {udid}")
+        return {"status": "ok", "message": f"底层 tidevice 唤醒波已送达 (USB设备: {udid[:8]})"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"启动 EC 严重受阻: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ping")
+def ping():
+    return {"ping": "pong"}
+
+# ==================== ECMAIN 群控高并发心跳系统 ====================
+
+class HeartbeatRequest(BaseModel):
+    udid: str
+    device_no: str = ""
+    status: str
+    local_ip: str
+    battery_level: int = 0
+    app_version: int = 0
+    ecwda_version: int = -1  # ECWDA 本地版本号，-1 表示客户端未上报
+    vpn_active: bool = False  # VPN 连接状态
+    vpn_ip: str = ""  # VPN 局域网分配 IP
+    ecwda_status: str = "offline" # ECWDA 的探活结果
+    config_checksum: str = ""
+    task_status: str = ""  # 任务状态 JSON 数组，如 [{"name":"xxx","time":"HH:mm:ss"}]
+
+# ECMAIN / ECWDA 编译后输出的更新包存放目录
+ECMAIN_BUILD_OUTPUT = os.path.join(os.path.dirname(__file__), "updates")
+
+# 读取服务器端最新的 ECMAIN 版本信息
+def _get_latest_ecmain_version():
+    version_path = os.path.join(ECMAIN_BUILD_OUTPUT, "ecmain_version.json")
+    try:
+        if os.path.exists(version_path):
+            with open(version_path, "r") as f:
+                return json.load(f)
+    except Exception as e:
+        logging.error(f"读取版本文件失败: {e}")
+    return None
+
+# 读取服务器端最新的 ECWDA 版本信息
+def _get_latest_ecwda_version():
+    version_path = os.path.join(ECMAIN_BUILD_OUTPUT, "ecwda_version.json")
+    try:
+        if os.path.exists(version_path):
+            with open(version_path, "r") as f:
+                return json.load(f)
+    except Exception as e:
+        logging.error(f"读取 ECWDA 版本文件失败: {e}")
+    return None
+
+@app.post("/devices/heartbeat")
+def handle_heartbeat(req: HeartbeatRequest):
+    """
+    接收来自 ECMAIN 每分钟发送的心跳，承接 10万 级并发。
+    写数据库靠 database 独有的异步 bulk 消化。
+    """
+    database.register_heartbeat(req.udid, {
+        "device_no": req.device_no,
+        "status": req.status,
+        "local_ip": req.local_ip,
+        "battery_level": req.battery_level,
+        "app_version": req.app_version,
+        "ecwda_version": req.ecwda_version,
+        "vpn_active": 1 if req.vpn_active else 0,
+        "vpn_ip": req.vpn_ip,
+        "ecwda_status": req.ecwda_status,
+        "task_status": req.task_status
+    })
+    
+    response = {"status": "ok"}
+    
+    # 获取此手机全局的配置档案，计算 MD5 若不一致，要求客户端下发更新
+    device_conf = database.get_device_config(req.udid)
+    raw_hash_str = (
+        device_conf.get("config_ip", "") + 
+        device_conf.get("config_vpn", "") +
+        device_conf.get("country", "") +
+        device_conf.get("group_name", "") +
+        device_conf.get("exec_time", "") +
+        device_conf.get("apple_account", "") +
+        device_conf.get("apple_password", "") +
+        device_conf.get("tiktok_accounts", "[]")
+    )
+    server_checksum = hashlib.md5(raw_hash_str.encode('utf-8')).hexdigest()
+    
+    if req.config_checksum != server_checksum:
+        response["push_config"] = {
+            "config_ip": device_conf.get("config_ip", ""),
+            "config_vpn": device_conf.get("config_vpn", ""),
+            "country": device_conf.get("country", ""),
+            "group_name": device_conf.get("group_name", ""),
+            "exec_time": device_conf.get("exec_time", ""),
+            "apple_account": device_conf.get("apple_account", ""),
+            "apple_password": device_conf.get("apple_password", ""),
+            "tiktok_accounts": device_conf.get("tiktok_accounts", "[]"),
+            "config_checksum": server_checksum
+        }
+    
+    # 版本检查：如果客户端上报了版本号，则对比服务器最新版本
+    if req.app_version > 0:
+        latest = _get_latest_ecmain_version()
+        if latest and latest.get("version", 0) > req.app_version:
+            response["update"] = {
+                "version": latest["version"],
+                "build_date": latest.get("build_date", ""),
+                "download_url": "/api/ecmain/download"
+            }
+    
+    # ECWDA 版本检查：对比本地 ECWDA 版本和服务器最新版本
+    if req.ecwda_version >= 0:
+        latest_wda = _get_latest_ecwda_version()
+        if latest_wda and latest_wda.get("version", 0) > req.ecwda_version:
+            response["ecwda_update"] = {
+                "version": latest_wda["version"],
+                "build_date": latest_wda.get("build_date", ""),
+                "download_url": "/api/ecwda/download"
+            }
+    
+    # 立即查询是否有这台机器的专属待办 JS 任务
+    tasks = database.pop_pending_tasks(req.udid, limit=1)
+    if tasks:
+        # 下发首个任务给 ECMAIN
+        t = tasks[0]
+        response["task"] = {
+            "id": t["id"],
+            "type": t["type"],  # e.g., 'script'
+            "script": t["payload"] if t["type"] == "script" else "",
+            "payload": t["payload"] if t["type"] != "script" else {}
+        }
+    
+    return response
+
+class ReportTaskRequest(BaseModel):
+    task_id: int
+    status: str
+    result: str = ""
+
+@app.post("/devices/report_task")
+def handle_report_task(req: ReportTaskRequest):
+    database.report_task_result(req.task_id, req.status, req.result)
+    return {"status": "ok"}
+
+
+class CreateTaskRequest(BaseModel):
+    udid: str
+    task_type: str = "script"
+    payload: str
+
+@app.post("/api/tasks/create")
+async def api_create_task(req: CreateTaskRequest):
+    # 前端网页调用此接口向目标存入指令
+    
+    # 强力优先通道：如果设备当前有活跃的 WebSocket 隧道，直接下发实现毫秒级响应
+    tunnel_ws = ACTIVE_TUNNELS.get(req.udid)
+    if tunnel_ws:
+        try:
+            # 既然设备在线，就不走数据库了，直接透传。
+            # 这里巧用 wakeup_task 的 body 将 payload 直接塞给 ECMAIN (iOS端会在响应此请求时顺便拉取，或者干脆我们修改 iOS 端直接执行这里带过去的 script)
+            # 不过目前 iOS 端实现是收到 /api/wakeup_task 就会执行 sendHeartbeat 去拉库里任务。
+            # 为了实现真正的“不入库直接执行”，我们利用刚才发现的: iOS 端如果发现 json['type'] 还没特别处理，或者干脆把它作为一个“虚拟请求”。
+            # 由于当前 iOS 端的 /api/wakeup_task 只是一个纯粹的触发信号，如果没入库，它触发心跳也拉不到任务。
+            # 所以，我们要么必须入库，才能让由于信号触发的心跳拉到任务；
+            # 除非我们在 iOS 端的 /api/wakeup_task 拦截里，加上直接执行 body['script'] 的逻辑。
+            pass
+        except Exception as e:
+            logging.error(f"WS 推流预备报错: {e}")
+            
+    # 【传统降级通道】：写入数据库等待执行 (或者是给被唤醒的设备提供弹药)
+    tid = database.create_task(req.udid, req.task_type, req.payload)
+    if tid:
+        # 如果有活跃的 WS，我们发送一条唤醒指令，让客户端立马拉取任务！
+        if tunnel_ws:
+             try:
+                 # 让 iOS 端随便响应一个不存在的 /wakeup 请求，触发网络活动从而顺带可能会检查任务，或者我们可以直接发送特别指令
+                 # 最佳做法是前端调用任务后，再调一个 action 促使系统活跃，但最优解是修改 ECMAIN WS handler
+                 # 鉴于当前限制，我们先入库，然后尝试通过 WS 发送一个特定的 command 唤醒它
+                 asyncio.create_task(tunnel_ws.send_json({
+                     "id": "wakeup_" + str(tid),
+                     "method": "POST",
+                     "url": "/api/wakeup_task", # 虽然不存在，但 ECWDAClient 会打印日志，ECMAIN也会被唤醒一点
+                     "body": {}
+                 }))
+                 return {"status": "ok", "detail": f"任务已秒级下发并尝试唤醒设备执行, ID: {tid}"}
+             except:
+                 pass
+        
+        return {"status": "ok", "detail": f"任务已录入排队, ID: {tid}"}
+    return {"status": "error", "msg": "内部持久化崩溃"}
+
+# ==================== ECMAIN 自动更新系统 ====================
+
+@app.get("/api/ecmain/version")
+def api_ecmain_version():
+    """返回服务器上最新的 ECMAIN 版本信息"""
+    latest = _get_latest_ecmain_version()
+    if latest:
+        return {"status": "ok", **latest}
+    return {"status": "error", "msg": "暂无版本文件，请先编译生成 ecmain.tar"}
+
+@app.get("/api/ecmain/download")
+def api_ecmain_download():
+    """下载最新的 ecmain.tar 更新包（直接从编译输出目录读取）"""
+    tar_path = os.path.join(ECMAIN_BUILD_OUTPUT, "ecmain.tar")
+    if not os.path.exists(tar_path):
+        raise HTTPException(status_code=404, detail="更新包不存在，请先运行 build_full.py 编译")
+    return FileResponse(
+        tar_path,
+        media_type="application/x-tar",
+        filename="ecmain.tar"
+    )
+
+# ==================== ECWDA 自动更新系统 ====================
+
+@app.get("/api/ecwda/version")
+def api_ecwda_version():
+    """返回服务器上最新的 ECWDA 版本信息"""
+    latest = _get_latest_ecwda_version()
+    if latest:
+        return {"status": "ok", **latest}
+    return {"status": "error", "msg": "暂无 ECWDA 版本文件，请先编译生成 ecwda.ipa"}
+
+@app.get("/api/ecwda/download")
+def api_ecwda_download():
+    """下载最新的 ecwda.ipa 更新包"""
+    ipa_path = os.path.join(ECMAIN_BUILD_OUTPUT, "ecwda.ipa")
+    if not os.path.exists(ipa_path):
+        raise HTTPException(status_code=404, detail="ECWDA 更新包不存在，请先运行 build_wda.py 编译")
+    return FileResponse(
+        ipa_path,
+        media_type="application/octet-stream",
+        filename="ecwda.ipa"
+    )
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=8088, reload=True)

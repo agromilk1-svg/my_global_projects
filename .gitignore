@@ -1,0 +1,54 @@
+# === 极简代码同步忽略规则 ===
+
+# 排除第三方大型源码包
+external_sources/
+_build_full_temp/
+build_ref_output/
+
+# 排除 Python 与 Node.js 环境及包
+**/venv/
+**/.venv/
+**/node_modules/
+**/__pycache__/
+**/*.py[cod]
+
+# 排除所有编译与构建产物 (递归匹配)
+**/build/
+**/dist/
+**/obj/
+**/bin/
+**/out/
+**/Debug/
+**/Release/
+**/.theos/
+
+# 排除 Apple 开发框架与大型二进制 (非常重)
+**/*.framework/
+**/*.xcframework/
+**/*.app/
+**/*.ipa
+**/*.dylib
+**/*.a
+**/*.tar
+**/*.gz
+**/*.zip
+**/*.onnx
+
+# 排除其他二进制与数据库
+**/*.db*
+**/*.log
+**/*.exe
+**/*.dll
+**/*.so
+kernelcache
+
+# 系统与 IDE 缓存
+.DS_Store
+.vscode/
+.idea/
+.AppleDouble
+.LSOverride
+
+# 临时与测试
+.symlink_test
+**/tmp/

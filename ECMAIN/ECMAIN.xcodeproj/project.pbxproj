@@ -1,0 +1,768 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		003F1D362744467DADEDAD9F /* TSShim.m in Sources */ = {isa = PBXBuildFile; fileRef = D46BE9A890C54D1F8AB84502 /* TSShim.m */; };
+		13153955986E4DAF9C39C17B /* AppDelegate.m in Sources */ = {isa = PBXBuildFile; fileRef = D51A337AE5CB41AD99771501 /* AppDelegate.m */; };
+		19D94E01B334DBAE5887F5F3 /* silent.wav in Resources */ = {isa = PBXBuildFile; fileRef = 490E4F69AF6BF69239771087 /* silent.wav */; };
+		2336452DBE33BBC452F8C544 /* ECAppDetailsViewController.h in Headers */ = {isa = PBXBuildFile; fileRef = 2E0049C7B81A695CC226A198 /* ECAppDetailsViewController.h */; };
+		2846DB3B71CC4979826B1864 /* TSApplicationsManager.m in Sources */ = {isa = PBXBuildFile; fileRef = 98DC0CC9CF3549FE8C18EF12 /* TSApplicationsManager.m */; };
+		2E71B4BCF0B84A40B1D66FD9 /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = DCD2B11531674C1BB2EB7B0F /* main.m */; };
+		2FAE42549F67FAEA75227DEF /* ECDeviceInfoViewController.h in Headers */ = {isa = PBXBuildFile; fileRef = FA0F4C348C7881F1DF7C749F /* ECDeviceInfoViewController.h */; };
+		3B92455287E1B9517CA0799A /* ECTaskListViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = D6D74131BD5ADD79E03839D5 /* ECTaskListViewController.m */; };
+		3FA36F736E6B4528B95D7391 /* TSUtil.m in Sources */ = {isa = PBXBuildFile; fileRef = B1EC9A677348477286565CE0 /* TSUtil.m */; };
+		44D2A7B5DAB95DB7686EC4B4 /* ECNodeSelectionViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A516A1C3C451C1BA6A1FFDB2 /* ECNodeSelectionViewController.m */; };
+		461E235DE1D543E789C2CD2C /* ECNetworkManager.m in Sources */ = {isa = PBXBuildFile; fileRef = 2B3329858A4445B1A5A4588E /* ECNetworkManager.m */; };
+		47D8DDD493EDD6BD5DEC3AC3 /* ZipWriter.m in Sources */ = {isa = PBXBuildFile; fileRef = 444B57DBEBF31528547155A2 /* ZipWriter.m */; };
+		4E5A418B8C0CF1EA82D6C104 /* ECTaskListViewController.h in Headers */ = {isa = PBXBuildFile; fileRef = 3817440B83876CD1493D800C /* ECTaskListViewController.h */; };
+		4F1085008D2E98A3CDD44D42 /* ProxyTypeSelectionViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = 7EFF81A50FF3FD6D7CFA839D /* ProxyTypeSelectionViewController.m */; };
+		50A68B2F60B893CFA65BBCB3 /* PacketTunnelProvider.m in Sources */ = {isa = PBXBuildFile; fileRef = 0A3F6336E4B14DBDA7CE05AF /* PacketTunnelProvider.m */; };
+		53CC40789AECA18F43323126 /* ECAppDetailsViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = DF7E4AD4B6EF0CF3B08B59FD /* ECAppDetailsViewController.m */; };
+		53DB547C32CC4D2DBC73AB37 /* ECLogManager.m in Sources */ = {isa = PBXBuildFile; fileRef = 12BC1EAB08844D69A05C7179 /* ECLogManager.m */; };
+		65F54F98885A3AA3DDD00C92 /* ECBackgroundManager.m in Sources */ = {isa = PBXBuildFile; fileRef = 5F9A4D63AE6CD19A39D3C2EA /* ECBackgroundManager.m */; };
+		6B6F18CEDE1550DF8F5C5A4C /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 41F550C7851C69865E91E76A /* NetworkExtension.framework */; };
+		6E44E7ECC4452F0F5FB711F7 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = ED6DD29F481BDA141C812B8B /* Foundation.framework */; };
+		738F658FCEC142879ED61614 /* ECWebServer.m in Sources */ = {isa = PBXBuildFile; fileRef = 26C9FC8466CE4ABFB8A4BD55 /* ECWebServer.m */; };
+		755047388A7C000138D8F7E1 /* ECTaskPollManager.h in Headers */ = {isa = PBXBuildFile; fileRef = 43E64561B8B9BB19C490F0ED /* ECTaskPollManager.h */; };
+		76BD4F45868971A7650C94C1 /* ECBackgroundManager.h in Headers */ = {isa = PBXBuildFile; fileRef = AAE840708723ED4C7E81A0A0 /* ECBackgroundManager.h */; };
+		7DDE8F692DAB44E8904ACC50 /* TSInstallationController.m in Sources */ = {isa = PBXBuildFile; fileRef = D0B971BE68084EC6BF5C455A /* TSInstallationController.m */; };
+		8490340B818E2F3AFA4FADB9 /* MainTabBarController.m in Sources */ = {isa = PBXBuildFile; fileRef = 7477685C1271150BA5EE20A7 /* MainTabBarController.m */; };
+		84EC48129B5674E22E254639 /* ECTaskPollManager.m in Sources */ = {isa = PBXBuildFile; fileRef = D64B4935BD822891C812E4FE /* ECTaskPollManager.m */; };
+		8F0F4A6F82B9A25CC841FE5A /* ECDeviceInfoViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = 226E46879797F49C20071233 /* ECDeviceInfoViewController.m */; };
+		9020AF77338CE8A88B41751B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BD0C51C84CA18492BF3783DC /* Assets.xcassets */; };
+		92345F5981AA8D0A430C1A05 /* ECConnectionTester.m in Sources */ = {isa = PBXBuildFile; fileRef = 1C01D1127F9D579E382514BB /* ECConnectionTester.m */; };
+		959294DFEF78403ABD9A21F7 /* ECScriptParser.m in Sources */ = {isa = PBXBuildFile; fileRef = 9DD1B2E1B3D342D4970FCEB2 /* ECScriptParser.m */; };
+		97E19FEF6B4B3105A44551B1 /* ECAppInjector.m in Sources */ = {isa = PBXBuildFile; fileRef = E80B937FC11A21294FE24B87 /* ECAppInjector.m */; };
+		9A7BEEAA700234BDAED2F0BF /* ECInjectionViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = 075D6393873078D20D6086A3 /* ECInjectionViewController.m */; };
+		9E07F1F92005A861F8F06631 /* ECNetworkConfigViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = 1B411416980D41DEC56C7779 /* ECNetworkConfigViewController.m */; };
+		9E85029F37F741158CC4AF9A /* TSAppInfo.m in Sources */ = {isa = PBXBuildFile; fileRef = F2D3A885D304461BB9D7E0D9 /* TSAppInfo.m */; };
+		A2C83DBF39D642559D0C270F /* libroot_dyn.c in Sources */ = {isa = PBXBuildFile; fileRef = B2ED014779894DF1ABBC8228 /* libroot_dyn.c */; };
+		B9EA4C708A2AA5FD166D4E32 /* ECDeviceInfoManager.h in Headers */ = {isa = PBXBuildFile; fileRef = 1E5444108E8A0D231D993F92 /* ECDeviceInfoManager.h */; };
+		BA741660167E44A58CFB4E85 /* ECKeepAlive.m in Sources */ = {isa = PBXBuildFile; fileRef = 07E7AD3214D4497AA5DCD431 /* ECKeepAlive.m */; };
+		BD37247013D748BF9C6F4558 /* TSPresentationDelegate.m in Sources */ = {isa = PBXBuildFile; fileRef = 489A5A16221D47798F3240E9 /* TSPresentationDelegate.m */; };
+		C236D62BED5C44549F8A2D5A /* TrollStoreIncludes.m in Sources */ = {isa = PBXBuildFile; fileRef = C4C8252B9D6C4335B11D26DE /* TrollStoreIncludes.m */; };
+		C30B964166C44D7A8FABB580 /* ViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = 9D4CE300FB2F4FB4B1A4DA60 /* ViewController.m */; };
+		C9B0DFADBF0047D8A60B09E8 /* ECSystemManager.m in Sources */ = {isa = PBXBuildFile; fileRef = BA557AEBD0644DC2947991BD /* ECSystemManager.m */; };
+		CFGBLD001 /* ECConfigViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = CFGREF002 /* ECConfigViewController.m */; };
+		D145B70AD682AB58C3B9E451 /* ECHomeViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = DC683167ECC25CAADC16C477 /* ECHomeViewController.m */; };
+		D1914A0A977A353BEB7E1DEE /* ECTaskPollManager.h in Headers */ = {isa = PBXBuildFile; fileRef = 43E64561B8B9BB19C490F0ED /* ECTaskPollManager.h */; };
+		D59748DCA0986405C735FC08 /* ECTaskListViewController.h in Headers */ = {isa = PBXBuildFile; fileRef = 3817440B83876CD1493D800C /* ECTaskListViewController.h */; };
+		D6DE915C848B3DB8FF77B531 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 41F550C7851C69865E91E76A /* NetworkExtension.framework */; };
+		DDBLD001 /* ECDeviceDatabase.m in Sources */ = {isa = PBXBuildFile; fileRef = DDREF002 /* ECDeviceDatabase.m */; };
+		DE51FA38349178D8BF445CE7 /* Tunnel.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 34267537FFD7062F553B4E13 /* Tunnel.appex */; };
+		E4AEB915FB5F6677335C34B0 /* ZipReader.m in Sources */ = {isa = PBXBuildFile; fileRef = 7FA925839C7E168C35289F58 /* ZipReader.m */; };
+		ECHEVC0000000003 /* ECHevTunnel.m in Sources */ = {isa = PBXBuildFile; fileRef = ECHEVC0000000002 /* ECHevTunnel.m */; };
+		ECHEVC0000000004 /* HevSocks5Tunnel.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = ECHEVC0000000000 /* HevSocks5Tunnel.xcframework */; };
+		ECTUN2PROXY000003 /* ECTun2Proxy.m in Sources */ = {isa = PBXBuildFile; fileRef = ECTUN2PROXY000002 /* ECTun2Proxy.m */; };
+		ECTUN2PROXY000005 /* tun2proxy.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = ECTUN2PROXY000004 /* tun2proxy.xcframework */; };
+		ECUDPBRG0000000000000003 /* ECUDPBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = ECUDPBRG0000000000000002 /* ECUDPBridge.m */; };
+		ED808D827963C10DFA45FF7A /* ECVPNConfigManager.m in Sources */ = {isa = PBXBuildFile; fileRef = 07CED375FB56DD44C3C4A1F0 /* ECVPNConfigManager.m */; };
+		EE0269A68D2C4F89B31B77A0 /* ECWDAClient.m in Sources */ = {isa = PBXBuildFile; fileRef = A654118661644D8DB9F3CECF /* ECWDAClient.m */; };
+		EF40BFFE3802458C9708045D /* ECAppListViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = B0450FB1EFA7429287C7A834 /* ECAppListViewController.m */; };
+		F5834F9C93F39A5AF95024A6 /* ECDeviceInfoManager.m in Sources */ = {isa = PBXBuildFile; fileRef = 11D64B04912E234834068FEF /* ECDeviceInfoManager.m */; };
+		F8F67737B88C7F4ADA7819D1 /* VPNConfigViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = 76D034688EC18673A1F92EC6 /* VPNConfigViewController.m */; };
+		FDEC6CA98AE216F3B6C9C2D1 /* Mihomo.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 12ACC38D780C7B52A1B72D12 /* Mihomo.xcframework */; };
+		QRSCAN001000001 /* ECQRScannerViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = QRSCAN001000002 /* ECQRScannerViewController.m */; };
+		QRSCAN001000003 /* ECProxyURIParser.m in Sources */ = {isa = PBXBuildFile; fileRef = QRSCAN001000004 /* ECProxyURIParser.m */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		BCA3517382539ED761883856 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E513E4DE7F9F4CB0BFD7F313 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A89C87D453C8B9CC5446F21A;
+			remoteInfo = Tunnel;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		22715E86D53B0306B2B592FA /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				DE51FA38349178D8BF445CE7 /* Tunnel.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		059C5CF302D23B47F39990ED /* Tunnel.entitlements */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.entitlements; path = Tunnel.entitlements; sourceTree = "<group>"; };
+		06D47D49E5D7471F855FF11E /* ECScriptParser.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ECMAIN/Core/ECScriptParser.h; sourceTree = SOURCE_ROOT; };
+		075D6393873078D20D6086A3 /* ECInjectionViewController.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = ECInjectionViewController.m; path = ECMAIN/UI/ECInjectionViewController.m; sourceTree = "<group>"; };
+		07CED375FB56DD44C3C4A1F0 /* ECVPNConfigManager.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = ECVPNConfigManager.m; path = ECMAIN/Core/ECVPNConfigManager.m; sourceTree = SOURCE_ROOT; };
+		07E7AD3214D4497AA5DCD431 /* ECKeepAlive.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ECMAIN/Core/ECKeepAlive.m; sourceTree = SOURCE_ROOT; };
+		0A3F6336E4B14DBDA7CE05AF /* PacketTunnelProvider.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = PacketTunnelProvider.m; sourceTree = "<group>"; };
+		0B7ABDBD4686FFC5E4E875CA /* ProxyTypeSelectionViewController.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = ProxyTypeSelectionViewController.h; path = ECMAIN/UI/ProxyTypeSelectionViewController.h; sourceTree = "<group>"; };
+		11D64B04912E234834068FEF /* ECDeviceInfoManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = ECDeviceInfoManager.m; path = ECMAIN/Core/ECDeviceInfoManager.m; sourceTree = SOURCE_ROOT; };
+		12ACC38D780C7B52A1B72D12 /* Mihomo.xcframework */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = wrapper.xcframework; name = Mihomo.xcframework; path = Frameworks/Mihomo.xcframework; sourceTree = "<group>"; };
+		12BC1EAB08844D69A05C7179 /* ECLogManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ECMAIN/Core/ECLogManager.m; sourceTree = SOURCE_ROOT; };
+		1B411416980D41DEC56C7779 /* ECNetworkConfigViewController.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = ECNetworkConfigViewController.m; path = ECMAIN/UI/ECNetworkConfigViewController.m; sourceTree = "<group>"; };
+		1C01D1127F9D579E382514BB /* ECConnectionTester.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = ECConnectionTester.m; path = ECMAIN/Core/ECConnectionTester.m; sourceTree = "<group>"; };
+		1CA7CA75264549399B131A1B /* ECNetworkManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Network/ECNetworkManager.h; sourceTree = "<group>"; };
+		1E5444108E8A0D231D993F92 /* ECDeviceInfoManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ECDeviceInfoManager.h; path = ECMAIN/Core/ECDeviceInfoManager.h; sourceTree = SOURCE_ROOT; };
+		1F5A04198B83F53D60026DB3 /* MainTabBarController.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = MainTabBarController.h; path = ECMAIN/UI/MainTabBarController.h; sourceTree = "<group>"; };
+		226E46879797F49C20071233 /* ECDeviceInfoViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = ECDeviceInfoViewController.m; path = ECMAIN/UI/ECDeviceInfoViewController.m; sourceTree = SOURCE_ROOT; };
+		26C9FC8466CE4ABFB8A4BD55 /* ECWebServer.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Network/ECWebServer.m; sourceTree = "<group>"; };
+		2B3329858A4445B1A5A4588E /* ECNetworkManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Network/ECNetworkManager.m; sourceTree = "<group>"; };
+		2E0049C7B81A695CC226A198 /* ECAppDetailsViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ECAppDetailsViewController.h; path = ECMAIN/UI/ECAppDetailsViewController.h; sourceTree = SOURCE_ROOT; };
+		2E2039CA187B4D398D88AC74 /* ECMAIN.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ECMAIN.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		2EBE7F1DC3A95ACF4DF29C49 /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		302BA41BD78542BB4086FDF7 /* ECHomeViewController.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = ECHomeViewController.h; path = ECMAIN/UI/ECHomeViewController.h; sourceTree = SOURCE_ROOT; };
+		34267537FFD7062F553B4E13 /* Tunnel.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = Tunnel.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		3817440B83876CD1493D800C /* ECTaskListViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ECTaskListViewController.h; path = ECMAIN/UI/ECTaskListViewController.h; sourceTree = SOURCE_ROOT; };
+		41F550C7851C69865E91E76A /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = "<group>"; };
+		42930ECF0D8BB679035A40C5 /* VPNConfigViewController.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = VPNConfigViewController.h; path = ECMAIN/UI/VPNConfigViewController.h; sourceTree = "<group>"; };
+		43E64561B8B9BB19C490F0ED /* ECTaskPollManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ECTaskPollManager.h; path = ECMAIN/Core/ECTaskPollManager.h; sourceTree = SOURCE_ROOT; };
+		444B57DBEBF31528547155A2 /* ZipWriter.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = ZipWriter.m; path = TrollStoreCore/ZipWriter.m; sourceTree = "<group>"; };
+		489A5A16221D47798F3240E9 /* TSPresentationDelegate.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = TSPresentationDelegate.m; path = TrollStoreCore/TSPresentationDelegate.m; sourceTree = SOURCE_ROOT; };
+		490E4F69AF6BF69239771087 /* silent.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = silent.wav; path = ECMAIN/silent.wav; sourceTree = SOURCE_ROOT; };
+		49CFC3E8C74F4440BD95BF4D /* ECKeepAlive.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ECMAIN/Core/ECKeepAlive.h; sourceTree = SOURCE_ROOT; };
+		53A334735C5B4AF99868C562 /* TSInstallationController.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = TSInstallationController.h; path = TrollStoreCore/TSInstallationController.h; sourceTree = SOURCE_ROOT; };
+		5F9A4D63AE6CD19A39D3C2EA /* ECBackgroundManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = ECBackgroundManager.m; path = ECMAIN/Core/ECBackgroundManager.m; sourceTree = SOURCE_ROOT; };
+		6B7739E021404F2D980F0EAF /* TSCommonTCCServiceNames.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = TSCommonTCCServiceNames.h; path = TrollStoreCore/TSCommonTCCServiceNames.h; sourceTree = SOURCE_ROOT; };
+		7477685C1271150BA5EE20A7 /* MainTabBarController.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = MainTabBarController.m; path = ECMAIN/UI/MainTabBarController.m; sourceTree = "<group>"; };
+		76D034688EC18673A1F92EC6 /* VPNConfigViewController.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = VPNConfigViewController.m; path = ECMAIN/UI/VPNConfigViewController.m; sourceTree = "<group>"; };
+		78CCB8DC7EF8ECAE83445214 /* ECVPNConfigManager.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = ECVPNConfigManager.h; path = ECMAIN/Core/ECVPNConfigManager.h; sourceTree = SOURCE_ROOT; };
+		7EFF81A50FF3FD6D7CFA839D /* ProxyTypeSelectionViewController.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = ProxyTypeSelectionViewController.m; path = ECMAIN/UI/ProxyTypeSelectionViewController.m; sourceTree = "<group>"; };
+		7FA925839C7E168C35289F58 /* ZipReader.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = ZipReader.m; path = ECMAIN/TrollStoreCore/ZipReader.m; sourceTree = "<group>"; };
+		91AF30E4E41B4EEEA8CBC9E4 /* ECLogManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ECMAIN/Core/ECLogManager.h; sourceTree = SOURCE_ROOT; };
+		9503440028074D8C9E20AC21 /* ECSystemManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = System/ECSystemManager.h; sourceTree = "<group>"; };
+		9652346076A5E3D9D7B41D2D /* ECInjectionViewController.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = ECInjectionViewController.h; path = ECMAIN/UI/ECInjectionViewController.h; sourceTree = "<group>"; };
+		96A65294E2C74FEB8D4C0D7B /* AppDelegate.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AppDelegate.h; sourceTree = "<group>"; };
+		98DC0CC9CF3549FE8C18EF12 /* TSApplicationsManager.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = TSApplicationsManager.m; path = TrollStoreCore/TSApplicationsManager.m; sourceTree = SOURCE_ROOT; };
+		9D45F5A56B692A0D57BEE54B /* ECAppInjector.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = ECAppInjector.h; path = ECMAIN/Core/ECAppInjector.h; sourceTree = "<group>"; };
+		9D4CE300FB2F4FB4B1A4DA60 /* ViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ViewController.m; sourceTree = "<group>"; };
+		9DD1B2E1B3D342D4970FCEB2 /* ECScriptParser.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ECMAIN/Core/ECScriptParser.m; sourceTree = SOURCE_ROOT; };
+		A1AF51D3F8199D8861246332 /* PacketTunnelProvider.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = PacketTunnelProvider.h; sourceTree = "<group>"; };
+		A516A1C3C451C1BA6A1FFDB2 /* ECNodeSelectionViewController.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = ECNodeSelectionViewController.m; path = ECMAIN/UI/ECNodeSelectionViewController.m; sourceTree = SOURCE_ROOT; };
+		A654118661644D8DB9F3CECF /* ECWDAClient.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = WDA/ECWDAClient.m; sourceTree = "<group>"; };
+		A8FD6F9815664F9A866B7B53 /* libroot.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = libroot.h; path = TrollStoreCore/libroot.h; sourceTree = SOURCE_ROOT; };
+		AAE840708723ED4C7E81A0A0 /* ECBackgroundManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ECBackgroundManager.h; path = ECMAIN/Core/ECBackgroundManager.h; sourceTree = SOURCE_ROOT; };
+		AB9BB440F3AA448D9D656CA5 /* TSAppInfo.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = TSAppInfo.h; path = TrollStoreCore/TSAppInfo.h; sourceTree = SOURCE_ROOT; };
+		AF4471C74F2C3FF917AECB22 /* ECNodeSelectionViewController.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = ECNodeSelectionViewController.h; path = ECMAIN/UI/ECNodeSelectionViewController.h; sourceTree = SOURCE_ROOT; };
+		B0450FB1EFA7429287C7A834 /* ECAppListViewController.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = ECAppListViewController.m; path = ECMAIN/UI/ECAppListViewController.m; sourceTree = SOURCE_ROOT; };
+		B1EC9A677348477286565CE0 /* TSUtil.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = TSUtil.m; path = TrollStoreCore/TSUtil.m; sourceTree = SOURCE_ROOT; };
+		B2ED014779894DF1ABBC8228 /* libroot_dyn.c */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.c; name = libroot_dyn.c; path = TrollStoreCore/libroot_dyn.c; sourceTree = SOURCE_ROOT; };
+		B73A334157D6B465800AD9C4 /* ZipReader.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = ZipReader.h; path = ECMAIN/TrollStoreCore/ZipReader.h; sourceTree = "<group>"; };
+		BA557AEBD0644DC2947991BD /* ECSystemManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = System/ECSystemManager.m; sourceTree = "<group>"; };
+		BD0C51C84CA18492BF3783DC /* Assets.xcassets */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		BFBDE515B53543229738352C /* archive.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = archive.h; path = TrollStoreCore/archive.h; sourceTree = SOURCE_ROOT; };
+		C4C8252B9D6C4335B11D26DE /* TrollStoreIncludes.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = TrollStoreIncludes.m; path = TrollStoreCore/TrollStoreIncludes.m; sourceTree = SOURCE_ROOT; };
+		CFGREF001 /* ECConfigViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ECConfigViewController.h; path = UI/ECConfigViewController.h; sourceTree = SOURCE_ROOT; };
+		CFGREF002 /* ECConfigViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = ECConfigViewController.m; path = UI/ECConfigViewController.m; sourceTree = SOURCE_ROOT; };
+		D0B971BE68084EC6BF5C455A /* TSInstallationController.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = TSInstallationController.m; path = TrollStoreCore/TSInstallationController.m; sourceTree = SOURCE_ROOT; };
+		D118A4DEFEF4415D8E70720F /* TSUtil.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = TSUtil.h; path = TrollStoreCore/TSUtil.h; sourceTree = SOURCE_ROOT; };
+		D46BE9A890C54D1F8AB84502 /* TSShim.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = TSShim.m; path = TrollStoreCore/TSShim.m; sourceTree = SOURCE_ROOT; };
+		D51A337AE5CB41AD99771501 /* AppDelegate.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = AppDelegate.m; sourceTree = "<group>"; };
+		D64B4935BD822891C812E4FE /* ECTaskPollManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = ECTaskPollManager.m; path = ECMAIN/Core/ECTaskPollManager.m; sourceTree = SOURCE_ROOT; };
+		D6D74131BD5ADD79E03839D5 /* ECTaskListViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = ECTaskListViewController.m; path = ECMAIN/UI/ECTaskListViewController.m; sourceTree = SOURCE_ROOT; };
+		D78C9B0BA2C14D748D40C375 /* ECWDAClient.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WDA/ECWDAClient.h; sourceTree = "<group>"; };
+		D99EDF4D9E844A1B9EB9254C /* archive_entry.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = archive_entry.h; path = TrollStoreCore/archive_entry.h; sourceTree = SOURCE_ROOT; };
+		DC683167ECC25CAADC16C477 /* ECHomeViewController.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = ECHomeViewController.m; path = ECMAIN/UI/ECHomeViewController.m; sourceTree = SOURCE_ROOT; };
+		DCD2B11531674C1BB2EB7B0F /* main.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };
+		DDBEFC86EE214B0EBCC7FCDD /* ECWebServer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Network/ECWebServer.h; sourceTree = "<group>"; };
+		DDREF001 /* ECDeviceDatabase.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ECDeviceDatabase.h; path = Data/ECDeviceDatabase.h; sourceTree = SOURCE_ROOT; };
+		DDREF002 /* ECDeviceDatabase.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = ECDeviceDatabase.m; path = Data/ECDeviceDatabase.m; sourceTree = SOURCE_ROOT; };
+		DF7E4AD4B6EF0CF3B08B59FD /* ECAppDetailsViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = ECAppDetailsViewController.m; path = ECMAIN/UI/ECAppDetailsViewController.m; sourceTree = SOURCE_ROOT; };
+		E1E23EEB0FFF4C8888B0A553 /* TSPresentationDelegate.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = TSPresentationDelegate.h; path = TrollStoreCore/TSPresentationDelegate.h; sourceTree = SOURCE_ROOT; };
+		E80B937FC11A21294FE24B87 /* ECAppInjector.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = ECAppInjector.m; path = ECMAIN/Core/ECAppInjector.m; sourceTree = "<group>"; };
+		E9F2ABB008BEF1B6A0C89343 /* ZipWriter.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = ZipWriter.h; path = TrollStoreCore/ZipWriter.h; sourceTree = "<group>"; };
+		EA6BC482C991479C8BD988DF /* ViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ViewController.h; sourceTree = "<group>"; };
+		ECHEVC0000000000 /* HevSocks5Tunnel.xcframework */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = wrapper.xcframework; name = HevSocks5Tunnel.xcframework; path = Frameworks/HevSocks5Tunnel.xcframework; sourceTree = "<group>"; };
+		ECHEVC0000000001 /* ECHevTunnel.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ECHevTunnel.h; sourceTree = "<group>"; };
+		ECHEVC0000000002 /* ECHevTunnel.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ECHevTunnel.m; sourceTree = "<group>"; };
+		ECTUN2PROXY000001 /* ECTun2Proxy.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ECTun2Proxy.h; sourceTree = "<group>"; };
+		ECTUN2PROXY000002 /* ECTun2Proxy.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ECTun2Proxy.m; sourceTree = "<group>"; };
+		ECTUN2PROXY000004 /* tun2proxy.xcframework */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = wrapper.xcframework; path = tun2proxy.xcframework; sourceTree = "<group>"; };
+		ECTUN2PROXY000006 /* tun2proxy.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = tun2proxy.h; sourceTree = "<group>"; };
+		ECUDPBRG0000000000000001 /* ECUDPBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ECUDPBridge.h; sourceTree = "<group>"; };
+		ECUDPBRG0000000000000002 /* ECUDPBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ECUDPBridge.m; sourceTree = "<group>"; };
+		ED6DD29F481BDA141C812B8B /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
+		F2D3A885D304461BB9D7E0D9 /* TSAppInfo.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = TSAppInfo.m; path = TrollStoreCore/TSAppInfo.m; sourceTree = SOURCE_ROOT; };
+		F3E88618410F4CF5BD7C85AB /* TSApplicationsManager.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = TSApplicationsManager.h; path = TrollStoreCore/TSApplicationsManager.h; sourceTree = SOURCE_ROOT; };
+		FA0F4C348C7881F1DF7C749F /* ECDeviceInfoViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ECDeviceInfoViewController.h; path = ECMAIN/UI/ECDeviceInfoViewController.h; sourceTree = SOURCE_ROOT; };
+		FFE8E76F41C64F7792ABFA59 /* TSCoreServices.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = TSCoreServices.h; path = TrollStoreCore/TSCoreServices.h; sourceTree = SOURCE_ROOT; };
+		QRSCAN001000002 /* ECQRScannerViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = ECQRScannerViewController.m; path = ECMAIN/UI/ECQRScannerViewController.m; sourceTree = SOURCE_ROOT; };
+		QRSCAN001000004 /* ECProxyURIParser.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = ECProxyURIParser.m; path = ECMAIN/Core/ECProxyURIParser.m; sourceTree = SOURCE_ROOT; };
+		QRSCAN001000005 /* ECQRScannerViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ECQRScannerViewController.h; path = ECMAIN/UI/ECQRScannerViewController.h; sourceTree = SOURCE_ROOT; };
+		QRSCAN001000006 /* ECProxyURIParser.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ECProxyURIParser.h; path = ECMAIN/Core/ECProxyURIParser.h; sourceTree = SOURCE_ROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		516259F8C30C8E2D066C8560 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6E44E7ECC4452F0F5FB711F7 /* Foundation.framework in Frameworks */,
+				6B6F18CEDE1550DF8F5C5A4C /* NetworkExtension.framework in Frameworks */,
+				FDEC6CA98AE216F3B6C9C2D1 /* Mihomo.xcframework in Frameworks */,
+				ECHEVC0000000004 /* HevSocks5Tunnel.xcframework in Frameworks */,
+				ECTUN2PROXY000005 /* tun2proxy.xcframework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FA092CB2BDDC461CBC03CCEE /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D6DE915C848B3DB8FF77B531 /* NetworkExtension.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		0014450DB17C8A35E249244A /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				AAE840708723ED4C7E81A0A0 /* ECBackgroundManager.h */,
+				5F9A4D63AE6CD19A39D3C2EA /* ECBackgroundManager.m */,
+				9D45F5A56B692A0D57BEE54B /* ECAppInjector.h */,
+				E80B937FC11A21294FE24B87 /* ECAppInjector.m */,
+				1E5444108E8A0D231D993F92 /* ECDeviceInfoManager.h */,
+				11D64B04912E234834068FEF /* ECDeviceInfoManager.m */,
+				QRSCAN001000006 /* ECProxyURIParser.h */,
+				QRSCAN001000004 /* ECProxyURIParser.m */,
+				1C01D1127F9D579E382514BB /* ECConnectionTester.m */,
+			);
+			name = Core;
+			sourceTree = "<group>";
+		};
+		0938E220B390476FB41FE695 /* . */ = {
+			isa = PBXGroup;
+			children = (
+				96A65294E2C74FEB8D4C0D7B /* AppDelegate.h */,
+				9D4CE300FB2F4FB4B1A4DA60 /* ViewController.m */,
+				DCD2B11531674C1BB2EB7B0F /* main.m */,
+				D51A337AE5CB41AD99771501 /* AppDelegate.m */,
+				EA6BC482C991479C8BD988DF /* ViewController.h */,
+				06D47D49E5D7471F855FF11E /* ECScriptParser.h */,
+				49CFC3E8C74F4440BD95BF4D /* ECKeepAlive.h */,
+				9DD1B2E1B3D342D4970FCEB2 /* ECScriptParser.m */,
+				91AF30E4E41B4EEEA8CBC9E4 /* ECLogManager.h */,
+				12BC1EAB08844D69A05C7179 /* ECLogManager.m */,
+				07E7AD3214D4497AA5DCD431 /* ECKeepAlive.m */,
+				D78C9B0BA2C14D748D40C375 /* ECWDAClient.h */,
+				A654118661644D8DB9F3CECF /* ECWDAClient.m */,
+				1CA7CA75264549399B131A1B /* ECNetworkManager.h */,
+				26C9FC8466CE4ABFB8A4BD55 /* ECWebServer.m */,
+				2B3329858A4445B1A5A4588E /* ECNetworkManager.m */,
+				DDBEFC86EE214B0EBCC7FCDD /* ECWebServer.h */,
+				BA557AEBD0644DC2947991BD /* ECSystemManager.m */,
+				9503440028074D8C9E20AC21 /* ECSystemManager.h */,
+			);
+			path = .;
+			sourceTree = "<group>";
+		};
+		0D1301BDC2AB4773A730DED1 = {
+			isa = PBXGroup;
+			children = (
+				0938E220B390476FB41FE695 /* . */,
+				C8AD1CA60C404554A9DEB659 /* Products */,
+				A09C44188F14266C9ED9E52D /* ECMAIN */,
+				1157690A293DDD9B9FF347BE /* Tunnel */,
+				D189D1E4FA2F100F0A6C35FD /* Frameworks */,
+				A7A90BEEB345436DAA06294D /* TrollStoreCore */,
+				78CCB8DC7EF8ECAE83445214 /* ECVPNConfigManager.h */,
+				07CED375FB56DD44C3C4A1F0 /* ECVPNConfigManager.m */,
+				302BA41BD78542BB4086FDF7 /* ECHomeViewController.h */,
+				DC683167ECC25CAADC16C477 /* ECHomeViewController.m */,
+				AF4471C74F2C3FF917AECB22 /* ECNodeSelectionViewController.h */,
+				A516A1C3C451C1BA6A1FFDB2 /* ECNodeSelectionViewController.m */,
+				D64B4935BD822891C812E4FE /* ECTaskPollManager.m */,
+				43E64561B8B9BB19C490F0ED /* ECTaskPollManager.h */,
+				D6D74131BD5ADD79E03839D5 /* ECTaskListViewController.m */,
+				3817440B83876CD1493D800C /* ECTaskListViewController.h */,
+			);
+			sourceTree = "<group>";
+		};
+		0F1B03C34F823EDA619628BF /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				ED6DD29F481BDA141C812B8B /* Foundation.framework */,
+			);
+			name = iOS;
+			sourceTree = "<group>";
+		};
+		1157690A293DDD9B9FF347BE /* Tunnel */ = {
+			isa = PBXGroup;
+			children = (
+				A1AF51D3F8199D8861246332 /* PacketTunnelProvider.h */,
+				0A3F6336E4B14DBDA7CE05AF /* PacketTunnelProvider.m */,
+				ECHEVC0000000001 /* ECHevTunnel.h */,
+				ECHEVC0000000002 /* ECHevTunnel.m */,
+				ECUDPBRG0000000000000001 /* ECUDPBridge.h */,
+				ECUDPBRG0000000000000002 /* ECUDPBridge.m */,
+				ECTUN2PROXY000001 /* ECTun2Proxy.h */,
+				ECTUN2PROXY000002 /* ECTun2Proxy.m */,
+				ECTUN2PROXY000006 /* tun2proxy.h */,
+				ECTUN2PROXY000004 /* tun2proxy.xcframework */,
+				2EBE7F1DC3A95ACF4DF29C49 /* Info.plist */,
+				059C5CF302D23B47F39990ED /* Tunnel.entitlements */,
+			);
+			path = Tunnel;
+			sourceTree = "<group>";
+		};
+		A09C44188F14266C9ED9E52D /* ECMAIN */ = {
+			isa = PBXGroup;
+			children = (
+				0014450DB17C8A35E249244A /* Core */,
+				490E4F69AF6BF69239771087 /* silent.wav */,
+				B7FBAA1D7A610887CFEB5A35 /* UI */,
+				DATAGRP001 /* Data */,
+				BD0C51C84CA18492BF3783DC /* Assets.xcassets */,
+			);
+			name = ECMAIN;
+			sourceTree = "<group>";
+		};
+		A7A90BEEB345436DAA06294D /* TrollStoreCore */ = {
+			isa = PBXGroup;
+			children = (
+				D46BE9A890C54D1F8AB84502 /* TSShim.m */,
+				B2ED014779894DF1ABBC8228 /* libroot_dyn.c */,
+				C4C8252B9D6C4335B11D26DE /* TrollStoreIncludes.m */,
+				F2D3A885D304461BB9D7E0D9 /* TSAppInfo.m */,
+				98DC0CC9CF3549FE8C18EF12 /* TSApplicationsManager.m */,
+				D0B971BE68084EC6BF5C455A /* TSInstallationController.m */,
+				489A5A16221D47798F3240E9 /* TSPresentationDelegate.m */,
+				B1EC9A677348477286565CE0 /* TSUtil.m */,
+				D99EDF4D9E844A1B9EB9254C /* archive_entry.h */,
+				BFBDE515B53543229738352C /* archive.h */,
+				A8FD6F9815664F9A866B7B53 /* libroot.h */,
+				AB9BB440F3AA448D9D656CA5 /* TSAppInfo.h */,
+				F3E88618410F4CF5BD7C85AB /* TSApplicationsManager.h */,
+				6B7739E021404F2D980F0EAF /* TSCommonTCCServiceNames.h */,
+				FFE8E76F41C64F7792ABFA59 /* TSCoreServices.h */,
+				53A334735C5B4AF99868C562 /* TSInstallationController.h */,
+				E1E23EEB0FFF4C8888B0A553 /* TSPresentationDelegate.h */,
+				D118A4DEFEF4415D8E70720F /* TSUtil.h */,
+				B73A334157D6B465800AD9C4 /* ZipReader.h */,
+				7FA925839C7E168C35289F58 /* ZipReader.m */,
+				E9F2ABB008BEF1B6A0C89343 /* ZipWriter.h */,
+				444B57DBEBF31528547155A2 /* ZipWriter.m */,
+			);
+			name = TrollStoreCore;
+			sourceTree = "<group>";
+		};
+		B7FBAA1D7A610887CFEB5A35 /* UI */ = {
+			isa = PBXGroup;
+			children = (
+				42930ECF0D8BB679035A40C5 /* VPNConfigViewController.h */,
+				76D034688EC18673A1F92EC6 /* VPNConfigViewController.m */,
+				1F5A04198B83F53D60026DB3 /* MainTabBarController.h */,
+				7477685C1271150BA5EE20A7 /* MainTabBarController.m */,
+				0B7ABDBD4686FFC5E4E875CA /* ProxyTypeSelectionViewController.h */,
+				7EFF81A50FF3FD6D7CFA839D /* ProxyTypeSelectionViewController.m */,
+				B0450FB1EFA7429287C7A834 /* ECAppListViewController.m */,
+				9652346076A5E3D9D7B41D2D /* ECInjectionViewController.h */,
+				075D6393873078D20D6086A3 /* ECInjectionViewController.m */,
+				2E0049C7B81A695CC226A198 /* ECAppDetailsViewController.h */,
+				DF7E4AD4B6EF0CF3B08B59FD /* ECAppDetailsViewController.m */,
+				FA0F4C348C7881F1DF7C749F /* ECDeviceInfoViewController.h */,
+				226E46879797F49C20071233 /* ECDeviceInfoViewController.m */,
+				QRSCAN001000005 /* ECQRScannerViewController.h */,
+				QRSCAN001000002 /* ECQRScannerViewController.m */,
+				CFGREF001 /* ECConfigViewController.h */,
+				CFGREF002 /* ECConfigViewController.m */,
+				1B411416980D41DEC56C7779 /* ECNetworkConfigViewController.m */,
+			);
+			name = UI;
+			sourceTree = "<group>";
+		};
+		C8AD1CA60C404554A9DEB659 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				2E2039CA187B4D398D88AC74 /* ECMAIN.app */,
+				34267537FFD7062F553B4E13 /* Tunnel.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		D189D1E4FA2F100F0A6C35FD /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				0F1B03C34F823EDA619628BF /* iOS */,
+				41F550C7851C69865E91E76A /* NetworkExtension.framework */,
+				12ACC38D780C7B52A1B72D12 /* Mihomo.xcframework */,
+				ECHEVC0000000000 /* HevSocks5Tunnel.xcframework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		DATAGRP001 /* Data */ = {
+			isa = PBXGroup;
+			children = (
+				DDREF001 /* ECDeviceDatabase.h */,
+				DDREF002 /* ECDeviceDatabase.m */,
+			);
+			name = Data;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXHeadersBuildPhase section */
+		28944075A55AEBDE111B9A82 /* Headers */ = {
+			isa = PBXHeadersBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				76BD4F45868971A7650C94C1 /* ECBackgroundManager.h in Headers */,
+				2336452DBE33BBC452F8C544 /* ECAppDetailsViewController.h in Headers */,
+				B9EA4C708A2AA5FD166D4E32 /* ECDeviceInfoManager.h in Headers */,
+				2FAE42549F67FAEA75227DEF /* ECDeviceInfoViewController.h in Headers */,
+				755047388A7C000138D8F7E1 /* ECTaskPollManager.h in Headers */,
+				4E5A418B8C0CF1EA82D6C104 /* ECTaskListViewController.h in Headers */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		38F14974A21C894026EA567B /* Headers */ = {
+			isa = PBXHeadersBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D1914A0A977A353BEB7E1DEE /* ECTaskPollManager.h in Headers */,
+				D59748DCA0986405C735FC08 /* ECTaskListViewController.h in Headers */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXHeadersBuildPhase section */
+
+/* Begin PBXNativeTarget section */
+		A89C87D453C8B9CC5446F21A /* Tunnel */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 8D6084CE452E749E8939C976 /* Build configuration list for PBXNativeTarget "Tunnel" */;
+			buildPhases = (
+				63F2540B44FD87C544D6CC2A /* Sources */,
+				516259F8C30C8E2D066C8560 /* Frameworks */,
+				38F14974A21C894026EA567B /* Headers */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Tunnel;
+			productName = Tunnel;
+			productReference = 34267537FFD7062F553B4E13 /* Tunnel.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		C6E6615753BB47E1824B1C32 /* ECMAIN */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 3BDB6647195E416D8DC8E4BD /* Build configuration list for PBXNativeTarget "ECMAIN" */;
+			buildPhases = (
+				9501187F79604FD4B4D684F1 /* Sources */,
+				FA092CB2BDDC461CBC03CCEE /* Frameworks */,
+				57D2785A97B845FCA4224AE2 /* Resources */,
+				28944075A55AEBDE111B9A82 /* Headers */,
+				22715E86D53B0306B2B592FA /* Embed App Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				3ADCB00FE21C44ECBC2BA321 /* PBXTargetDependency */,
+			);
+			name = ECMAIN;
+			productName = ECMAIN;
+			productReference = 2E2039CA187B4D398D88AC74 /* ECMAIN.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		E513E4DE7F9F4CB0BFD7F313 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 1500;
+			};
+			buildConfigurationList = 72874F85D2F941D7BAA76789 /* Build configuration list for PBXProject "ECMAIN" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 0D1301BDC2AB4773A730DED1;
+			productRefGroup = C8AD1CA60C404554A9DEB659 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				C6E6615753BB47E1824B1C32 /* ECMAIN */,
+				A89C87D453C8B9CC5446F21A /* Tunnel */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		57D2785A97B845FCA4224AE2 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				19D94E01B334DBAE5887F5F3 /* silent.wav in Resources */,
+				9020AF77338CE8A88B41751B /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		63F2540B44FD87C544D6CC2A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				50A68B2F60B893CFA65BBCB3 /* PacketTunnelProvider.m in Sources */,
+				ECHEVC0000000003 /* ECHevTunnel.m in Sources */,
+				ECUDPBRG0000000000000003 /* ECUDPBridge.m in Sources */,
+				ECTUN2PROXY000003 /* ECTun2Proxy.m in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		9501187F79604FD4B4D684F1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C30B964166C44D7A8FABB580 /* ViewController.m in Sources */,
+				2E71B4BCF0B84A40B1D66FD9 /* main.m in Sources */,
+				13153955986E4DAF9C39C17B /* AppDelegate.m in Sources */,
+				959294DFEF78403ABD9A21F7 /* ECScriptParser.m in Sources */,
+				53DB547C32CC4D2DBC73AB37 /* ECLogManager.m in Sources */,
+				BA741660167E44A58CFB4E85 /* ECKeepAlive.m in Sources */,
+				EE0269A68D2C4F89B31B77A0 /* ECWDAClient.m in Sources */,
+				738F658FCEC142879ED61614 /* ECWebServer.m in Sources */,
+				461E235DE1D543E789C2CD2C /* ECNetworkManager.m in Sources */,
+				C9B0DFADBF0047D8A60B09E8 /* ECSystemManager.m in Sources */,
+				65F54F98885A3AA3DDD00C92 /* ECBackgroundManager.m in Sources */,
+				F8F67737B88C7F4ADA7819D1 /* VPNConfigViewController.m in Sources */,
+				8490340B818E2F3AFA4FADB9 /* MainTabBarController.m in Sources */,
+				4F1085008D2E98A3CDD44D42 /* ProxyTypeSelectionViewController.m in Sources */,
+				003F1D362744467DADEDAD9F /* TSShim.m in Sources */,
+				A2C83DBF39D642559D0C270F /* libroot_dyn.c in Sources */,
+				C236D62BED5C44549F8A2D5A /* TrollStoreIncludes.m in Sources */,
+				9E85029F37F741158CC4AF9A /* TSAppInfo.m in Sources */,
+				2846DB3B71CC4979826B1864 /* TSApplicationsManager.m in Sources */,
+				7DDE8F692DAB44E8904ACC50 /* TSInstallationController.m in Sources */,
+				BD37247013D748BF9C6F4558 /* TSPresentationDelegate.m in Sources */,
+				3FA36F736E6B4528B95D7391 /* TSUtil.m in Sources */,
+				EF40BFFE3802458C9708045D /* ECAppListViewController.m in Sources */,
+				E4AEB915FB5F6677335C34B0 /* ZipReader.m in Sources */,
+				47D8DDD493EDD6BD5DEC3AC3 /* ZipWriter.m in Sources */,
+				9A7BEEAA700234BDAED2F0BF /* ECInjectionViewController.m in Sources */,
+				97E19FEF6B4B3105A44551B1 /* ECAppInjector.m in Sources */,
+				53CC40789AECA18F43323126 /* ECAppDetailsViewController.m in Sources */,
+				F5834F9C93F39A5AF95024A6 /* ECDeviceInfoManager.m in Sources */,
+				8F0F4A6F82B9A25CC841FE5A /* ECDeviceInfoViewController.m in Sources */,
+				QRSCAN001000001 /* ECQRScannerViewController.m in Sources */,
+				QRSCAN001000003 /* ECProxyURIParser.m in Sources */,
+				DDBLD001 /* ECDeviceDatabase.m in Sources */,
+				CFGBLD001 /* ECConfigViewController.m in Sources */,
+				ED808D827963C10DFA45FF7A /* ECVPNConfigManager.m in Sources */,
+				D145B70AD682AB58C3B9E451 /* ECHomeViewController.m in Sources */,
+				44D2A7B5DAB95DB7686EC4B4 /* ECNodeSelectionViewController.m in Sources */,
+				9E07F1F92005A861F8F06631 /* ECNetworkConfigViewController.m in Sources */,
+				92345F5981AA8D0A430C1A05 /* ECConnectionTester.m in Sources */,
+				84EC48129B5674E22E254639 /* ECTaskPollManager.m in Sources */,
+				3B92455287E1B9517CA0799A /* ECTaskListViewController.m in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		3ADCB00FE21C44ECBC2BA321 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = Tunnel;
+			target = A89C87D453C8B9CC5446F21A /* Tunnel */;
+			targetProxy = BCA3517382539ED761883856 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		5A3426D356D54506A38656C8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = ECMAIN.entitlements;
+				INFOPLIST_FILE = Info.plist;
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/ECMAIN/Core",
+					"$(SRCROOT)/ECMAIN/UI",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.ecmain.app;
+				PRODUCT_NAME = ECMAIN;
+				SUPPORTED_PLATFORMS = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		8D64DC735BBD4F26B751EC95 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = HBQHWTT87F;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ecmain.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		BA7B34AEB2AEB9D33F7FC75E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Tunnel/Tunnel.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = NO;
+				DEPLOYMENT_POSTPROCESSING = NO;
+				DEVELOPMENT_TEAM = HBQHWTT87F;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Frameworks",
+				);
+				INFOPLIST_FILE = Tunnel/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/ECMAIN/Core",
+					"$(SRCROOT)/ECMAIN/UI",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ecmain.app.Tunnel;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRIP_INSTALLED_PRODUCT = NO;
+				STRIP_STYLE = debugging;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		C2D07C815DB130CB2461BF32 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Tunnel/Tunnel.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = NO;
+				DEPLOYMENT_POSTPROCESSING = NO;
+				DEVELOPMENT_TEAM = HBQHWTT87F;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Frameworks",
+				);
+				INFOPLIST_FILE = Tunnel/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/ECMAIN/Core",
+					"$(SRCROOT)/ECMAIN/UI",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ecmain.app.Tunnel;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRIP_INSTALLED_PRODUCT = NO;
+				STRIP_STYLE = debugging;
+			};
+			name = Debug;
+		};
+		F1C41F01CC3347E9B3B5D3F3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = ECMAIN.entitlements;
+				INFOPLIST_FILE = Info.plist;
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/ECMAIN/Core",
+					"$(SRCROOT)/ECMAIN/UI",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.ecmain.app;
+				PRODUCT_NAME = ECMAIN;
+				SUPPORTED_PLATFORMS = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		FAF9B3DB78194EAC878595F1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = HBQHWTT87F;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_OPTIMIZATION_LEVEL = s;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ecmain.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		3BDB6647195E416D8DC8E4BD /* Build configuration list for PBXNativeTarget "ECMAIN" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5A3426D356D54506A38656C8 /* Debug */,
+				F1C41F01CC3347E9B3B5D3F3 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		72874F85D2F941D7BAA76789 /* Build configuration list for PBXProject "ECMAIN" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				8D64DC735BBD4F26B751EC95 /* Debug */,
+				FAF9B3DB78194EAC878595F1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		8D6084CE452E749E8939C976 /* Build configuration list for PBXNativeTarget "Tunnel" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BA7B34AEB2AEB9D33F7FC75E /* Release */,
+				C2D07C815DB130CB2461BF32 /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = E513E4DE7F9F4CB0BFD7F313 /* Project object */;
+}

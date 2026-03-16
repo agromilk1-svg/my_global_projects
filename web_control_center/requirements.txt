@@ -1,0 +1,8 @@
+fastapi==0.128.8
+uvicorn==0.39.0
+pydantic==2.12.5
+requests==2.32.5
+pymobiledevice3==7.7.1
+tidevice==0.12.11
+psutil==7.2.2
+PyYAML==6.0.2

@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EC 云控平台 - 管理后台</title>
+    <!-- Vue 3 & Element Plus -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css" />
+    <script src="https://unpkg.com/element-plus"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            background: #f4f4f4;
+        }
+
+        .el-header {
+            background: #1a1a2e;
+            color: #fff;
+            line-height: 60px;
+            display: flex;
+            justify-content: space-between;
+            padding: 0 20px;
+        }
+
+        .el-aside {
+            background: #fff;
+            border-right: 1px solid #ddd;
+            height: 100vh;
+        }
+
+        .el-main {
+            padding: 20px;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .status-online {
+            color: green;
+            font-weight: bold;
+        }
+
+        .status-offline {
+            color: gray;
+        }
+
+        .status-busy {
+            color: orange;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="app">
+        {% raw %}
+        <el-container>
+            <el-header>
+                <div style="font-size: 20px; font-weight: bold;">EC 云控平台 ({{ role === 'admin' ? '超级管理员' : '普通用户' }})
+                </div>
+                <div v-if="token">
+                    <span>{{ username }}</span>
+                    <el-button type="text" @click="logout" style="color: #fff; margin-left: 10px;">退出</el-button>
+                </div>
+            </el-header>
+
+            <el-container v-if="token">
+                <el-aside width="200px">
+                    <el-menu default-active="1" @select="handleSelect">
+                        <el-menu-item index="1">📊 仪表盘</el-menu-item>
+                        <el-menu-item index="2">📱 设备列表</el-menu-item>
+                        <el-menu-item index="3" v-if="role === 'admin'">👥 用户管理</el-menu-item>
+                        <el-menu-item index="4">📝 任务脚本</el-menu-item>
+                    </el-menu>
+                </el-aside>
+
+                <el-main>
+                    <!-- 1. 仪表盘 -->
+                    <div v-if="activeIndex === '1'">
+                        <el-row :gutter="20">
+                            <el-col :span="8"><el-card>
+                                    <h3>在线设备</h3>
+                                    <h1 style="color:green">{{ stats.online }}</h1>
+                                </el-card></el-col>
+                            <el-col :span="8"><el-card>
+                                    <h3>总设备</h3>
+                                    <h1>{{ stats.total }}</h1>
+                                </el-card></el-col>
+                            <el-col :span="8"><el-card>
+                                    <h3>今日任务</h3>
+                                    <h1>{{ stats.tasks }}</h1>
+                                </el-card></el-col>
+                        </el-row>
+                    </div>
+
+                    <!-- 2. 设备列表 -->
+                    <div v-if="activeIndex === '2'">
+                        <el-card>
+                            <template #header>
+                                <div class="card-header"><span>设备列表</span><el-button type="primary" size="small"
+                                        @click="fetchDevices">刷新</el-button></div>
+                            </template>
+                            <el-table :data="devices" stripe style="width: 100%">
+                                <el-table-column prop="id" label="ID" width="60"></el-table-column>
+                                <el-table-column prop="name" label="别名"></el-table-column>
+                                <el-table-column prop="udid" label="UDID" show-overflow-tooltip></el-table-column>
+                                <el-table-column label="状态">
+                                    <template #default="scope">
+                                        <span :class="'status-' + scope.row.status">{{ scope.row.status }}</span>
+                                    </template>
+                                </el-table-column>
+                                <el-table-column prop="local_ip" label="IP"></el-table-column>
+                                <el-table-column prop="last_heartbeat" label="最后在线"></el-table-column>
+                                <el-table-column label="操作">
+                                    <template #default="scope">
+                                        <el-button size="small" @click="openConsole(scope.row)">控制台</el-button>
+                                        <el-button size="small" type="success"
+                                            @click="sendTask(scope.row)">下发</el-button>
+                                    </template>
+                                </el-table-column>
+                            </el-table>
+                        </el-card>
+                    </div>
+
+                    <!-- 3. 用户管理 (Admin Only) -->
+                    <div v-if="activeIndex === '3'">
+                        <el-alert title="用户管理功能正在开发中..." type="info" show-icon></el-alert>
+                    </div>
+
+                </el-main>
+            </el-container>
+
+            <!-- Login Dialog -->
+            <el-dialog v-model="showLogin" title="登录 / 注册" width="30%" :close-on-click-modal="false"
+                :show-close="false">
+                <el-form :model="loginForm" label-width="80px">
+                    <el-form-item label="用户名">
+                        <el-input v-model="loginForm.username"></el-input>
+                    </el-form-item>
+                    <el-form-item label="密码">
+                        <el-input type="password" v-model="loginForm.password" @keyup.enter="doLogin"></el-input>
+                    </el-form-item>
+                </el-form>
+                <template #footer>
+                    <span class="dialog-footer">
+                        <el-button @click="doRegister">注册</el-button>
+                        <el-button type="primary" @click="doLogin">登录</el-button>
+                    </span>
+                </template>
+            </el-dialog>
+
+            <!-- Console Dialog (New) -->
+            <el-dialog v-model="showConsole" :title="'控制台: ' + (currentDevice?.udid || '')" width="800px"
+                :before-close="disconnectConsole" destroy-on-close :close-on-click-modal="false"
+                :close-on-press-escape="false">
+                <div v-if="currentDevice">
+                    <!-- Tunnel Status -->
+                    <div
+                        style="margin-bottom: 10px; color: #67c23a; font-size: 13px; display: flex; align-items: center; justify-content: space-between;">
+                        <span><i class="el-icon-connection"></i> 已通过 WebSocket Tunnel 连接</span>
+                        <el-radio-group v-model="streamMode" size="small" @change="reloadStream">
+                            <el-radio-button label="mjpeg">流畅 (MJPEG)</el-radio-button>
+                            <el-radio-button label="screenshot">兼容 (截图)</el-radio-button>
+                        </el-radio-group>
+                    </div>
+                    <div style="border: 1px solid #ddd; display: inline-block; cursor: crosshair; position: relative;"
+                        @mousedown="handleMouseDown" @mouseup="handleMouseUp">
+                        <!-- Show loading if no stream -->
+                        <img v-if="streamUrl" :src="streamUrl" width="375" style="display: block; user-select: none;"
+                            id="screen" draggable="false">
+                        <div v-else
+                            style="width:375px; height:667px; background:#eee; display:flex; align-items:center; justify-content:center;">
+                            等待连接...
+                        </div>
+                    </div>
+                    <div style="margin-top: 10px;">
+                        <el-button @click="sendWdaAction('home')">Home</el-button>
+                        <el-button @click="disconnectConsole">关闭</el-button>
+                    </div>
+                </div>
+            </el-dialog>
+
+        </el-container>
+    </div>
+    {% endraw %}
+
+    <script>
+        const { createApp, ref, reactive } = Vue;
+
+        createApp({
+            setup() {
+                const token = ref(localStorage.getItem('token') || '');
+                const username = ref(localStorage.getItem('username') || '');
+                const role = ref('admin'); // Mock
+                const activeIndex = ref('1');
+                const showLogin = ref(!token.value);
+
+                const loginForm = reactive({ username: '', password: '' });
+                const stats = reactive({ online: 0, total: 0, tasks: 0 });
+                const devices = ref([]);
+
+                // API Helper
+                const api = axios.create({ baseURL: '' });
+                api.interceptors.request.use(config => {
+                    if (token.value) config.headers.Authorization = `Bearer ${token.value}`;
+                    return config;
+                });
+
+                const doLogin = async () => {
+                    try {
+                        const formData = new FormData();
+                        formData.append('username', loginForm.username);
+                        formData.append('password', loginForm.password);
+                        const res = await api.post('/auth/token', formData);
+                        token.value = res.data.access_token;
+                        username.value = loginForm.username;
+
+                        localStorage.setItem('token', token.value);
+                        localStorage.setItem('username', username.value);
+
+                        showLogin.value = false;
+                        fetchStats();
+                    } catch (e) {
+                        ElementPlus.ElMessage.error('登录失败: ' + (e.response?.data?.detail || e.message));
+                    }
+                };
+
+                const doRegister = async () => {
+                    try {
+                        await api.post('/auth/register', loginForm);
+                        ElementPlus.ElMessage.success('注册成功，请登录');
+                    } catch (e) {
+                        ElementPlus.ElMessage.error('注册失败: ' + e.message);
+                    }
+                };
+
+                const logout = () => {
+                    token.value = '';
+                    localStorage.removeItem('token');
+                    showLogin.value = true;
+                };
+
+                const handleSelect = (idx) => {
+                    activeIndex.value = idx;
+                    if (idx === '1') fetchStats();
+                    if (idx === '2') fetchDevices();
+                };
+
+                const fetchStats = async () => {
+                    // Mock stats for now, real implementation needs API
+                    // const res = await api.get('/api/stats');
+                    stats.online = devices.value.filter(d => d.status === 'online').length;
+                    stats.total = devices.value.length;
+                };
+
+                const fetchDevices = async () => {
+                    try {
+                        const res = await api.get('/devices/list');
+                        devices.value = res.data;
+                        fetchStats();
+                    } catch (e) {
+                        ElementPlus.ElMessage.error('获取设备列表失败: ' + (e.response?.status || e.message));
+                        if (e.response?.status === 401) {
+                            logout();
+                        }
+                    }
+                };
+
+                const showConsole = ref(false);
+                const currentDevice = ref(null);
+                const streamUrl = ref('');
+
+                // ...
+
+                const wdaPort = ref('8100');
+                const wdaIp = ref('');
+
+                const streamMode = ref('screenshot'); // mjpeg (default) or screenshot (fallback)
+
+                const openConsole = (device) => {
+                    currentDevice.value = device;
+                    wdaIp.value = device.local_ip || '127.0.0.1';
+                    streamMode.value = 'screenshot'; // Reset to default
+                    reloadStream();
+                    showConsole.value = true;
+                };
+
+                const reloadStream = () => {
+                    if (!currentDevice.value) return;
+                    // Use tunnel - stream comes via /proxy/stream with udid
+                    const wdaUrl = streamMode.value === 'mjpeg' ? 'http://127.0.0.1:10089/mjpeg' : 'http://127.0.0.1:10088/screenshot';
+                    streamUrl.value = `/proxy/stream?url=${encodeURIComponent(wdaUrl)}&udid=${currentDevice.value.udid}&mode=${streamMode.value}`;
+                };
+
+                const disconnectConsole = async (done) => {
+                    // Explicitly notify backend to stop streaming
+                    if (currentDevice.value?.udid) {
+                        try {
+                            console.log('Sending stop stream request for:', currentDevice.value.udid);
+                            await api.post(`/proxy/stop_stream?udid=${currentDevice.value.udid}`);
+                            console.log('Stop stream request sent successfully');
+                        } catch (e) {
+                            console.log('Stop stream request error:', e.message);
+                        }
+                    }
+                    streamUrl.value = '';
+                    currentDevice.value = null;
+                    // Call done to close the dialog (required for before-close)
+                    if (typeof done === 'function') {
+                        done();
+                    } else {
+                        showConsole.value = false;
+                    }
+                };
+
+                // Track mouse for drag detection
+                let mouseDownPos = null;
+                let mouseDownTime = 0;
+
+                const handleMouseDown = (event) => {
+                    const rect = event.target.getBoundingClientRect();
+                    mouseDownPos = {
+                        x: Math.round(event.clientX - rect.left),
+                        y: Math.round(event.clientY - rect.top)
+                    };
+                    mouseDownTime = Date.now();
+                };
+
+                const handleMouseUp = async (event) => {
+                    if (!currentDevice.value || !mouseDownPos) return;
+
+                    const rect = event.target.getBoundingClientRect();
+                    const endX = Math.round(event.clientX - rect.left);
+                    const endY = Math.round(event.clientY - rect.top);
+                    const startX = mouseDownPos.x;
+                    const startY = mouseDownPos.y;
+
+                    const distance = Math.sqrt((endX - startX) ** 2 + (endY - startY) ** 2);
+                    const duration = Date.now() - mouseDownTime;
+
+                    mouseDownPos = null;
+
+                    const udid = currentDevice.value.udid;
+
+                    if (distance > 20) {
+                        // Swipe
+                        console.log(`Swipe: (${startX},${startY}) -> (${endX},${endY})`);
+                        try {
+                            await api.post(`/wda/swipe?udid=${udid}&from_x=${startX}&from_y=${startY}&to_x=${endX}&to_y=${endY}`);
+                        } catch (e) {
+                            console.error('Swipe error:', e);
+                        }
+                    } else {
+                        // Tap
+                        console.log(`Tap: (${startX},${startY})`);
+                        try {
+                            await api.post(`/wda/tap?udid=${udid}&x=${startX}&y=${startY}`);
+                        } catch (e) {
+                            console.error('Tap error:', e);
+                        }
+                    }
+                };
+
+                const sendWdaAction = async (action) => {
+                    if (!currentDevice.value) return;
+                    const udid = currentDevice.value.udid;
+
+                    try {
+                        if (action === 'home') {
+                            await api.post(`/wda/home?udid=${udid}`);
+                        }
+                    } catch (e) {
+                        console.error('WDA action error:', e);
+                    }
+                };
+
+                if (token.value) fetchDevices();
+
+                return {
+                    token, username, activeIndex, showLogin, loginForm, stats, devices,
+                    showConsole, currentDevice, streamUrl, wdaPort, wdaIp, streamMode,
+                    doLogin, doRegister, logout, handleSelect, fetchDevices,
+                    openConsole, disconnectConsole, handleMouseDown, handleMouseUp, sendWdaAction, reloadStream
+                };
+            }
+        }).use(ElementPlus).mount('#app');
+    </script>
+</body>
+
+</html>

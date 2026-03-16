@@ -1,0 +1,750 @@
+import sqlite3
+import threading
+import time
+import logging
+from typing import Dict, Any, List
+
+logger = logging.getLogger("Database")
+logging.basicConfig(level=logging.INFO)
+
+DB_PATH = "ecmain_control.db"
+
+# 纯内存的高并发心跳池（UDID -> Details）
+HEARTBEAT_CACHE: Dict[str, dict] = {}
+CACHE_LOCK = threading.Lock()
+
+def init_db():
+    """初始化数据库与表结构 (启用 WAL 提高并发性能)"""
+    with sqlite3.connect(DB_PATH) as conn:
+        # WAL 模式加持，防读写锁死
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        
+        cursor = conn.cursor()
+        
+        # 1. 设备在线状态汇总表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ec_devices (
+                udid TEXT PRIMARY KEY,
+                ip TEXT,
+                status TEXT,
+                battery INTEGER,
+                last_heartbeat REAL
+            )
+        ''')
+        
+        try:
+            cursor.execute("ALTER TABLE ec_devices ADD COLUMN device_no TEXT;")
+        except Exception:
+            pass # 列已存在
+        
+        try:
+            cursor.execute("ALTER TABLE ec_devices ADD COLUMN app_version INTEGER DEFAULT 0;")
+        except Exception:
+            pass
+        
+        try:
+            cursor.execute("ALTER TABLE ec_devices ADD COLUMN ecwda_version INTEGER DEFAULT 0;")
+        except Exception:
+            pass
+        
+        try:
+            cursor.execute("ALTER TABLE ec_devices ADD COLUMN vpn_active INTEGER DEFAULT 0;")
+        except Exception:
+            pass
+            
+        try:
+            cursor.execute("ALTER TABLE ec_devices ADD COLUMN vpn_ip TEXT;")
+        except Exception:
+            pass
+            
+        try:
+            cursor.execute("ALTER TABLE ec_devices ADD COLUMN ecwda_status TEXT DEFAULT 'offline';")
+        except Exception:
+            pass
+            
+        # [配置中心关联] 新增设备关联字段
+        try:
+            cursor.execute("ALTER TABLE ec_devices ADD COLUMN country TEXT;")
+        except Exception:
+            pass
+            
+        try:
+            cursor.execute("ALTER TABLE ec_devices ADD COLUMN group_name TEXT;")
+        except Exception:
+            pass
+            
+        try:
+            cursor.execute("ALTER TABLE ec_devices ADD COLUMN exec_time TEXT;")
+        except Exception:
+            pass
+            
+        # [配置中心] 国家配置表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ec_countries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE
+            )
+        ''')
+        
+        # [配置中心] 分组配置表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ec_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE
+            )
+        ''')
+        
+        # [配置中心] 执行时间配置表 (取代原先的 0-23 常量)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ec_exec_times (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE
+            )
+        ''')
+            
+        try:
+            cursor.execute("ALTER TABLE ec_devices ADD COLUMN ecwda_status TEXT DEFAULT 'offline';")
+        except Exception:
+            pass
+            
+        try:
+            cursor.execute("ALTER TABLE ec_devices ADD COLUMN config_ip TEXT;")
+        except Exception:
+            pass
+            
+        try:
+            cursor.execute("ALTER TABLE ec_devices ADD COLUMN config_vpn TEXT;")
+        except Exception:
+            pass
+        
+        # [账号管理] Apple 账号/密码 + TikTok 多账号 (JSON)
+        try:
+            cursor.execute("ALTER TABLE ec_devices ADD COLUMN apple_account TEXT;")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE ec_devices ADD COLUMN apple_password TEXT;")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE ec_devices ADD COLUMN tiktok_accounts TEXT;")
+        except Exception:
+            pass
+        
+        # [任务状态] 存储设备上报的任务完成状态（JSON 数组）
+        try:
+            cursor.execute("ALTER TABLE ec_devices ADD COLUMN task_status TEXT DEFAULT '';")
+        except Exception:
+            pass
+        
+        # 2. 任务分发表 (单台下发)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ec_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                udid TEXT NOT NULL,
+                task_type TEXT NOT NULL,
+                payload TEXT,
+                status TEXT DEFAULT 'pending', 
+                result TEXT,
+                created_at REAL,
+                updated_at REAL
+            )
+        ''')
+        
+        # 3. 自动动作脚本表 (全局)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ec_scripts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                code TEXT NOT NULL,
+                created_at REAL,
+                updated_at REAL
+            )
+        ''')
+        
+        # 为 ec_scripts 补充配置字段
+        try:
+            cursor.execute("ALTER TABLE ec_scripts ADD COLUMN country TEXT DEFAULT '';")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE ec_scripts ADD COLUMN group_name TEXT DEFAULT '';")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE ec_scripts ADD COLUMN exec_time TEXT DEFAULT '';")
+        except Exception:
+            pass
+
+        # 4. 评论管理表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ec_comments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                language TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at REAL
+            )
+        ''')
+
+        # 5. [TikTok 账号管理] 独立账号表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ec_tiktok_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_udid TEXT NOT NULL,
+                account TEXT NOT NULL,
+                country TEXT DEFAULT '',
+                fans_count INTEGER DEFAULT 0,
+                is_for_sale INTEGER DEFAULT 0,
+                is_window_opened INTEGER DEFAULT 0,
+                add_time TEXT DEFAULT '',
+                window_open_time TEXT DEFAULT '',
+                sale_time TEXT DEFAULT '',
+                UNIQUE(device_udid, account)
+            )
+        ''')
+
+        # 建立索引以加速待处理任务的分发查询
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_tasks_udid_status ON ec_tasks(udid, status);')
+        
+        conn.commit()
+    logger.info("Database initialized successfully with WAL concurrent mode.")
+
+def _flush_heartbeat_worker():
+    """守护线程：将每秒数万的并发心跳，收敛为每 5 秒一次向磁盘 SQLite 的 Bulk 更新"""
+    while True:
+        time.sleep(5)
+        
+        with CACHE_LOCK:
+            if not HEARTBEAT_CACHE:
+                continue
+            # 浅拷贝提走当前批次缓存，原位清空接纳新兵
+            snapshot = HEARTBEAT_CACHE.copy()
+            HEARTBEAT_CACHE.clear()
+            
+        if not snapshot:
+            continue
+            
+        try:
+            with sqlite3.connect(DB_PATH, timeout=10) as conn:
+                cursor = conn.cursor()
+                # 批量 UPSERT，遇到重复 UDID 就更新后续字段
+                bulk_data = []
+                for udid, data in snapshot.items():
+                    # 采取单独 UPSERT 核心心跳字段的形式，以防抹除从别处修改的国家/分组/编号信息
+                    bulk_data.append((
+                        data.get('device_no', ''),
+                        data.get('local_ip', ''), 
+                        data.get('status', 'online'),
+                        data.get('battery_level', 0),
+                        data.get('app_version', 0),
+                        data.get('ecwda_version', 0),
+                        data.get('vpn_active', 0),
+                        data.get('vpn_ip', ''),
+                        data.get('ecwda_status', 'offline'),
+                        data.get('task_status', ''),
+                        data.get('timestamp', time.time()),
+                        udid
+                    ))
+                
+                cursor.executemany('''
+                    UPDATE ec_devices 
+                    SET device_no = COALESCE(NULLIF(?, ''), device_no),
+                        ip = COALESCE(NULLIF(?, ''), ip),
+                        status = COALESCE(NULLIF(?, ''), status),
+                        battery = COALESCE(NULLIF(?, ''), battery),
+                        app_version = COALESCE(NULLIF(?, ''), app_version),
+                        ecwda_version = COALESCE(NULLIF(?, ''), ecwda_version),
+                        vpn_active = COALESCE(NULLIF(?, ''), vpn_active),
+                        vpn_ip = COALESCE(NULLIF(?, ''), vpn_ip),
+                        ecwda_status = COALESCE(NULLIF(?, ''), ecwda_status),
+                        task_status = CASE WHEN ? != '' THEN ? ELSE task_status END,
+                        last_heartbeat = ?
+                    WHERE udid = ?
+                ''', [(d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9], d[9], d[10], d[11]) for d in bulk_data])
+                
+                # 若有的设备连UPDATE都命不中（全新UDID），需要额外INSERT
+                # 首先收集刚更新受影响的UDID，对于没有受影响的插入全新数据
+                # 简单处理：全量 INSERT OR IGNORE
+                insert_data = []
+                for udid, data in snapshot.items():
+                   insert_data.append((
+                        udid,
+                        data.get('device_no', ''),
+                        data.get('local_ip', ''),
+                        data.get('status', 'online'),
+                        data.get('battery_level', 0),
+                        data.get('app_version', 0),
+                        data.get('ecwda_version', 0),
+                        data.get('vpn_active', 0),
+                        data.get('vpn_ip', ''),
+                        data.get('ecwda_status', 'offline'),
+                        data.get('task_status', ''),
+                        data.get('timestamp', time.time())
+                   ))
+                cursor.executemany('''
+                    INSERT OR IGNORE INTO ec_devices 
+                    (udid, device_no, ip, status, battery, app_version, ecwda_version, vpn_active, vpn_ip, ecwda_status, task_status, last_heartbeat) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', insert_data)
+                conn.commit()
+            logger.debug(f"[Heartbeat] Flushed {len(snapshot)} device spikes to disk.")
+        except Exception as e:
+            logger.error(f"[Heartbeat Flush Error] {e}")
+
+def start_heartbeat_flusher():
+    t = threading.Thread(target=_flush_heartbeat_worker, daemon=True)
+    t.start()
+
+def register_heartbeat(udid: str, payload: dict):
+    """供 API 接口实时吞吐调用，O(1) 写内存，绝不阻塞"""
+    payload['timestamp'] = time.time()
+    with CACHE_LOCK:
+        HEARTBEAT_CACHE[udid] = payload
+
+def pop_pending_tasks(udid: str, limit: int = 1) -> List[dict]:
+    """取出并发给指定设备的待命任务 (直接返回首个任务并打上发送中标签)"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # 使用事务锁定拿到的任务避免重复派发
+            cursor.execute('''
+                SELECT id, task_type, payload FROM ec_tasks 
+                WHERE udid = ? AND status = 'pending' 
+                ORDER BY created_at ASC LIMIT ?
+            ''', (udid, limit))
+            
+            rows = cursor.fetchall()
+            tasks = []
+            
+            if rows:
+                task_ids = [r['id'] for r in rows]
+                placeholders = ','.join(['?'] * len(task_ids))
+                cursor.execute(f'''
+                    UPDATE ec_tasks SET status = 'sent', updated_at = ? 
+                    WHERE id IN ({placeholders})
+                ''', [time.time()] + task_ids)
+                
+                for r in rows:
+                    tasks.append({
+                        "id": r['id'],
+                        "type": r['task_type'],
+                        "payload": r['payload']
+                    })
+                conn.commit()
+                
+            return tasks
+    except Exception as e:
+        logger.error(f"Error popping task for {udid}: {e}")
+        return []
+
+def report_task_result(task_id: int, status: str, result: str):
+    """供设备汇报执行大局观结果"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE ec_tasks SET status = ?, result = ?, updated_at = ?
+                WHERE id = ?
+            ''', (status, result, time.time(), task_id))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Error reporting task {task_id}: {e}")
+
+def create_task(udid: str, task_type: str, payload: str):
+    """控制中心下发新任务记录"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO ec_tasks (udid, task_type, payload, status, created_at)
+                VALUES (?, ?, ?, 'pending', ?)
+            ''', (udid, task_type, payload, time.time()))
+            conn.commit()
+            return cursor.lastrowid
+    except Exception as e:
+        logger.error(f"Error creating task for {udid}: {e}")
+        return None
+
+def get_all_cloud_devices() -> List[dict]:
+    """获取目前在管控池子内的所有装备状态"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            # 无论是否超时，都取出所有已记录的设备
+            cursor.execute('SELECT * FROM ec_devices ORDER BY last_heartbeat DESC')
+            
+            devices = []
+            now = time.time()
+            for r in cursor.fetchall():
+                d = dict(r)
+                # 超过 120 秒未有心跳，动态将状态覆盖为离线
+                if (now - d['last_heartbeat']) >= 120:
+                    d['status'] = 'offline'
+                devices.append(d)
+                
+            return devices
+    except Exception as e:
+        logger.error(f"Error getting cloud devices: {e}")
+        return []
+
+def delete_device(udid: str):
+    """从数据库彻底删除指定设备"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM ec_devices WHERE udid = ?', (udid,))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Error deleting device {udid}: {e}")
+
+def get_device_config(udid: str) -> dict:
+    """获取设备的静态 IP 和 VPN 配置"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('SELECT config_ip, config_vpn, device_no, country, group_name, exec_time, apple_account, apple_password, tiktok_accounts FROM ec_devices WHERE udid = ?', (udid,))
+            row = cursor.fetchone()
+            if row:
+                return {
+                    "config_ip": row["config_ip"] or "",
+                    "config_vpn": row["config_vpn"] or "",
+                    "device_no": row["device_no"] or "",
+                    "country": row["country"] or "",
+                    "group_name": row["group_name"] or "",
+                    "exec_time": row["exec_time"] or "",
+                    "apple_account": row["apple_account"] or "",
+                    "apple_password": row["apple_password"] or "",
+                    "tiktok_accounts": row["tiktok_accounts"] or "[]"
+                }
+    except Exception as e:
+        logger.error(f"Error getting config for {udid}: {e}")
+    return {"config_ip": "", "config_vpn": "", "device_no": "", "country": "", "group_name": "", "exec_time": "", "apple_account": "", "apple_password": "", "tiktok_accounts": "[]"}
+
+def set_device_config(udid: str, config_ip: str, config_vpn: str, device_no: str = "", country: str = "", group_name: str = "", exec_time: str = "", apple_account: str = "", apple_password: str = "", tiktok_accounts: str = "[]"):
+    """保存设备的静态 IP、网络及高级设置配置"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE ec_devices 
+                SET config_ip = ?, config_vpn = ?,
+                    device_no = ?, country = ?, group_name = ?, exec_time = ?,
+                    apple_account = ?, apple_password = ?, tiktok_accounts = ?
+                WHERE udid = ?
+            ''', (config_ip, config_vpn, device_no, country, group_name, exec_time, apple_account, apple_password, tiktok_accounts, udid))
+            
+            # [TikTok 联动逻辑] 自动解析传递过来的 JSON 格式的 tiktok_accounts
+            import json
+            import datetime
+            try:
+                accounts_list = json.loads(tiktok_accounts)
+            except Exception:
+                accounts_list = []
+                
+            if isinstance(accounts_list, list):
+                # 找出该设备现存的 TikTok 账号
+                cursor.execute('SELECT account FROM ec_tiktok_accounts WHERE device_udid = ?', (udid,))
+                existing_accounts = {row[0] for row in cursor.fetchall()}
+                
+                new_accounts = set()
+                for act in accounts_list:
+                    if isinstance(act, dict) and 'account' in act:
+                        acc_str = str(act['account']).strip()
+                        if acc_str:
+                            new_accounts.add(acc_str)
+                    elif isinstance(act, str) and act.strip():
+                        new_accounts.add(act.strip())
+                
+                # 获取系统当前时间用于添加时间
+                now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                
+                # 处理新增账号
+                added = new_accounts - existing_accounts
+                for act_str in added:
+                    cursor.execute('''
+                        INSERT INTO ec_tiktok_accounts 
+                        (device_udid, account, add_time)
+                        VALUES (?, ?, ?)
+                    ''', (udid, act_str, now_str))
+                
+                # 我们选择暂时不自动删除遗失的账号记录（避免误删单独编辑过的状态）
+                # 仅将它与该设备的关联清空或者留档。为保持独立管理，我们什么也不做。
+                
+            conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Error setting config for {udid}: {e}")
+        return False
+
+# ================= 脚本任务管理 (ECMAIN 自动获取) =================
+
+def get_all_scripts() -> List[dict]:
+    """获取所有全局自动脚本"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('SELECT id, name, code, country, group_name, exec_time, updated_at FROM ec_scripts ORDER BY created_at ASC')
+            return [dict(r) for r in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"Error getting scripts: {e}")
+        return []
+
+def create_script(name: str, code: str, country: str = "", group_name: str = "", exec_time: str = "") -> int:
+    """新增全局自动脚本"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            now = time.time()
+            cursor.execute('''
+                INSERT INTO ec_scripts (name, code, country, group_name, exec_time, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (name, code, country, group_name, exec_time, now, now))
+            conn.commit()
+            return cursor.lastrowid
+    except Exception as e:
+        logger.error(f"Error creating script: {e}")
+        return 0
+
+def update_script(script_id: int, name: str, code: str, country: str = "", group_name: str = "", exec_time: str = "") -> bool:
+    """更新全局自动脚本"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE ec_scripts SET name = ?, code = ?, country = ?, group_name = ?, exec_time = ?, updated_at = ?
+                WHERE id = ?
+            ''', (name, code, country, group_name, exec_time, time.time(), script_id))
+            conn.commit()
+            return cursor.rowcount > 0
+    except Exception as e:
+        logger.error(f"Error updating script {script_id}: {e}")
+        return False
+
+def delete_script(script_id: int) -> bool:
+    """删除某全局自动脚本"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM ec_scripts WHERE id = ?', (script_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+    except Exception as e:
+        logger.error(f"Error deleting script {script_id}: {e}")
+
+# ================= 配置中心字典维护 =================
+
+def get_all_countries() -> List[dict]:
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('SELECT id, name FROM ec_countries ORDER BY name ASC')
+            return [dict(r) for r in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"Error getting countries: {e}")
+        return []
+
+def add_country(name: str) -> bool:
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('INSERT INTO ec_countries (name) VALUES (?)', (name,))
+            conn.commit()
+            return True
+    except sqlite3.IntegrityError:
+        return False
+    except Exception as e:
+        logger.error(f"Error adding country: {e}")
+        return False
+
+def delete_country(country_id: int):
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM ec_countries WHERE id = ?', (country_id,))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Error deleting country {country_id}: {e}")
+
+def get_all_groups() -> List[dict]:
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('SELECT id, name FROM ec_groups ORDER BY name ASC')
+            return [dict(r) for r in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"Error getting groups: {e}")
+        return []
+
+def add_group(name: str) -> bool:
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('INSERT INTO ec_groups (name) VALUES (?)', (name,))
+            conn.commit()
+            return True
+    except sqlite3.IntegrityError:
+        return False
+    except Exception as e:
+        logger.error(f"Error adding group: {e}")
+        return False
+
+def delete_group(group_id: int):
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM ec_groups WHERE id = ?', (group_id,))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Error deleting group {group_id}: {e}")
+
+def get_all_exec_times() -> List[dict]:
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('SELECT id, name FROM ec_exec_times ORDER BY CAST(name AS INTEGER) ASC')
+            return [dict(r) for r in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"Error getting exec times: {e}")
+        return []
+
+def add_exec_time(name: str) -> bool:
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('INSERT INTO ec_exec_times (name) VALUES (?)', (name,))
+            conn.commit()
+            return True
+    except sqlite3.IntegrityError:
+        return False
+    except Exception as e:
+        logger.error(f"Error adding exec time: {e}")
+        return False
+
+def delete_exec_time(time_id: int):
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM ec_exec_times WHERE id = ?', (time_id,))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Error deleting exec time {time_id}: {e}")
+        return False
+
+# ================= 评论数据维护 =================
+
+def get_all_comments(limit: int = 20000, language: str = None) -> List[dict]:
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            if language:
+                cursor.execute('SELECT id, language, content, created_at FROM ec_comments WHERE language = ? ORDER BY created_at DESC LIMIT ?', (language, limit))
+            else:
+                cursor.execute('SELECT id, language, content, created_at FROM ec_comments ORDER BY created_at DESC LIMIT ?', (limit,))
+            return [dict(r) for r in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"Error getting comments: {e}")
+        return []
+
+def add_comment(language: str, content: str) -> bool:
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('INSERT INTO ec_comments (language, content, created_at) VALUES (?, ?, ?)', (language, content, time.time()))
+            conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Error adding comment: {e}")
+        return False
+
+def delete_comment(comment_id: int):
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM ec_comments WHERE id = ?', (comment_id,))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Error deleting comment {comment_id}: {e}")
+
+def get_random_comments(language: str = None, limit: int = 50) -> List[dict]:
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            query = "SELECT id, language, content, created_at FROM ec_comments"
+            params = []
+            if language:
+                query += " WHERE language = ?"
+                params.append(language)
+            query += " ORDER BY RANDOM() LIMIT ?"
+            params.append(limit)
+            cursor.execute(query, tuple(params))
+            return [dict(r) for r in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"Error getting random comments: {e}")
+        return []
+
+# ================= TikTok 账号独立管理维护 =================
+
+def get_all_tiktok_accounts() -> List[dict]:
+    """获取目前独立管理的全部 TikTok 账号列表及它们的设备关联号"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            # 联表拿 device_no
+            cursor.execute('''
+                SELECT t.*, d.device_no 
+                FROM ec_tiktok_accounts t
+                LEFT JOIN ec_devices d ON t.device_udid = d.udid
+                ORDER BY t.id DESC
+            ''')
+            return [dict(r) for r in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"Error getting tiktok accounts: {e}")
+        return []
+
+def update_tiktok_account(account_id: int, country: str, fans_count: int, is_for_sale: int, is_window_opened: int, add_time: str, window_open_time: str, sale_time: str) -> bool:
+    """更新独立维护的 TikTok 账号全部属性"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE ec_tiktok_accounts 
+                SET country = ?, fans_count = ?, is_for_sale = ?, is_window_opened = ?,
+                    add_time = ?, window_open_time = ?, sale_time = ?
+                WHERE id = ?
+            ''', (country, fans_count, is_for_sale, is_window_opened, add_time, window_open_time, sale_time, account_id))
+            conn.commit()
+            return cursor.rowcount > 0
+    except Exception as e:
+        logger.error(f"Error updating tiktok account {account_id}: {e}")
+        return False
+
+def delete_tiktok_account(account_id: int) -> bool:
+    """删除某条独立维护的 TikTok 账号"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            
+            # 由于可能涉及到需要同步回终端设备的 tiktok_accounts (如果设备存活)
+            # 在这里我们做纯表面的软剔除，因为 set_device_config 时我们只新增。
+            
+            cursor.execute('DELETE FROM ec_tiktok_accounts WHERE id = ?', (account_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+    except Exception as e:
+        logger.error(f"Error deleting tiktok account {account_id}: {e}")
+        return False
+
+# 初始化数据库
+init_db()

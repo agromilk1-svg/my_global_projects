@@ -1,0 +1,8 @@
+{
+  "value" : {
+    "error" : "unable to capture screen",
+    "message" : "Error Domain=XCTDaemonErrorDomain Code=41 \"Not authorized for performing UI testing actions.\" UserInfo={NSLocalizedDescription=Not authorized for performing UI testing actions.}",
+    "traceback" : ""
+  },
+  "sessionId" : null
+}

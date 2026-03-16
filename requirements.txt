@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+requests
+jinja2
+tortoise-orm
+aerich
+python-multipart
+pyjwt
+passlib
+bcrypt
+python-jose[cryptography]

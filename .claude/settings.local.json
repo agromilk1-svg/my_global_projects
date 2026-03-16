@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(python3 build_full.py:*)",
+      "Bash(xcode-select:*)",
+      "Bash(sudo xcode-select:*)",
+      "Bash(xcodebuild build:*)",
+      "Bash(export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer:*)"
+    ]
+  }
+}

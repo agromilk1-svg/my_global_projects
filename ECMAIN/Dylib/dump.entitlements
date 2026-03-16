@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Platform Application - Required for system-level access -->
+    <key>platform-application</key>
+    <true/>
+    
+    <!-- Skip Library Validation - Critical for injection -->
+    <key>com.apple.private.skip-library-validation</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    
+    <!-- Allow DYLD environment variables -->
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+    
+    <!-- Debugging support -->
+    <key>get-task-allow</key>
+    <true/>
+    
+    <!-- No sandbox restriction -->
+    <key>com.apple.private.security.no-sandbox</key>
+    <true/>
+</dict>
+</plist>

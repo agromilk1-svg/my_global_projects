@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- TrollStore Full Entitlements - Use this when creating IPA for TrollStore -->
+    
+    <!-- VPN Configuration Permission -->
+    <key>com.apple.developer.networking.vpn.api</key>
+    <array>
+        <string>allow-vpn</string>
+    </array>
+    
+    <!-- Network Extension -->
+    <key>com.apple.developer.networking.networkextension</key>
+    <array>
+        <string>packet-tunnel-provider</string>
+    </array>
+    
+    <!-- App Groups -->
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>group.com.ecmain.shared</string>
+    </array>
+    
+    <!-- TrollStore specific -->
+    <key>get-task-allow</key>
+    <true/>
+    
+    <key>platform-application</key>
+    <true/>
+    
+    <key>com.apple.private.security.no-sandbox</key>
+    <true/>
+    
+    <key>com.apple.private.security.no-container</key>
+    <true/>
+    
+    <!-- File system access -->
+    <key>com.apple.private.var.folders</key>
+    <true/>
+</dict>
+</plist>

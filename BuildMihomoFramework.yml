@@ -1,0 +1,56 @@
+name: Build Mihomo Framework
+
+on:
+  workflow_dispatch:
+    inputs:
+      mihomo_version:
+        description: 'Mihomo Version Tag (e.g., v1.18.0)'
+        required: true
+        default: 'latest'
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install Gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          gomobile init
+
+      - name: Clone Mihomo Repository
+        run: |
+          # Mihomo Go code is in 'Meta' branch, not main (which is Python)
+          # If version is 'latest', use 'Meta' branch.
+          if [ "${{ github.event.inputs.mihomo_version }}" == "latest" ]; then
+            git clone --depth 1 --branch Meta https://github.com/MetaCubeX/mihomo.git src_mihomo
+          else
+            # For tags, they likely point to the right commit, but better safe.
+            git clone --branch ${{ github.event.inputs.mihomo_version }} https://github.com/MetaCubeX/mihomo.git src_mihomo
+          fi
+
+      - name: Build XCFramework
+        run: |
+          cd src_mihomo
+          
+          # Initialize module deps
+          go mod download
+          
+          # We need to bind a package that is NOT 'main' and exports useful functions.
+          # 'hub' package is the entry point used by main.go.
+          # Bind 'hub' package.
+          mkdir -p ../output
+          gomobile bind -target=ios -o ../output/Mihomo.xcframework github.com/metacubex/mihomo/hub
+          
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mihomo.xcframework
+          path: output/Mihomo.xcframework

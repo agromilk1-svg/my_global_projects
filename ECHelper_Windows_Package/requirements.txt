@@ -1,0 +1,4 @@
+pymobiledevice3
+pyinstaller
+PyQt5
+tidevice

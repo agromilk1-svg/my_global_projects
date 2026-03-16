@@ -1,0 +1,67 @@
+[Dict]
+	[Key] application-identifier
+	[Value]
+		[String] com.opa334.trollstorepersistencehelper
+	[Key] com.apple.CommCenter.fine-grained
+	[Value]
+		[Array]
+			[String] data-allowed-write
+	[Key] com.apple.backboardd.launchapplications
+	[Value]
+		[Bool] true
+	[Key] com.apple.frontboard.launchapplications
+	[Value]
+		[Bool] true
+	[Key] com.apple.lsapplicationworkspace.rebuildappdatabases
+	[Value]
+		[Bool] true
+	[Key] com.apple.multitasking.termination
+	[Value]
+		[Bool] true
+	[Key] com.apple.private.MobileContainerManager.allowed
+	[Value]
+		[Bool] true
+	[Key] com.apple.private.MobileInstallationHelperService.InstallDaemonOpsEnabled
+	[Value]
+		[Bool] true
+	[Key] com.apple.private.MobileInstallationHelperService.allowed
+	[Value]
+		[Bool] true
+	[Key] com.apple.private.coreservices.canmaplsdatabase
+	[Value]
+		[Bool] true
+	[Key] com.apple.private.mobileinstall.allowedSPI
+	[Value]
+		[Array]
+			[String] InstallForLaunchServices
+			[String] Install
+			[String] UninstallForLaunchServices
+			[String] Uninstall
+			[String] UpdatePlaceholderMetadata
+	[Key] com.apple.private.persona-mgmt
+	[Value]
+		[Bool] true
+	[Key] com.apple.private.security.container-manager
+	[Value]
+		[Bool] true
+	[Key] com.apple.private.security.no-sandbox
+	[Value]
+		[Bool] true
+	[Key] com.apple.private.security.storage-exempt.heritable
+	[Value]
+		[Bool] true
+	[Key] com.apple.private.security.storage.AppBundles
+	[Value]
+		[Bool] true
+	[Key] com.apple.private.security.storage.MobileDocuments
+	[Value]
+		[Bool] true
+	[Key] com.apple.private.uninstall.deletion
+	[Value]
+		[Bool] true
+	[Key] com.apple.springboard.launchapplications
+	[Value]
+		[Bool] true
+	[Key] platform-application
+	[Value]
+		[Bool] true
