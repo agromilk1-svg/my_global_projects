@@ -226,20 +226,20 @@ class LaunchEcwdaThread(QThread):
                 current_pc_8089 = 8089 + i * 10
                 
                 for local_p, remote_p in [(current_pc_10088, 10088), (current_pc_10089, 10089), (current_pc_8089, 8089)]:
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        **kwargs
-                    )
-                    self.running_processes.append(r_proc)
-                    self.log_signal.emit(f"   ✅ [{udid[:8]}] 映射 PC:{local_p} -> 手机:{remote_p} (PID: {r_proc.pid})")
-                
-            self.log_signal.emit(f"🎉 {len(self.udids)} 台设备的 ECWDA 全链舰队（主核+中继）已成功独立驻留后台！")
+                    # 通过内部 API 模拟 relay
+                    relay_thread = threading.Thread(target=tidevice_invoke, args=(["-u", udid, "relay", str(local_p), str(remote_p)],))
+                    relay_thread.daemon = True # 守护线程随 GUI 退出而销毁
+                    relay_thread.start()
+                    
+                self.log_signal.emit(f"   ✅ [{udid[:8]}] 转发链已就位: PC:{current_pc_10088} -> 手机:10088")
+            
+            self.log_signal.emit("\n🎉 所有设备驱动已就位！")
+            self.finished_signal.emit(True)
         except Exception as e:
             err_msg = traceback.format_exc()
-            logging.error(f"启动 ECWDA 崩溃:\\n{err_msg}")
+            logging.error(f"启动 ECWDA 崩溃:\n{err_msg}")
             self.log_signal.emit(f"❌ 启动受挫故障: {e}")
-        finally:
-            self.finished_signal.emit()
+            self.finished_signal.emit(False)
 
 class ECHelperGUI(QMainWindow):
     def __init__(self):
