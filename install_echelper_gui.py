@@ -5,6 +5,7 @@ import traceback
 import logging
 import platform
 import shutil
+import threading
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QTextEdit, QLabel, QProgressBar, QListWidget, QListWidgetItem, QSplitter)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt
