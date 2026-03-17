@@ -1984,6 +1984,7 @@ onMounted(() => {
                  <th @click="sortBy('ecwda_version')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">ECWDA <span v-if="sortKey==='ecwda_version'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th @click="sortBy('vpn_active')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">VPN <span v-if="sortKey==='vpn_active'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th @click="sortBy('vpn_ip')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">VPN 节点 <span v-if="sortKey==='vpn_ip'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
+                 <th @click="sortBy('exec_time')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">启动时间 <span v-if="sortKey==='exec_time'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-default">任务状态</th>
                  <th @click="sortBy('last_heartbeat')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-right cursor-pointer hover:bg-gray-800 transition-colors">最后上线 <span v-if="sortKey==='last_heartbeat'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-default">操作</th>
@@ -2039,6 +2040,10 @@ onMounted(() => {
                  </td>
                  <td class="p-3 text-center">
                     <span v-if="dev.vpn_active && dev.vpn_ip" class="bg-indigo-900/30 text-indigo-300 border border-indigo-800 px-1.5 py-0.5 rounded text-[10px] whitespace-nowrap overflow-hidden text-ellipsis max-w-[150px] inline-block font-mono" :title="dev.vpn_ip">{{ dev.vpn_ip }}</span>
+                 </td>
+                 <td class="p-3 text-center">
+                    <span v-if="dev.exec_time" class="bg-amber-900/30 text-amber-500 border border-amber-800 px-2 py-0.5 rounded text-[10px] font-bold font-mono">{{ dev.exec_time }}点</span>
+                    <span v-else class="text-gray-600 text-[10px] font-mono">--</span>
                  </td>
                  <td class="p-3 text-center">
                     <div v-if="dev.task_status" class="flex flex-col gap-0.5">
