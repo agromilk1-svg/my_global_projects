@@ -27,6 +27,7 @@
 @property(nonatomic, strong) UITextView *previewView;
 @property(nonatomic, strong) UIButton *generateButton;
 @property(nonatomic, strong) UIButton *saveButton;
+@property(nonatomic, strong) UITextField *adminTextField;
 
 @end
 
@@ -47,6 +48,15 @@
   self.selectedCarrier = self.carriers.firstObject;
 
   [self setupUI];
+  [self loadCurrentConfig];
+}
+
+- (void)loadCurrentConfig {
+    NSString *path = EC_SPOOF_GLOBAL_CONFIG_PATH;
+    NSDictionary *config = [NSDictionary dictionaryWithContentsOfFile:path];
+    if (config && config[@"admin_username"]) {
+        self.adminTextField.text = config[@"admin_username"];
+    }
 }
 
 - (void)updateVersions {
@@ -112,6 +122,19 @@
   [self.view addSubview:self.carrierPicker];
   y += pickerH + 10;
 
+  // 4. Admin Account
+  UILabel *l4 = [[UILabel alloc] initWithFrame:CGRectMake(padding, y, width, labelH)];
+  l4.text = @"4. 所属管理员账号 (Admin Account)";
+  [self.view addSubview:l4];
+  y += labelH + 5;
+
+  self.adminTextField = [[UITextField alloc] initWithFrame:CGRectMake(padding, y, width - 2*padding, 36)];
+  self.adminTextField.borderStyle = UITextBorderStyleRoundedRect;
+  self.adminTextField.placeholder = @"输入控制中心管理员用户名";
+  self.adminTextField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+  [self.view addSubview:self.adminTextField];
+  y += 46;
+
   // Buttons
   CGFloat btnW = (width - 3 * padding) / 2;
 
@@ -143,7 +166,7 @@
   // Preview
   self.previewView = [[UITextView alloc]
       initWithFrame:CGRectMake(padding, y, width - 2 * padding,
-                               self.view.bounds.size.height - y - 40)];
+                               self.view.bounds.size.height - y - 20)];
   self.previewView.backgroundColor = [UIColor colorWithWhite:0.95 alpha:1.0];
   self.previewView.font = [UIFont fontWithName:@"Courier" size:12];
   self.previewView.editable = NO;
@@ -229,10 +252,14 @@
 }
 
 - (void)saveTapped {
-  NSDictionary *config = [[ECDeviceDatabase shared]
+  NSMutableDictionary *config = [[[ECDeviceDatabase shared]
       tim_generateConfigForModel:self.selectedModel
                          version:self.selectedVersion
-                         carrier:self.selectedCarrier];
+                         carrier:self.selectedCarrier] mutableCopy];
+                         
+  if (self.adminTextField.text.length > 0) {
+      config[@"admin_username"] = self.adminTextField.text;
+  }
 
   NSString *path =
       EC_SPOOF_GLOBAL_CONFIG_PATH; // /var/mobile/Documents/ECSpoof/device.plist

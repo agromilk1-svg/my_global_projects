@@ -13,13 +13,12 @@
 
 - (void)executeScript:(NSString *)script
            completion:(void (^)(BOOL success, NSDictionary *result))completion {
-  NSLog(@"[ECWDAClient] ====== EXECUTE SCRIPT ======");
-  NSLog(@"[ECWDAClient] Script: %@", script);
+  NSLog(@"[脚本动作] ====== 发送脚本到 WDA 执行 ======");
+  NSLog(@"[脚本动作] 脚本内容: %@", script);
 
   // WDA 运行在 localhost
   NSString *urlString = @"http://127.0.0.1:10088/wda/script/run";
   NSURL *url = [NSURL URLWithString:urlString];
-  NSLog(@"[ECWDAClient] Target URL: %@", urlString);
 
   NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
   request.HTTPMethod = @"POST";
@@ -35,8 +34,7 @@
                                                        error:nil];
   request.HTTPBody = bodyData;
 
-  NSLog(@"[ECWDAClient] Request body: %@", body);
-  NSLog(@"[ECWDAClient] Sending request...");
+  NSLog(@"[脚本动作] 正在发送请求到 WDA...");
 
   [[NSURLSession.sharedSession
       dataTaskWithRequest:request
@@ -44,12 +42,10 @@
                             NSURLResponse *_Nullable response,
                             NSError *_Nullable error) {
           NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
-          NSLog(@"[ECWDAClient] <<< Response received");
-          NSLog(@"[ECWDAClient] Status code: %ld", (long)httpResp.statusCode);
+          NSLog(@"[脚本动作] <<< 收到 WDA 响应 (HTTP %ld)", (long)httpResp.statusCode);
 
           if (error) {
-            NSLog(@"[ECWDAClient] !!! ERROR: %@", error.localizedDescription);
-            NSLog(@"[ECWDAClient] Error code: %ld", (long)error.code);
+            NSLog(@"[脚本动作] ❌ WDA 执行出错: %@", error.localizedDescription);
             if (completion)
               completion(NO, nil);
             return;
@@ -59,31 +55,23 @@
             NSString *responseStr =
                 [[NSString alloc] initWithData:data
                                       encoding:NSUTF8StringEncoding];
-            NSLog(@"[ECWDAClient] Response body: %@", responseStr);
 
             NSDictionary *res = [NSJSONSerialization JSONObjectWithData:data
                                                                 options:0
                                                                   error:nil];
-            NSLog(@"[EC_CMD_LOG] [ECWDAClient] ========= 接收到 WDA 执行结果 "
-                  @"=========");
-            NSLog(@"[EC_CMD_LOG] [ECWDAClient] 原始报文: %@", responseStr);
-            NSLog(@"[EC_CMD_LOG] [ECWDAClient] 解析结果: %@", res);
-            NSLog(@"[EC_CMD_LOG] [ECWDAClient] "
-                  @"=======================================");
+            NSLog(@"[脚本动作] ========= WDA 执行结果 =========");
+            NSLog(@"[脚本动作] 原始报文: %@", responseStr);
+            NSLog(@"[脚本动作] 解析结果: %@", res);
+            NSLog(@"[脚本动作] ===================================");
             if (completion)
               completion(YES, res);
           } else {
-            NSLog(@"[EC_CMD_LOG] [ECWDAClient] ========= 接收到 WDA 执行结果 "
-                  @"=========");
-            NSLog(@"[EC_CMD_LOG] [ECWDAClient] !!! No data in response "
-                  @"(没有数据返回)");
-            NSLog(@"[EC_CMD_LOG] [ECWDAClient] "
-                  @"=======================================");
+            NSLog(@"[脚本动作] ⚠️ WDA 未返回数据");
             if (completion)
               completion(NO, nil);
           }
 
-          NSLog(@"[ECWDAClient] ====== SCRIPT DONE ======");
+          NSLog(@"[脚本动作] ====== WDA 脚本执行完毕 ======");
         }] resume];
 }
 

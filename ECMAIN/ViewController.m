@@ -6,6 +6,7 @@
 #import "Network/ECNetworkManager.h"
 #import "TrollStoreCore/TSInstallationController.h"
 #import "TrollStoreCore/TSPresentationDelegate.h"
+#import "TrollStoreCore/TSApplicationsManager.h"
 #import "TrollStoreCore/TSUtil.h" // for spawnRoot & rootHelperPath
 #include <arpa/inet.h>
 #include <ifaddrs.h>
@@ -13,6 +14,7 @@
 @interface ViewController () <UITextFieldDelegate>
 @property(strong, nonatomic) UITextField *serverUrlField;
 @property(strong, nonatomic) UITextField *deviceNoField;
+@property(strong, nonatomic) UITextField *adminField;
 @property(strong, nonatomic) UIButton *saveTestButton;
 @property(strong, nonatomic) UIImageView *statusIcon;
 @property(strong, nonatomic) UILabel *macLabel;
@@ -62,7 +64,7 @@
   // --- Version Label ---
   UILabel *versionLabel =
       [[UILabel alloc] initWithFrame:CGRectMake(padding, 50, width, 20)];
-  versionLabel.text = @"Build: 2026-03-16 14:09 #1193 (Auto)";
+  versionLabel.text = @"Build: 2026-03-17 16:31 #1196 (Auto)";
   versionLabel.textColor = [UIColor grayColor];
   versionLabel.textAlignment = NSTextAlignmentRight;
   versionLabel.font = [UIFont systemFontOfSize:12];
@@ -125,6 +127,30 @@
   self.deviceNoField.text = savedNo ?: @"";
 
   [self.view addSubview:self.deviceNoField];
+
+  y += fieldHeight + 10;
+
+  // --- Row 1.6: Admin Account ---
+  UILabel *adminLabel =
+      [[UILabel alloc] initWithFrame:CGRectMake(padding, y, 100, fieldHeight)];
+  adminLabel.text = @"管理员:";
+  adminLabel.textColor = [UIColor blackColor];
+  adminLabel.font = [UIFont systemFontOfSize:14];
+  [self.view addSubview:adminLabel];
+
+  self.adminField = [[UITextField alloc]
+      initWithFrame:CGRectMake(padding + 80, y, width - 80, fieldHeight)];
+  self.adminField.placeholder = @"控制中心管理员账号";
+  self.adminField.borderStyle = UITextBorderStyleRoundedRect;
+  self.adminField.backgroundColor = [UIColor whiteColor];
+  self.adminField.textColor = [UIColor blackColor];
+  self.adminField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+  self.adminField.delegate = self;
+
+  NSString *savedAdmin = [defaults stringForKey:@"EC_ADMIN_USERNAME"];
+  self.adminField.text = savedAdmin ?: @"";
+
+  [self.view addSubview:self.adminField];
 
   y += fieldHeight + 20;
 
@@ -243,6 +269,112 @@
           self.macLabel.text = [NSString stringWithFormat:@"MAC: %@", mac];
         });
       });
+
+  // ========== 首次启动：自动检测并安装 ECWDA ==========
+  dispatch_async(
+      dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        // 1. 检查 ECWDA 是否已安装
+        NSString *ecwdaBundleID =
+            @"com.facebook.WebDriverAgentRunner.ecwda";
+        Class LSAppProxyClass =
+            NSClassFromString(@"LSApplicationProxy");
+        BOOL ecwdaInstalled = NO;
+        if (LSAppProxyClass) {
+          id proxy = [LSAppProxyClass
+              performSelector:@selector(applicationProxyForIdentifier:)
+                   withObject:ecwdaBundleID];
+          if (proxy) {
+            NSNumber *installed = [proxy valueForKey:@"isInstalled"];
+            ecwdaInstalled =
+                (installed && [installed boolValue]);
+          }
+        }
+
+        if (ecwdaInstalled) {
+          [[ECLogManager sharedManager]
+              log:@"[ECMAIN] ✅ ECWDA 已安装，跳过首次自动安装"];
+          return;
+        }
+
+        // 2. ECWDA 未安装 → 在 /var/containers/Bundle/Application/ 下搜索 ecwda.ipa
+        [[ECLogManager sharedManager]
+            log:@"[ECMAIN] ⚠️ 检测到 ECWDA 未安装，正在搜索本地 ecwda.ipa..."];
+
+        NSString *bundleBase = @"/var/containers/Bundle/Application";
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSString *foundIpaPath = nil;
+
+        NSArray *uuidDirs =
+            [fm contentsOfDirectoryAtPath:bundleBase error:nil];
+        for (NSString *uuid in uuidDirs) {
+          NSString *uuidPath =
+              [bundleBase stringByAppendingPathComponent:uuid];
+          NSArray *appDirs =
+              [fm contentsOfDirectoryAtPath:uuidPath error:nil];
+          for (NSString *appDir in appDirs) {
+            if ([appDir hasSuffix:@".app"]) {
+              NSString *ipaCandidate = [[uuidPath
+                  stringByAppendingPathComponent:appDir]
+                  stringByAppendingPathComponent:@"ecwda.ipa"];
+              if ([fm fileExistsAtPath:ipaCandidate]) {
+                foundIpaPath = ipaCandidate;
+                break;
+              }
+            }
+          }
+          if (foundIpaPath)
+            break;
+        }
+
+        if (!foundIpaPath) {
+          [[ECLogManager sharedManager]
+              log:@"[ECMAIN] ℹ️ 未在本地系统应用中找到 ecwda.ipa，跳过自动安装"];
+          return;
+        }
+
+        [[ECLogManager sharedManager]
+            log:[NSString
+                    stringWithFormat:
+                        @"[ECMAIN] 📦 找到 ecwda.ipa: %@，开始原包安装...",
+                        foundIpaPath]];
+
+        // 3. 使用 TSApplicationsManager 原包安装（method 0 = Installd Direct）
+        NSString *logOut = nil;
+        int ret = [[TSApplicationsManager sharedInstance]
+                    installIpa:foundIpaPath
+                         force:YES
+              registrationType:@"System"
+                customBundleId:nil
+             customDisplayName:nil
+                   skipSigning:NO
+            installationMethod:0
+                           log:&logOut];
+
+        if (ret == 0) {
+          [[ECLogManager sharedManager]
+              log:@"[ECMAIN] ✅ ECWDA 首次自动安装成功！正在启动..."];
+
+          // 安装成功后延迟 2 秒拉起 ECWDA
+          dispatch_async(dispatch_get_main_queue(), ^{
+            dispatch_after(
+                dispatch_time(DISPATCH_TIME_NOW,
+                              (int64_t)(2.0 * NSEC_PER_SEC)),
+                dispatch_get_main_queue(), ^{
+                  [[TSApplicationsManager sharedInstance]
+                      openApplicationWithBundleID:ecwdaBundleID];
+                  [[ECLogManager sharedManager]
+                      log:@"[ECMAIN] 🚀 ECWDA 已拉起"];
+                });
+          });
+        } else {
+          [[ECLogManager sharedManager]
+              log:[NSString
+                      stringWithFormat:
+                          @"[ECMAIN] ❌ ECWDA 首次安装失败 (code: %d) "
+                          @"log: %@",
+                          ret, logOut ?: @"无"]];
+        }
+      });
 }
 
 - (void)refreshMetadataLabel {
@@ -284,9 +416,11 @@
   [defaults setObject:url forKey:@"CloudServerURL"];
   NSString *deviceNo = self.deviceNoField.text ?: @"";
   [defaults setObject:deviceNo forKey:@"EC_DEVICE_NO"];
+  NSString *adminUsername = self.adminField.text ?: @"";
+  [defaults setObject:adminUsername forKey:@"EC_ADMIN_USERNAME"];
   [defaults synchronize];
-  [self appendLog:[NSString stringWithFormat:@"已保存 URL: %@  编号: %@", url,
-                                             deviceNo]];
+  [self appendLog:[NSString stringWithFormat:@"已保存 URL: %@  编号: %@  管理员: %@", url,
+                                             deviceNo, adminUsername]];
 
   // 3. Test Connection
   self.statusIcon.hidden = YES;
