@@ -7,6 +7,213 @@ const apiBase = hostname.includes('ecmain.site')
   ? `https://s.ecmain.site/api` 
   : `http://${hostname}:8088/api`;
 
+// ================= 认证系统 =================
+const isLoggedIn = ref(false);
+const currentUser = ref<any>(null);      // { id, username, role }
+const authToken = ref('');
+const loginForm = ref({ username: '', password: '' });
+const loginError = ref('');
+const loginLoading = ref(false);
+
+// 角色判断
+const isSuperAdmin = computed(() => currentUser.value?.role === 'super_admin');
+
+// 带认证的 fetch 封装
+const authFetch = (url: string, options: any = {}) => {
+  if (!options.headers) options.headers = {};
+  if (authToken.value) {
+    options.headers['Authorization'] = `Bearer ${authToken.value}`;
+  }
+  if (!options.headers['Content-Type'] && options.body && typeof options.body === 'string') {
+    options.headers['Content-Type'] = 'application/json';
+  }
+  return fetch(url, options);
+};
+
+// 登录
+const doLogin = async () => {
+  loginError.value = '';
+  loginLoading.value = true;
+  try {
+    const res = await fetch(`${apiBase}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(loginForm.value)
+    });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      authToken.value = data.token;
+      currentUser.value = data.user;
+      isLoggedIn.value = true;
+      localStorage.setItem('ec_token', data.token);
+      localStorage.setItem('ec_user', JSON.stringify(data.user));
+      loginError.value = '';
+      // 登录成功后初始化数据
+      initAllData();
+    } else {
+      loginError.value = data.detail || '用户名或密码错误';
+    }
+  } catch (err) {
+    loginError.value = '网络连接失败，请检查服务端';
+  } finally {
+    loginLoading.value = false;
+  }
+};
+
+// 登出
+const doLogout = () => {
+  authToken.value = '';
+  currentUser.value = null;
+  isLoggedIn.value = false;
+  localStorage.removeItem('ec_token');
+  localStorage.removeItem('ec_user');
+};
+
+// 从 localStorage 恢复登录状态
+const restoreSession = async () => {
+  const savedToken = localStorage.getItem('ec_token');
+  const savedUser = localStorage.getItem('ec_user');
+  if (savedToken && savedUser) {
+    authToken.value = savedToken;
+    currentUser.value = JSON.parse(savedUser);
+    isLoggedIn.value = true;
+    // 验证 Token 是否仍然有效
+    try {
+      const res = await fetch(`${apiBase}/auth/me`, {
+        headers: { 'Authorization': `Bearer ${savedToken}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        currentUser.value = data.user;
+        localStorage.setItem('ec_user', JSON.stringify(data.user));
+      } else {
+        doLogout(); // Token 过期，强制登出
+      }
+    } catch {
+      // 网络不可达时保持登录状态
+    }
+  }
+};
+
+// 动态标签页列表（根据角色过滤）
+const visibleTabs = computed(() => {
+  const all = ['📱 手机列表', '⚡️ 控制台', '📋 任务列表', '⚙️ 配置中心', '💬 评论管理', '🎵 TikTok 账号', '👤 用户管理'];
+  if (isSuperAdmin.value) return all;
+  // 普通管理员隐藏配置中心、评论管理、用户管理
+  return all.filter(t => !['⚙️ 配置中心', '💬 评论管理', '👤 用户管理'].includes(t));
+});
+
+// ================= 用户管理 (超管专用) =================
+const adminList = ref<any[]>([]);
+const showCreateAdminModal = ref(false);
+const newAdminForm = ref({ username: '', password: '', role: 'admin' });
+const showPasswordModal = ref(false);
+const editPasswordForm = ref({ admin_id: 0, username: '', password: '' });
+const showAssignDeviceModal = ref(false);
+const assigningAdmin = ref<any>(null);
+
+const fetchAdmins = async () => {
+  try {
+    const res = await authFetch(`${apiBase}/admins`);
+    const data = await res.json();
+    if (data.status === 'ok') adminList.value = data.data;
+  } catch (err) {
+    console.error('拉取管理员列表失败', err);
+  }
+};
+
+const createAdmin = async () => {
+  try {
+    const res = await authFetch(`${apiBase}/admins`, {
+      method: 'POST',
+      body: JSON.stringify(newAdminForm.value)
+    });
+    if (res.ok) {
+      showCreateAdminModal.value = false;
+      newAdminForm.value = { username: '', password: '', role: 'admin' };
+      fetchAdmins();
+    } else {
+      const d = await res.json();
+      alert(d.detail || '创建失败');
+    }
+  } catch (err) { alert('网络错误'); }
+};
+
+const deleteAdmin = async (id: number) => {
+  if (!confirm('确定删除该管理员？相关设备分配也会一并清除。')) return;
+  try {
+    const res = await authFetch(`${apiBase}/admins/${id}`, { method: 'DELETE' });
+    if (res.ok) fetchAdmins();
+    else { const d = await res.json(); alert(d.detail || '删除失败'); }
+  } catch (err) { alert('网络错误'); }
+};
+
+const openPasswordModal = (admin: any) => {
+  editPasswordForm.value = { admin_id: admin.id, username: admin.username, password: '' };
+  showPasswordModal.value = true;
+};
+
+const updatePassword = async () => {
+  try {
+    const res = await authFetch(`${apiBase}/admins/${editPasswordForm.value.admin_id}/password`, {
+      method: 'PUT',
+      body: JSON.stringify({ password: editPasswordForm.value.password })
+    });
+    if (res.ok) {
+      showPasswordModal.value = false;
+      alert('密码修改成功');
+    } else {
+      const d = await res.json();
+      alert(d.detail || '修改失败');
+    }
+  } catch (err) { alert('网络错误'); }
+};
+
+const openAssignDeviceModal = (admin: any) => {
+  assigningAdmin.value = { ...admin };
+  showAssignDeviceModal.value = true;
+};
+
+const assignDevice = async (udid: string) => {
+  if (!assigningAdmin.value) return;
+  try {
+    const res = await authFetch(`${apiBase}/admins/${assigningAdmin.value.id}/devices`, {
+      method: 'POST',
+      body: JSON.stringify({ device_udid: udid })
+    });
+    if (res.ok) {
+      fetchAdmins();
+      // 刷新 assigningAdmin 数据
+      const updated = adminList.value.find((a: any) => a.id === assigningAdmin.value.id);
+      if (updated) assigningAdmin.value = { ...updated };
+    }
+  } catch (err) { console.error('分配设备失败', err); }
+};
+
+const removeDevice = async (adminId: number, udid: string) => {
+  try {
+    const res = await authFetch(`${apiBase}/admins/${adminId}/devices/${udid}`, { method: 'DELETE' });
+    if (res.ok) {
+      fetchAdmins();
+      if (assigningAdmin.value?.id === adminId) {
+        const updated = adminList.value.find((a: any) => a.id === adminId);
+        if (updated) assigningAdmin.value = { ...updated };
+      }
+    }
+  } catch (err) { console.error('取消分配失败', err); }
+};
+
+// 初始化所有数据的统一函数
+const initAllData = () => {
+  fetchDevices();
+  fetchScripts();
+  fetchCountries();
+  fetchGroups();
+  fetchExecTimes();
+  fetchTiktokAccounts();
+  if (isSuperAdmin.value) fetchAdmins();
+};
+
 const devices = ref<any[]>([]);
 const selectedDevice = ref('');
 const deviceIp = ref('');
@@ -25,7 +232,7 @@ const editingTkAccount = ref<any>({});
 
 const fetchTiktokAccounts = async () => {
   try {
-    const res = await fetch(`${apiBase}/tiktok_accounts`);
+    const res = await authFetch(`${apiBase}/tiktok_accounts`);
     const data = await res.json();
     if (data.status === 'ok') tiktokAccounts.value = data.data;
   } catch (err) {
@@ -49,7 +256,7 @@ const saveTkAccount = async () => {
       window_open_time: editingTkAccount.value.window_open_time || '',
       sale_time: editingTkAccount.value.sale_time || ''
     };
-    const res = await fetch(`${apiBase}/tiktok_accounts/${editingTkAccount.value.id}`, {
+    const res = await authFetch(`${apiBase}/tiktok_accounts/${editingTkAccount.value.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
@@ -66,7 +273,7 @@ const saveTkAccount = async () => {
 const deleteTkAccount = async (id: number) => {
   if (!confirm('确定要删除该 TikTok 账号记录吗？')) return;
   try {
-    const res = await fetch(`${apiBase}/tiktok_accounts/${id}`, { method: 'DELETE' });
+    const res = await authFetch(`${apiBase}/tiktok_accounts/${id}`, { method: 'DELETE' });
     if (res.ok) fetchTiktokAccounts();
   } catch (err) {
     console.error('删除 TikTok 账号失败', err);
@@ -96,7 +303,7 @@ const fetchComments = async () => {
     return;
   }
   try {
-    const res = await fetch(`${apiBase}/comments?language=${commentFilterLang.value}`);
+    const res = await authFetch(`${apiBase}/comments?language=${commentFilterLang.value}`);
     const data = await res.json();
     if (data.status === 'ok') comments.value = data.data;
   } catch (err) {
@@ -107,7 +314,7 @@ const fetchComments = async () => {
 const deleteComment = async (id: number) => {
   if (!confirm("确定要删除这条通用评论吗？")) return;
   try {
-    const res = await fetch(`${apiBase}/comments/${id}`, { method: 'DELETE' });
+    const res = await authFetch(`${apiBase}/comments/${id}`, { method: 'DELETE' });
     if (res.ok) fetchComments();
   } catch (err) {
     console.error('删除评论失败', err);
@@ -122,7 +329,7 @@ const editingScript = ref<any>({ id: 0, name: '', code: '', country: '', group_n
 
 const fetchScripts = async () => {
   try {
-    const res = await fetch(`${apiBase}/scripts`);
+    const res = await authFetch(`${apiBase}/scripts`);
     const data = await res.json();
     if (data.status === 'ok') scripts.value = data.data;
   } catch (err) {
@@ -147,7 +354,7 @@ const saveScript = async () => {
   try {
     const method = editingScript.value.id ? 'PUT' : 'POST';
     const url = editingScript.value.id ? `${apiBase}/scripts/${editingScript.value.id}` : `${apiBase}/scripts`;
-    const res = await fetch(url, {
+    const res = await authFetch(url, {
       method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 
@@ -173,7 +380,7 @@ const saveScript = async () => {
 const deleteScript = async (id: number) => {
   if (!confirm("确定要删除这个自动任务脚本吗？")) return;
   try {
-    await fetch(`${apiBase}/scripts/${id}`, { method: 'DELETE' });
+    await authFetch(`${apiBase}/scripts/${id}`, { method: 'DELETE' });
     fetchScripts();
   } catch (err) {
     console.error('删除脚本失败', err);
@@ -191,7 +398,7 @@ const newExecTimeName = ref('');
 
 const fetchCountries = async () => {
   try {
-    const res = await fetch(`${apiBase}/countries`);
+    const res = await authFetch(`${apiBase}/countries`);
     const data = await res.json();
     if (data.status === 'ok') countries.value = data.data;
   } catch (err) { console.error(err); }
@@ -199,7 +406,7 @@ const fetchCountries = async () => {
 
 const fetchGroups = async () => {
   try {
-    const res = await fetch(`${apiBase}/groups`);
+    const res = await authFetch(`${apiBase}/groups`);
     const data = await res.json();
     if (data.status === 'ok') groups.value = data.data;
   } catch (err) { console.error(err); }
@@ -208,7 +415,7 @@ const fetchGroups = async () => {
 const addCountry = async () => {
   if (!newCountryName.value.trim()) return;
   try {
-    const res = await fetch(`${apiBase}/countries`, {
+    const res = await authFetch(`${apiBase}/countries`, {
       method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name: newCountryName.value.trim()})
     });
     if (res.ok) { newCountryName.value = ''; fetchCountries(); }
@@ -218,13 +425,13 @@ const addCountry = async () => {
 
 const deleteCountry = async (id: number) => {
   if (!confirm("确定删除选中项吗？")) return;
-  try { await fetch(`${apiBase}/countries/${id}`, {method: 'DELETE'}); fetchCountries(); } catch(err){}
+  try { await authFetch(`${apiBase}/countries/${id}`, {method: 'DELETE'}); fetchCountries(); } catch(err){}
 };
 
 const addGroup = async () => {
   if (!newGroupName.value.trim()) return;
   try {
-    const res = await fetch(`${apiBase}/groups`, {
+    const res = await authFetch(`${apiBase}/groups`, {
       method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name: newGroupName.value.trim()})
     });
     if (res.ok) { newGroupName.value = ''; fetchGroups(); }
@@ -234,12 +441,12 @@ const addGroup = async () => {
 
 const deleteGroup = async (id: number) => {
   if (!confirm("确定删除选中项吗？")) return;
-  try { await fetch(`${apiBase}/groups/${id}`, {method: 'DELETE'}); fetchGroups(); } catch(err){}
+  try { await authFetch(`${apiBase}/groups/${id}`, {method: 'DELETE'}); fetchGroups(); } catch(err){}
 };
 
 const fetchExecTimes = async () => {
   try {
-    const res = await fetch(`${apiBase}/exec_times`);
+    const res = await authFetch(`${apiBase}/exec_times`);
     const data = await res.json();
     if (data.status === 'ok') execTimes.value = data.data;
   } catch (err) { console.error(err); }
@@ -248,7 +455,7 @@ const fetchExecTimes = async () => {
 const addExecTime = async () => {
   if (!newExecTimeName.value.trim()) return;
   try {
-    const res = await fetch(`${apiBase}/exec_times`, {
+    const res = await authFetch(`${apiBase}/exec_times`, {
       method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name: newExecTimeName.value.trim()})
     });
     if (res.ok) { newExecTimeName.value = ''; fetchExecTimes(); }
@@ -258,17 +465,15 @@ const addExecTime = async () => {
 
 const deleteExecTime = async (id: number) => {
   if (!confirm("确定删除选中时间吗？")) return;
-  try { await fetch(`${apiBase}/exec_times/${id}`, {method: 'DELETE'}); fetchExecTimes(); } catch(err){}
+  try { await authFetch(`${apiBase}/exec_times/${id}`, {method: 'DELETE'}); fetchExecTimes(); } catch(err){}
 };
 
-onMounted(() => {
-  fetchDevices();
-  fetchScripts();
-  fetchCountries();
-  fetchGroups();
-  fetchExecTimes();
-  fetchTiktokAccounts();
-  setInterval(fetchDevices, 2000); // 恢复轮询
+onMounted(async () => {
+  await restoreSession();
+  if (isLoggedIn.value) {
+    initAllData();
+    setInterval(fetchDevices, 2000); // 恢复轮询
+  }
 });
 
 const activeRightTab = ref('code'); // 顶部导航状态
@@ -358,6 +563,7 @@ const sortOrder = ref(1);
 // ===== 独立配置管理 (静态 IP / VPN) =====
 const showConfigModal = ref(false);
 const configEditingUdid = ref('');
+const configEditingAdmin = ref('');
 const configForm = ref({
    ip: '',
    subnet: '',
@@ -375,10 +581,11 @@ const configForm = ref({
 
 const openConfigModal = async (dev: any) => {
     configEditingUdid.value = dev.udid;
+    configEditingAdmin.value = dev.admin_username || '';
     configForm.value = { ip: '', subnet: '', gateway: '', dns: '', vpnJson: '', device_no: '', country: '', group_name: '', exec_time: '', apple_account: '', apple_password: '', tiktok_accounts: [] };
     showConfigModal.value = true;
     try {
-        const res = await fetch(`${apiBase}/devices/${dev.udid}/config`);
+        const res = await authFetch(`${apiBase}/devices/${dev.udid}/config`);
         const data = await res.json();
         if (data && data.config) {
             if (data.config.config_ip) {
@@ -441,9 +648,8 @@ const saveConfig = async () => {
     }
     
     try {
-        const res = await fetch(`${apiBase}/devices/${configEditingUdid.value}/config`, {
+        const res = await authFetch(`${apiBase}/devices/${configEditingUdid.value}/config`, {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
                 config_ip: finalIpConf,
                 config_vpn: finalVpnConf,
@@ -521,7 +727,7 @@ const log = (msg: string) => {
 
 const fetchDevices = async () => {
   try {
-    const res = await fetch(`${apiBase}/cloud/devices`);
+    const res = await authFetch(`${apiBase}/cloud/devices`);
     const data = await res.json();
     devices.value = data.devices || [];
     if (devices.value.length > 0 && !selectedDevice.value) {
@@ -561,9 +767,8 @@ const runFindText = async () => {
     ocrResult.value = null;
     log(`🔍 开始全屏搜寻文字: [${ocrTextInput.value}]，底层算绘巨大请死守阵地...`);
     try {
-        const res = await fetch(`${apiBase}/action_proxy`, {
+        const res = await authFetch(`${apiBase}/action_proxy`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 udid: selectedDevice.value,
                 ecmain_url: ecmainUrl.value,
@@ -595,9 +800,8 @@ const manageApp = async (actionType: 'launch' | 'terminate') => {
     }
     log(`🚀 准备向底核投递应用指令: [${bundleIdInput.value}]...`);
     try {
-        const res = await fetch(`${apiBase}/action_proxy`, {
+        const res = await authFetch(`${apiBase}/action_proxy`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 udid: selectedDevice.value,
                 ecmain_url: ecmainUrl.value,
@@ -660,7 +864,7 @@ const selectDeviceAndConnect = (dev: any) => {
 const deleteDevice = async (dev: any) => {
     if (!confirm(`确定要彻底删除设备 [${dev.device_no || dev.udid}] 吗？\n操作后该设备将从数据库清理，直到其再次主动上报心跳。`)) return;
     try {
-        const res = await fetch(`${apiBase}/devices/${dev.udid}`, { method: 'DELETE' });
+        const res = await authFetch(`${apiBase}/devices/${dev.udid}`, { method: 'DELETE' });
         const data = await res.json();
         if (data.status === 'ok') {
             log(`已彻底删除离线设备: ${dev.device_no || dev.udid}`);
@@ -899,9 +1103,8 @@ const performMagicWand = (startX: number, startY: number) => {
 
 const sendDeviceAction = async (type: string, payload: any = {}) => {
   try {
-    const res = await fetch(`${apiBase}/action_proxy`, {
+    const res = await authFetch(`${apiBase}/action_proxy`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         udid: selectedDevice.value,
         ecmain_url: ecmainUrl.value,
@@ -972,9 +1175,8 @@ const launchEcwda = async () => {
   connectionMode.value = 'usb';
   
   try {
-    const res = await fetch(`${apiBase}/launch_ecwda`, {
+    const res = await authFetch(`${apiBase}/launch_ecwda`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ udid: selectedDevice.value })
     });
     const result = await res.json();
@@ -1012,9 +1214,8 @@ const runActions = async () => {
     }
     js_code += generatedJs.value;
 
-    const res = await fetch(`${apiBase}/run`, {
+    const res = await authFetch(`${apiBase}/run`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         udid: selectedDevice.value || 'lan-device',
         raw_script: js_code,
@@ -1762,7 +1963,8 @@ const handleImageUpload = (event: Event) => {
     reader.readAsDataURL(file);
 };
 
-onMounted(() => {
+onMounted(async () => {
+  if (!isLoggedIn.value) return;
   fetchDevices();
   fetchScripts();
   setInterval(fetchDevices, 5000);
@@ -1770,17 +1972,66 @@ onMounted(() => {
 </script>
 
 <template>
-    <div class="flex flex-col h-screen w-full bg-gray-900 text-gray-300 font-sans selection:bg-blue-500/30 outline-none overflow-hidden" :class="{'cursor-move': deviceWin.isDragging, 'cursor-se-resize': deviceWin.isResizing}">
+    <!-- =============== 登录页面 =============== -->
+    <div v-if="!isLoggedIn" class="flex items-center justify-center h-screen w-full bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950 selection:bg-blue-500/30">
+      <div class="w-[400px] bg-gray-900/80 border border-gray-700/50 rounded-2xl shadow-2xl backdrop-blur-xl overflow-hidden">
+        <div class="p-8 border-b border-gray-800 text-center">
+          <h1 class="text-2xl font-bold text-gray-100 tracking-widest">⚡️ ECWDA 战术控制中心</h1>
+          <p class="text-xs text-gray-500 mt-2">请输入管理员账号登录系统</p>
+        </div>
+        <div class="p-8 flex flex-col gap-5">
+          <div class="flex flex-col gap-1.5">
+            <label class="text-xs text-gray-400 font-bold uppercase tracking-wider">用户名</label>
+            <input v-model="loginForm.username" @keyup.enter="doLogin" type="text" placeholder="输入管理员账号" 
+                   class="w-full bg-gray-950 border border-gray-700 rounded-lg px-4 py-3 text-gray-200 outline-none focus:border-blue-500 transition-colors font-mono" />
+          </div>
+          <div class="flex flex-col gap-1.5">
+            <label class="text-xs text-gray-400 font-bold uppercase tracking-wider">密码</label>
+            <input v-model="loginForm.password" @keyup.enter="doLogin" type="password" placeholder="输入密码" 
+                   class="w-full bg-gray-950 border border-gray-700 rounded-lg px-4 py-3 text-gray-200 outline-none focus:border-blue-500 transition-colors font-mono" />
+          </div>
+          <div v-if="loginError" class="text-red-400 text-xs bg-red-900/20 border border-red-800/50 rounded-lg px-3 py-2 text-center">
+            {{ loginError }}
+          </div>
+          <button @click="doLogin" :disabled="loginLoading" 
+                  class="w-full py-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold rounded-lg shadow-lg transition-all active:scale-[0.98] disabled:opacity-50 tracking-wider">
+            <span v-if="!loginLoading">🔐 登录系统</span>
+            <span v-else class="flex items-center justify-center gap-2">
+              <svg class="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+              验证中...
+            </span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- =============== 主应用（已登录） =============== -->
+    <div v-else class="flex flex-col h-screen w-full bg-gray-900 text-gray-300 font-sans selection:bg-blue-500/30 outline-none overflow-hidden" :class="{'cursor-move': deviceWin.isDragging, 'cursor-se-resize': deviceWin.isResizing}">
     
     <!-- 顶栏：极简沉浸式面板 -->
-    <div class="flex justify-center items-center bg-gray-950 border-b border-gray-800 py-3 text-gray-100 text-sm font-bold shadow-lg relative z-50 tracking-widest">
-        <span>ECWDA 战术控制中心</span>
-        <span class="ml-2 text-[10px] bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-2 py-0.5 rounded-full shadow-md">PRO</span>
+    <div class="flex justify-between items-center bg-gray-950 border-b border-gray-800 py-3 px-6 text-gray-100 text-sm font-bold shadow-lg relative z-50 tracking-widest">
+        <div class="flex items-center">
+            <span>ECWDA 战术控制中心</span>
+            <span class="ml-2 text-[10px] bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-2 py-0.5 rounded-full shadow-md">PRO</span>
+        </div>
+        <div class="flex items-center gap-4">
+            <span class="text-[11px] text-gray-400 font-normal">
+                <span class="text-gray-500">当前用户：</span>
+                <span class="text-blue-400 font-bold">{{ currentUser?.username }}</span>
+                <span class="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold" 
+                      :class="isSuperAdmin ? 'bg-amber-900/40 text-amber-400 border border-amber-700' : 'bg-gray-800 text-gray-400 border border-gray-700'">
+                    {{ isSuperAdmin ? '超级管理员' : '管理员' }}
+                </span>
+            </span>
+            <button @click="doLogout" class="text-[11px] text-gray-500 hover:text-red-400 transition-colors font-normal border border-gray-700 hover:border-red-800 px-3 py-1 rounded">
+                🚪 登出
+            </button>
+        </div>
     </div>
 
     <!-- 顶层主选项卡：标签 -->
     <div class="flex items-end bg-gray-900 border-b border-gray-800 px-6 pt-3 text-xs gap-2 shadow-inner z-40 relative">
-      <div v-for="tab in ['🏠 首页', '📱 手机列表', '⚡️ 控制台', '📋 任务列表', '⚙️ 配置中心', '💬 评论管理', '🎵 TikTok 账号']" 
+      <div v-for="tab in visibleTabs" 
            :key="tab"
            @click="activeTab = tab"
            :class="['px-6 py-2 rounded-t-lg cursor-pointer transition-colors duration-300 border-t border-l border-r', 
@@ -1984,6 +2235,8 @@ onMounted(() => {
                  <th @click="sortBy('ecwda_version')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">ECWDA <span v-if="sortKey==='ecwda_version'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th @click="sortBy('vpn_active')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">VPN <span v-if="sortKey==='vpn_active'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th @click="sortBy('vpn_ip')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">VPN 节点 <span v-if="sortKey==='vpn_ip'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
+                 <th @click="sortBy('exec_time')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">启动时间 <span v-if="sortKey==='exec_time'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
+                 <th @click="sortBy('admin_username')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">管理员 <span v-if="sortKey==='admin_username'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-default">任务状态</th>
                  <th @click="sortBy('last_heartbeat')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-right cursor-pointer hover:bg-gray-800 transition-colors">最后上线 <span v-if="sortKey==='last_heartbeat'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-default">操作</th>
@@ -2041,6 +2294,13 @@ onMounted(() => {
                     <span v-if="dev.vpn_active && dev.vpn_ip" class="bg-indigo-900/30 text-indigo-300 border border-indigo-800 px-1.5 py-0.5 rounded text-[10px] whitespace-nowrap overflow-hidden text-ellipsis max-w-[150px] inline-block font-mono" :title="dev.vpn_ip">{{ dev.vpn_ip }}</span>
                  </td>
                  <td class="p-3 text-center">
+                    <span v-if="dev.exec_time" class="bg-amber-900/30 text-amber-500 border border-amber-800 px-2 py-0.5 rounded text-[10px] font-bold font-mono">{{ dev.exec_time }}点</span>
+                    <span v-else class="text-gray-600 text-[10px] font-mono">--</span>
+                 </td>
+                 <td class="p-3 text-center">
+                    <span v-if="dev.admin_username" class="bg-purple-900/30 text-purple-400 border border-purple-800 px-2 py-0.5 rounded text-[10px] font-bold">{{ dev.admin_username }}</span>
+                    <span v-else class="text-gray-600 text-[10px]">--</span>
+                 </td>                 <td class="p-3 text-center">
                     <div v-if="dev.task_status" class="flex flex-col gap-0.5">
                       <div v-for="(t, i) in ((() => { try { return JSON.parse(dev.task_status) } catch(e) { return [] } })())" :key="i" class="flex items-center gap-1 justify-center">
                         <span class="text-[10px] text-gray-300 truncate max-w-[80px]" :title="t.name">{{ t.name }}</span>
@@ -2598,6 +2858,7 @@ onMounted(() => {
               <span class="text-teal-400">⚙️</span> 网络拓扑参数重构
             </h3>
             <span class="text-xs text-gray-500 font-mono">{{ configEditingUdid }}</span>
+            <span v-if="configEditingAdmin" class="text-xs bg-purple-900/30 text-purple-400 border border-purple-800 px-2 py-0.5 rounded font-bold">👤 {{ configEditingAdmin }}</span>
           </div>
           <div class="p-6 flex flex-col gap-5 overflow-y-auto max-h-[70vh] custom-scrollbar">
               
@@ -2932,6 +3193,161 @@ onMounted(() => {
             </div>
         </div>
     </div>
+
+    <!-- =============== 用户管理（超级管理员专用） ================= -->
+    <div v-show="activeTab === '👤 用户管理'" class="flex flex-1 flex-col overflow-auto p-6 bg-[#0B0F19]">
+        <div class="max-w-5xl mx-auto w-full space-y-4">
+            <div class="flex justify-between items-center bg-gray-900 p-4 rounded-lg border border-gray-800 shadow-md">
+                <div>
+                    <h2 class="text-xl font-bold text-gray-100 tracking-wide flex items-center gap-2">👤 管理员账号管理</h2>
+                    <p class="text-xs text-gray-500 mt-1">当前系统中共有 {{ adminList.length }} 个管理员。</p>
+                </div>
+                <div class="flex gap-2">
+                    <button @click="fetchAdmins" class="bg-gray-800 hover:bg-gray-700 border border-gray-600 text-gray-200 px-3 py-2 rounded transition-colors text-xs">🔄 刷新</button>
+                    <button @click="showCreateAdminModal = true" class="bg-blue-700 hover:bg-blue-600 border border-blue-500 text-white px-4 py-2 rounded shadow transition-colors text-xs font-bold">+ 创建管理员</button>
+                </div>
+            </div>
+
+            <div class="overflow-x-auto bg-gray-900/50 border border-gray-800 rounded-lg shadow-xl">
+                <table class="min-w-full text-sm">
+                    <thead>
+                        <tr class="text-gray-400 text-xs uppercase border-b border-gray-800 bg-gray-900">
+                            <th class="p-4 text-center">ID</th>
+                            <th class="p-4 text-left">用户名</th>
+                            <th class="p-4 text-center">角色</th>
+                            <th class="p-4 text-center">管辖设备数</th>
+                            <th class="p-4 text-center">创建时间</th>
+                            <th class="p-4 text-center">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-800/60">
+                        <tr v-if="adminList.length === 0">
+                            <td colspan="6" class="p-12 text-center text-gray-500">
+                                <p class="text-lg font-bold">📭 暂无管理员数据</p>
+                            </td>
+                        </tr>
+                        <tr v-for="admin in adminList" :key="admin.id" class="hover:bg-gray-700/30 transition-colors group">
+                            <td class="p-4 text-center font-mono text-gray-500">#{{ admin.id }}</td>
+                            <td class="p-4 text-gray-200 font-bold font-mono">{{ admin.username }}</td>
+                            <td class="p-4 text-center">
+                                <span :class="admin.role === 'super_admin' ? 'bg-amber-900/40 text-amber-400 border-amber-700' : 'bg-blue-900/30 text-blue-400 border-blue-800'" 
+                                      class="px-2 py-0.5 rounded text-[10px] font-bold border">
+                                    {{ admin.role === 'super_admin' ? '超级管理员' : '管理员' }}
+                                </span>
+                            </td>
+                            <td class="p-4 text-center">
+                                <span class="text-indigo-300 font-mono font-bold">{{ (admin.devices || []).length }}</span>
+                                <span class="text-gray-500 text-xs ml-1">台</span>
+                            </td>
+                            <td class="p-4 text-center text-gray-400 font-mono text-xs">
+                                {{ admin.created_at ? new Date(admin.created_at * 1000).toLocaleString() : '---' }}
+                            </td>
+                            <td class="p-4 text-center">
+                                <div class="flex justify-center gap-2">
+                                    <button @click="openAssignDeviceModal(admin)" class="px-2 py-1 bg-indigo-900/30 text-indigo-400 hover:bg-indigo-600 hover:text-white rounded border border-indigo-900/50 transition-all text-xs font-bold" title="管理设备分配">📱 设备</button>
+                                    <button @click="openPasswordModal(admin)" class="px-2 py-1 bg-yellow-900/30 text-yellow-400 hover:bg-yellow-600 hover:text-white rounded border border-yellow-900/50 transition-all text-xs font-bold" title="修改密码">🔑 密码</button>
+                                    <button v-if="admin.role !== 'super_admin'" @click="deleteAdmin(admin.id)" class="px-2 py-1 bg-red-900/30 text-red-400 hover:bg-red-600 hover:text-white rounded border border-red-900/50 transition-all text-xs font-bold" title="删除管理员">🗑 删除</button>
+                                </div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- 创建管理员弹窗 -->
+    <div v-if="showCreateAdminModal" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+        <div class="bg-gray-800 border border-gray-700 w-full max-w-md rounded-xl shadow-2xl flex flex-col">
+            <div class="px-6 py-4 border-b border-gray-700 flex justify-between items-center">
+                <h3 class="text-lg font-bold text-gray-100">✨ 创建新管理员</h3>
+                <button @click="showCreateAdminModal = false" class="text-gray-400 hover:text-white">✕</button>
+            </div>
+            <div class="p-6 flex flex-col gap-4">
+                <div>
+                    <label class="block text-xs text-gray-400 font-bold mb-1">用户名</label>
+                    <input v-model="newAdminForm.username" type="text" placeholder="管理员登录名" class="w-full bg-gray-950 border border-gray-700 rounded-lg px-4 py-2.5 text-gray-200 outline-none focus:border-blue-500 font-mono" />
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 font-bold mb-1">密码</label>
+                    <input v-model="newAdminForm.password" type="text" placeholder="初始密码" class="w-full bg-gray-950 border border-gray-700 rounded-lg px-4 py-2.5 text-gray-200 outline-none focus:border-blue-500 font-mono" />
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 font-bold mb-1">角色</label>
+                    <select v-model="newAdminForm.role" class="w-full bg-gray-950 border border-gray-700 rounded-lg px-4 py-2.5 text-gray-200 outline-none focus:border-blue-500">
+                        <option value="admin">普通管理员</option>
+                        <option value="super_admin">超级管理员</option>
+                    </select>
+                </div>
+            </div>
+            <div class="px-6 py-4 border-t border-gray-700 flex justify-end gap-3">
+                <button @click="showCreateAdminModal = false" class="px-4 py-2 text-gray-400 hover:text-white transition-colors">取消</button>
+                <button @click="createAdmin" class="px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded shadow transition-colors">确认创建</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 修改密码弹窗 -->
+    <div v-if="showPasswordModal" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+        <div class="bg-gray-800 border border-gray-700 w-full max-w-md rounded-xl shadow-2xl flex flex-col">
+            <div class="px-6 py-4 border-b border-gray-700 flex justify-between items-center">
+                <h3 class="text-lg font-bold text-gray-100">🔑 修改密码 - {{ editPasswordForm.username }}</h3>
+                <button @click="showPasswordModal = false" class="text-gray-400 hover:text-white">✕</button>
+            </div>
+            <div class="p-6">
+                <label class="block text-xs text-gray-400 font-bold mb-1">新密码</label>
+                <input v-model="editPasswordForm.password" type="text" placeholder="输入新密码" class="w-full bg-gray-950 border border-gray-700 rounded-lg px-4 py-2.5 text-gray-200 outline-none focus:border-blue-500 font-mono" />
+            </div>
+            <div class="px-6 py-4 border-t border-gray-700 flex justify-end gap-3">
+                <button @click="showPasswordModal = false" class="px-4 py-2 text-gray-400 hover:text-white transition-colors">取消</button>
+                <button @click="updatePassword" class="px-5 py-2 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded shadow transition-colors">确认修改</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 设备分配弹窗 -->
+    <div v-if="showAssignDeviceModal && assigningAdmin" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+        <div class="bg-gray-800 border border-gray-700 w-full max-w-2xl rounded-xl shadow-2xl flex flex-col max-h-[80vh]">
+            <div class="px-6 py-4 border-b border-gray-700 flex justify-between items-center shrink-0">
+                <h3 class="text-lg font-bold text-gray-100">📱 设备分配 - {{ assigningAdmin.username }}</h3>
+                <button @click="showAssignDeviceModal = false" class="text-gray-400 hover:text-white">✕</button>
+            </div>
+            <div class="p-6 flex-1 overflow-auto flex flex-col gap-4">
+                <!-- 已分配的设备 -->
+                <div>
+                    <h4 class="text-xs text-gray-400 font-bold uppercase mb-2">已分配设备 ({{ (assigningAdmin.devices || []).length }} 台)</h4>
+                    <div v-if="(assigningAdmin.devices || []).length === 0" class="text-center text-gray-600 text-xs py-4 border border-dashed border-gray-700 rounded">暂未分配任何设备</div>
+                    <div v-for="udid in (assigningAdmin.devices || [])" :key="udid" class="flex justify-between items-center bg-gray-900 border border-gray-750 p-2.5 rounded mb-1.5 group hover:border-gray-600 transition-colors">
+                        <div class="flex items-center gap-2">
+                            <span class="text-green-400 text-xs">📱</span>
+                            <span class="text-gray-300 font-mono text-xs">{{ udid.substring(0,20) }}...</span>
+                            <span v-if="devices.find(d => d.udid === udid)" class="text-[9px] text-gray-500 bg-gray-800 px-1.5 py-0.5 rounded">{{ devices.find(d => d.udid === udid)?.device_no || '未命名' }}</span>
+                        </div>
+                        <button @click="removeDevice(assigningAdmin.id, udid)" class="text-red-500 hover:text-white px-2 py-0.5 bg-red-500/10 hover:bg-red-500 rounded text-xs transition-colors">移除</button>
+                    </div>
+                </div>
+                <!-- 可分配的设备 -->
+                <div>
+                    <h4 class="text-xs text-gray-400 font-bold uppercase mb-2">可分配的设备</h4>
+                    <div class="grid grid-cols-1 gap-1.5 max-h-[300px] overflow-y-auto custom-scrollbar">
+                        <div v-for="dev in devices.filter(d => !(assigningAdmin.devices || []).includes(d.udid))" :key="dev.udid" 
+                             class="flex justify-between items-center bg-gray-950 border border-gray-800 p-2.5 rounded hover:border-gray-600 transition-colors">
+                            <div class="flex items-center gap-2">
+                                <span class="text-gray-500 text-xs">📱</span>
+                                <span class="text-gray-400 font-mono text-xs">{{ dev.device_no || dev.udid.substring(0,16) + '...' }}</span>
+                                <span class="text-[9px] text-gray-600">{{ dev.country || '' }}</span>
+                            </div>
+                            <button @click="assignDevice(dev.udid)" class="text-blue-400 hover:text-white px-2 py-0.5 bg-blue-500/10 hover:bg-blue-500 rounded text-xs transition-colors font-bold">+ 分配</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="px-6 py-3 border-t border-gray-700 flex justify-end shrink-0">
+                <button @click="showAssignDeviceModal = false" class="px-5 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded shadow transition-colors text-xs font-bold">关闭</button>
+            </div>
+        </div>
+    </div>
+
   </div>
 </template>
 

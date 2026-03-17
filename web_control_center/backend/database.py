@@ -207,6 +207,40 @@ def init_db():
         # 建立索引以加速待处理任务的分发查询
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_tasks_udid_status ON ec_tasks(udid, status);')
         
+        # 6. [权限系统] 管理员账号表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ec_admins (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                salt TEXT NOT NULL,
+                role TEXT DEFAULT 'admin',
+                created_at REAL
+            )
+        ''')
+        
+        # 7. [权限系统] 管理员-设备归属关系表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ec_admin_devices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                admin_id INTEGER NOT NULL,
+                device_udid TEXT NOT NULL,
+                UNIQUE(admin_id, device_udid)
+            )
+        ''')
+        
+        # 初始化默认超级管理员（仅在表为空时插入）
+        cursor.execute('SELECT COUNT(*) FROM ec_admins')
+        if cursor.fetchone()[0] == 0:
+            import hashlib, os as _os
+            _salt = _os.urandom(16).hex()
+            _hash = hashlib.sha256(('admin123' + _salt).encode()).hexdigest()
+            cursor.execute('''
+                INSERT INTO ec_admins (username, password_hash, salt, role, created_at)
+                VALUES (?, ?, ?, ?, ?)
+            ''', ('admin', _hash, _salt, 'super_admin', time.time()))
+            logger.info("已创建默认超级管理员: admin / admin123")
+        
         conn.commit()
     logger.info("Database initialized successfully with WAL concurrent mode.")
 
@@ -745,6 +779,159 @@ def delete_tiktok_account(account_id: int) -> bool:
     except Exception as e:
         logger.error(f"Error deleting tiktok account {account_id}: {e}")
         return False
+
+# ================= 管理员权限系统 =================
+
+import hashlib
+import os as _os
+
+def _hash_password(password: str, salt: str) -> str:
+    """使用 SHA256 + 盐值对密码进行哈希"""
+    return hashlib.sha256((password + salt).encode()).hexdigest()
+
+def verify_admin_login(username: str, password: str) -> dict:
+    """校验管理员登录，成功返回用户信息字典，失败返回 None"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM ec_admins WHERE username = ?', (username,))
+            row = cursor.fetchone()
+            if row:
+                d = dict(row)
+                expected = _hash_password(password, d['salt'])
+                if expected == d['password_hash']:
+                    return {"id": d['id'], "username": d['username'], "role": d['role']}
+    except Exception as e:
+        logger.error(f"Error verifying admin login: {e}")
+    return None
+
+def get_all_admins() -> List[dict]:
+    """获取所有管理员列表（不含密码哈希）"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('SELECT id, username, role, created_at FROM ec_admins ORDER BY id ASC')
+            return [dict(r) for r in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"Error getting admins: {e}")
+        return []
+
+def get_admin_by_id(admin_id: int) -> dict:
+    """根据 ID 获取管理员信息"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('SELECT id, username, role, created_at FROM ec_admins WHERE id = ?', (admin_id,))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+    except Exception as e:
+        logger.error(f"Error getting admin {admin_id}: {e}")
+    return None
+
+def create_admin(username: str, password: str, role: str = 'admin') -> int:
+    """创建管理员，返回新用户 ID，失败返回 0"""
+    try:
+        salt = _os.urandom(16).hex()
+        pw_hash = _hash_password(password, salt)
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO ec_admins (username, password_hash, salt, role, created_at)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (username, pw_hash, salt, role, time.time()))
+            conn.commit()
+            return cursor.lastrowid
+    except sqlite3.IntegrityError:
+        return 0  # 用户名重复
+    except Exception as e:
+        logger.error(f"Error creating admin: {e}")
+        return 0
+
+def update_admin_password(admin_id: int, new_password: str) -> bool:
+    """更新管理员密码"""
+    try:
+        salt = _os.urandom(16).hex()
+        pw_hash = _hash_password(new_password, salt)
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE ec_admins SET password_hash = ?, salt = ? WHERE id = ?
+            ''', (pw_hash, salt, admin_id))
+            conn.commit()
+            return cursor.rowcount > 0
+    except Exception as e:
+        logger.error(f"Error updating admin password: {e}")
+        return False
+
+def delete_admin(admin_id: int) -> bool:
+    """删除管理员及其设备分配记录"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM ec_admin_devices WHERE admin_id = ?', (admin_id,))
+            cursor.execute('DELETE FROM ec_admins WHERE id = ?', (admin_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+    except Exception as e:
+        logger.error(f"Error deleting admin {admin_id}: {e}")
+        return False
+
+def get_admin_devices(admin_id: int) -> List[str]:
+    """获取管理员所属设备的 UDID 列表"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT device_udid FROM ec_admin_devices WHERE admin_id = ?', (admin_id,))
+            return [row[0] for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"Error getting admin devices: {e}")
+        return []
+
+def assign_device_to_admin(admin_id: int, device_udid: str) -> bool:
+    """将设备分配给管理员"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT OR IGNORE INTO ec_admin_devices (admin_id, device_udid)
+                VALUES (?, ?)
+            ''', (admin_id, device_udid))
+            conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Error assigning device: {e}")
+        return False
+
+def remove_device_from_admin(admin_id: int, device_udid: str) -> bool:
+    """取消管理员的设备分配"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM ec_admin_devices WHERE admin_id = ? AND device_udid = ?', (admin_id, device_udid))
+            conn.commit()
+            return cursor.rowcount > 0
+    except Exception as e:
+        logger.error(f"Error removing device from admin: {e}")
+        return False
+
+def get_device_admin_map() -> dict:
+    """批量获取 设备UDID -> 管理员用户名 的映射字典"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT d.device_udid, a.username 
+                FROM ec_admin_devices d 
+                JOIN ec_admins a ON d.admin_id = a.id
+            ''')
+            return {row[0]: row[1] for row in cursor.fetchall()}
+    except Exception as e:
+        logger.error(f"Error getting device admin map: {e}")
+        return {}
 
 # 初始化数据库
 init_db()

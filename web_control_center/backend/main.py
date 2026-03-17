@@ -1,8 +1,10 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File as FastAPIFile, Request
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File as FastAPIFile, Request, Depends
 from fastapi.responses import FileResponse
 import asyncio
 import uuid
 import json
+import hmac
+import base64
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
@@ -11,7 +13,7 @@ import socket
 import logging
 import time
 import hashlib
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from device_manager import device_manager
 from script_generator import generate_script
@@ -30,6 +32,161 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ================= Token 认证系统 =================
+
+import os
+
+# Token 签名密钥（生产环境应从环境变量读取）
+_TOKEN_SECRET = os.environ.get('TOKEN_SECRET', 'ec_web_control_center_2026_secret_key')
+_TOKEN_EXPIRE_SECONDS = 7 * 24 * 3600  # 7 天有效期
+
+def _create_token(user_id: int, username: str, role: str) -> str:
+    """生成自建 Token（base64 编码的 JSON 负载 + HMAC-SHA256 签名）"""
+    payload = json.dumps({
+        "id": user_id,
+        "username": username,
+        "role": role,
+        "exp": time.time() + _TOKEN_EXPIRE_SECONDS
+    }, separators=(',', ':'))
+    payload_b64 = base64.urlsafe_b64encode(payload.encode()).decode()
+    signature = hmac.new(_TOKEN_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
+    return f"{payload_b64}.{signature}"
+
+def _verify_token(token: str) -> Optional[dict]:
+    """验证 Token 有效性，返回负载或 None"""
+    try:
+        parts = token.split('.')
+        if len(parts) != 2:
+            return None
+        payload_b64, signature = parts
+        expected_sig = hmac.new(_TOKEN_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected_sig):
+            return None
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64).decode())
+        if payload.get('exp', 0) < time.time():
+            return None
+        return payload
+    except Exception:
+        return None
+
+def get_current_user(request: Request) -> dict:
+    """FastAPI 路由依赖：从 Authorization 头解析当前登录用户"""
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        raise HTTPException(status_code=401, detail="未登录或 Token 无效")
+    token = auth_header[7:]
+    user = _verify_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Token 已过期或无效，请重新登录")
+    return user
+
+def require_super_admin(user: dict = Depends(get_current_user)):
+    """FastAPI 路由依赖：要求超级管理员权限"""
+    if user.get('role') != 'super_admin':
+        raise HTTPException(status_code=403, detail="权限不足，此操作仅限超级管理员")
+    return user
+
+def require_device_permission(user: dict, udid: str):
+    """
+    内部权限校验逻辑：
+    1. 超级管理员 (super_admin) 拥有全局权限。
+    2. 普通管理员 (admin) 必须被分配了该 UDID 才能操作。
+    """
+    if user.get("role") == "super_admin":
+        return True
+    
+    assigned_devices = database.get_admin_devices(user.get("id"))
+    if udid in assigned_devices:
+        return True
+        
+    raise HTTPException(status_code=403, detail=f"Permission denied: You do not have access to device {udid}")
+
+# ================= 登录与用户管理接口 =================
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class CreateAdminRequest(BaseModel):
+    username: str
+    password: str
+    role: str = 'admin'
+
+class UpdatePasswordRequest(BaseModel):
+    password: str
+
+class AssignDeviceRequest(BaseModel):
+    device_udid: str
+
+@app.post("/api/auth/login")
+def api_login(req: LoginRequest):
+    """管理员登录接口"""
+    user = database.verify_admin_login(req.username, req.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    token = _create_token(user['id'], user['username'], user['role'])
+    return {
+        "status": "ok",
+        "token": token,
+        "user": user
+    }
+
+@app.get("/api/auth/me")
+def api_get_me(user: dict = Depends(get_current_user)):
+    """获取当前登录用户信息"""
+    # 刷新用户最新的角色信息（可能被超管修改过）
+    db_user = database.get_admin_by_id(user['id'])
+    if not db_user:
+        raise HTTPException(status_code=401, detail="账号已被删除")
+    return {"status": "ok", "user": db_user}
+
+@app.get("/api/admins")
+def api_get_admins(user: dict = Depends(require_super_admin)):
+    """获取管理员列表（超级管理员专用）"""
+    admins = database.get_all_admins()
+    # 为每个管理员附加其所属设备列表
+    for a in admins:
+        a['devices'] = database.get_admin_devices(a['id'])
+    return {"status": "ok", "data": admins}
+
+@app.post("/api/admins")
+def api_create_admin(req: CreateAdminRequest, user: dict = Depends(require_super_admin)):
+    """创建管理员（超级管理员专用）"""
+    admin_id = database.create_admin(req.username, req.password, req.role)
+    if admin_id:
+        return {"status": "ok", "id": admin_id}
+    raise HTTPException(status_code=400, detail="创建失败，用户名可能已存在")
+
+@app.delete("/api/admins/{admin_id}")
+def api_delete_admin(admin_id: int, user: dict = Depends(require_super_admin)):
+    """删除管理员（超级管理员专用）"""
+    if admin_id == user['id']:
+        raise HTTPException(status_code=400, detail="不能删除自己")
+    if database.delete_admin(admin_id):
+        return {"status": "ok"}
+    raise HTTPException(status_code=400, detail="删除失败")
+
+@app.put("/api/admins/{admin_id}/password")
+def api_update_admin_password(admin_id: int, req: UpdatePasswordRequest, user: dict = Depends(require_super_admin)):
+    """修改管理员密码（超级管理员专用）"""
+    if database.update_admin_password(admin_id, req.password):
+        return {"status": "ok"}
+    raise HTTPException(status_code=400, detail="修改失败")
+
+@app.post("/api/admins/{admin_id}/devices")
+def api_assign_device(admin_id: int, req: AssignDeviceRequest, user: dict = Depends(require_super_admin)):
+    """为管理员分配设备（超级管理员专用）"""
+    if database.assign_device_to_admin(admin_id, req.device_udid):
+        return {"status": "ok"}
+    raise HTTPException(status_code=400, detail="分配失败")
+
+@app.delete("/api/admins/{admin_id}/devices/{device_udid}")
+def api_remove_device(admin_id: int, device_udid: str, user: dict = Depends(require_super_admin)):
+    """取消管理员的设备分配（超级管理员专用）"""
+    if database.remove_device_from_admin(admin_id, device_udid):
+        return {"status": "ok"}
+    raise HTTPException(status_code=400, detail="取消分配失败")
 
 class RunTaskRequest(BaseModel):
     udid: str
@@ -54,7 +211,8 @@ def get_device_config_api(udid: str):
     return {"status": "ok", "config": config}
 
 @app.post("/api/devices/{udid}/config")
-def set_device_config_api(udid: str, req: DeviceConfigRequest):
+def set_device_config(udid: str, req: DeviceConfigRequest, user: dict = Depends(get_current_user)):
+    require_device_permission(user, udid)
     success = database.set_device_config(
         udid, req.config_ip, req.config_vpn, 
         req.device_no, req.country, req.group_name, req.exec_time,
@@ -128,12 +286,13 @@ def get_devices():
     return {"devices": device_manager.get_all_devices()}
 
 @app.delete("/api/devices/{udid}")
-def api_delete_device(udid: str):
+def delete_device(udid: str, user: dict = Depends(get_current_user)):
+    require_device_permission(user, udid)
     database.delete_device(udid)
     return {"status": "ok", "message": f"Device {udid} deleted."}
 
 @app.get("/api/cloud/devices") # 提供给前端查询群控大盘设备列表的接口
-def get_cloud_devices():
+def get_cloud_devices(request: Request):
     # 合并云控设备和 USB 设备，使前端能统一展示和操控
     cloud_devs = database.get_all_cloud_devices()
     usb_devs = device_manager.get_all_devices()
@@ -166,13 +325,28 @@ def get_cloud_devices():
         # 如果有活跃的隧道，或是云端上报过的设备，或存在局域网IP的，都可以被当作具备 WS 控制能力
         d['can_ws'] = (udid in active_ws_udids) or (d.get('source') == 'cloud') or d['can_lan']
     
-    return {"status": "ok", "devices": list(merged.values())}
+    # [权限过滤] 如果是普通管理员，仅返回其所属设备
+    all_devices = list(merged.values())
+    try:
+        user = get_current_user(request)
+        if user and user.get('role') != 'super_admin':
+            allowed_udids = set(database.get_admin_devices(user['id']))
+            all_devices = [d for d in all_devices if d.get('udid') in allowed_udids]
+    except:
+        pass  # Token 缺失时不过滤（兼容心跳等无 Token 调用）
+    
+    # [附加管理员信息] 批量查询设备→管理员映射
+    admin_map = database.get_device_admin_map()
+    for d in all_devices:
+        d['admin_username'] = admin_map.get(d.get('udid'), '')
+    
+    return {"status": "ok", "devices": all_devices}
 
 class ParseProxyRequest(BaseModel):
     content: str
     
 @app.post("/api/parse_proxy")
-def api_parse_proxy(req: ParseProxyRequest):
+def api_parse_proxy(req: ParseProxyRequest, user: dict = Depends(get_current_user)):
     try:
         nodes = proxy_parser.fetch_and_parse(req.content)
         return {"status": "ok", "nodes": nodes}
@@ -221,7 +395,7 @@ async def update_existing_script(script_id: int, req: UpdateScriptReq):
     raise HTTPException(status_code=400, detail="Failed to update script or not found")
 
 @app.delete("/api/scripts/{script_id}")
-async def delete_existing_script(script_id: int):
+async def delete_existing_script(script_id: int, user: dict = Depends(get_current_user)):
     success = database.delete_script(script_id)
     if success:
         return {"status": "ok"}
@@ -240,14 +414,14 @@ async def get_random_comments_list(language: str = None, count: int = 50):
     return {"status": "ok", "data": database.get_random_comments(language=language, limit=count)}
 
 @app.post("/api/comments")
-async def create_new_comment(req: CommentDataReq):
+async def create_new_comment(req: CommentDataReq, user: dict = Depends(require_super_admin)):
     success = database.add_comment(req.language, req.content)
     if success:
         return {"status": "ok"}
     raise HTTPException(status_code=500, detail="Failed to create comment")
 
 @app.delete("/api/comments/{comment_id}")
-async def delete_existing_comment(comment_id: int):
+async def delete_existing_comment(comment_id: int, user: dict = Depends(require_super_admin)):
     database.delete_comment(comment_id)
     return {"status": "ok"}
 
@@ -263,12 +437,21 @@ class UpdateTikTokAccountReq(BaseModel):
     sale_time: str = ""
 
 @app.get("/api/tiktok_accounts")
-async def get_tiktok_accounts_list():
+async def get_tiktok_accounts_list(request: Request):
     """获取目前独立管理的全部 TikTok 账号列表及它们的设备关联号"""
-    return {"status": "ok", "data": database.get_all_tiktok_accounts()}
+    all_accounts = database.get_all_tiktok_accounts()
+    # [权限过滤] 普通管理员仅看到自己所属设备的 TikTok 账号
+    try:
+        user = get_current_user(request)
+        if user and user.get('role') != 'super_admin':
+            allowed_udids = set(database.get_admin_devices(user['id']))
+            all_accounts = [a for a in all_accounts if a.get('device_udid') in allowed_udids]
+    except:
+        pass
+    return {"status": "ok", "data": all_accounts}
 
 @app.put("/api/tiktok_accounts/{account_id}")
-async def update_tiktok_account_info(account_id: int, req: UpdateTikTokAccountReq):
+async def update_tiktok_account_info(account_id: int, req: UpdateTikTokAccountReq, user: dict = Depends(get_current_user)):
     success = database.update_tiktok_account(
         account_id, 
         req.country, 
@@ -284,7 +467,7 @@ async def update_tiktok_account_info(account_id: int, req: UpdateTikTokAccountRe
     raise HTTPException(status_code=400, detail="Failed to update tiktok account or not found")
 
 @app.delete("/api/tiktok_accounts/{account_id}")
-async def delete_tiktok_account_api(account_id: int):
+async def delete_tiktok_account_api(account_id: int, user: dict = Depends(get_current_user)):
     """注意：由于前端手机列表依然存活，单独在此处删除只会影响本表的展示"""
     success = database.delete_tiktok_account(account_id)
     if success:
@@ -372,7 +555,10 @@ async def ws_tunnel_endpoint(websocket: WebSocket, device_key: str):
 
 
 @app.post("/api/action_proxy")
-async def action_proxy(req: ActionProxyRequest):
+async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_current_user)):
+    require_device_permission(user, req.udid)
+    # 这是一个通用的指令透传代理接口，前端将原本发往本地 8089 的请求包裹后发到这里，由中继后端转发
+    # 实现无视内网环境限制的远程操控能力。
     with open("api_debug.log", "a") as f:
         f.write(f"[{req.action_type}] RECVD: {req.dict()}\n")
         
@@ -534,7 +720,12 @@ async def action_proxy(req: ActionProxyRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/run")
-def run_script(req: RunTaskRequest):
+async def api_run_script(req: RunTaskRequest, user: dict = Depends(get_current_user)):
+    require_device_permission(user, req.udid)
+    """
+    接收前端生成的脚本指令，并通过双重信道（WS/HTTP）下发至手机。
+    """
+    udid = req.udid
     try:
         base_js = generate_script(req.actions) if req.actions else ""
         js_code = base_js + "\n\n" + (req.raw_script or "")
@@ -605,7 +796,8 @@ def run_script(req: RunTaskRequest):
 from fastapi.responses import StreamingResponse
 
 @app.get("/api/screen/{udid}")
-def get_screen_stream(udid: str, ip: str = None, usb: str = 'true'):
+def get_screen_stream(udid: str, ip: str = None, usb: str = 'true', user: dict = Depends(get_current_user)):
+    require_device_permission(user, udid)
     # Determine the target IP and PORT for the raw TCP socket
     target_ip = "127.0.0.1"
     target_port = 10089
@@ -747,7 +939,8 @@ class LaunchReq(BaseModel):
     udid: str
 
 @app.post("/api/launch_ecwda")
-def api_launch_ecwda(req: LaunchReq):
+def api_launch_ecwda(req: LaunchReq, user: dict = Depends(get_current_user)):
+    require_device_permission(user, req.udid)
     import subprocess
     
     try:
@@ -826,6 +1019,7 @@ class HeartbeatRequest(BaseModel):
     ecwda_status: str = "offline" # ECWDA 的探活结果
     config_checksum: str = ""
     task_status: str = ""  # 任务状态 JSON 数组，如 [{"name":"xxx","time":"HH:mm:ss"}]
+    admin_username: str = "" # iOS 仪表盘手动输入的所属管理员账号
 
 # ECMAIN / ECWDA 编译后输出的更新包存放目录
 ECMAIN_BUILD_OUTPUT = os.path.join(os.path.dirname(__file__), "updates")
@@ -870,6 +1064,21 @@ def handle_heartbeat(req: HeartbeatRequest):
         "ecwda_status": req.ecwda_status,
         "task_status": req.task_status
     })
+    
+    # 【自动绑定逻辑】如果心跳携带了管理员账号，则自动建立归属关系
+    if req.admin_username:
+        # 查找管理员 ID
+        with sqlite3.connect(database.DB_PATH, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('SELECT id FROM ec_admins WHERE username = ?', (req.admin_username,))
+            admin_row = cursor.fetchone()
+            if admin_row:
+                admin_id = admin_row['id']
+                # 检查是否已绑定，若无则自动绑定
+                database.assign_device_to_admin(admin_id, req.udid)
+            else:
+                logging.warning(f"Heartbeat reported unknown admin: {req.admin_username}")
     
     response = {"status": "ok"}
     
@@ -951,7 +1160,8 @@ class CreateTaskRequest(BaseModel):
     payload: str
 
 @app.post("/api/tasks/create")
-async def api_create_task(req: CreateTaskRequest):
+async def api_create_task(req: CreateTaskRequest, user: dict = Depends(get_current_user)):
+    require_device_permission(user, req.udid)
     # 前端网页调用此接口向目标存入指令
     
     # 强力优先通道：如果设备当前有活跃的 WebSocket 隧道，直接下发实现毫秒级响应

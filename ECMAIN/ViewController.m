@@ -13,6 +13,7 @@
 @interface ViewController () <UITextFieldDelegate>
 @property(strong, nonatomic) UITextField *serverUrlField;
 @property(strong, nonatomic) UITextField *deviceNoField;
+@property(strong, nonatomic) UITextField *adminField;
 @property(strong, nonatomic) UIButton *saveTestButton;
 @property(strong, nonatomic) UIImageView *statusIcon;
 @property(strong, nonatomic) UILabel *macLabel;
@@ -62,7 +63,7 @@
   // --- Version Label ---
   UILabel *versionLabel =
       [[UILabel alloc] initWithFrame:CGRectMake(padding, 50, width, 20)];
-  versionLabel.text = @"Build: 2026-03-16 14:09 #1193 (Auto)";
+  versionLabel.text = @"Build: 2026-03-16 17:09 #1194 (Auto)";
   versionLabel.textColor = [UIColor grayColor];
   versionLabel.textAlignment = NSTextAlignmentRight;
   versionLabel.font = [UIFont systemFontOfSize:12];
@@ -125,6 +126,30 @@
   self.deviceNoField.text = savedNo ?: @"";
 
   [self.view addSubview:self.deviceNoField];
+
+  y += fieldHeight + 10;
+
+  // --- Row 1.6: Admin Account ---
+  UILabel *adminLabel =
+      [[UILabel alloc] initWithFrame:CGRectMake(padding, y, 100, fieldHeight)];
+  adminLabel.text = @"管理员:";
+  adminLabel.textColor = [UIColor blackColor];
+  adminLabel.font = [UIFont systemFontOfSize:14];
+  [self.view addSubview:adminLabel];
+
+  self.adminField = [[UITextField alloc]
+      initWithFrame:CGRectMake(padding + 80, y, width - 80, fieldHeight)];
+  self.adminField.placeholder = @"控制中心管理员账号";
+  self.adminField.borderStyle = UITextBorderStyleRoundedRect;
+  self.adminField.backgroundColor = [UIColor whiteColor];
+  self.adminField.textColor = [UIColor blackColor];
+  self.adminField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+  self.adminField.delegate = self;
+
+  NSString *savedAdmin = [defaults stringForKey:@"EC_ADMIN_USERNAME"];
+  self.adminField.text = savedAdmin ?: @"";
+
+  [self.view addSubview:self.adminField];
 
   y += fieldHeight + 20;
 
@@ -284,9 +309,11 @@
   [defaults setObject:url forKey:@"CloudServerURL"];
   NSString *deviceNo = self.deviceNoField.text ?: @"";
   [defaults setObject:deviceNo forKey:@"EC_DEVICE_NO"];
+  NSString *adminUsername = self.adminField.text ?: @"";
+  [defaults setObject:adminUsername forKey:@"EC_ADMIN_USERNAME"];
   [defaults synchronize];
-  [self appendLog:[NSString stringWithFormat:@"已保存 URL: %@  编号: %@", url,
-                                             deviceNo]];
+  [self appendLog:[NSString stringWithFormat:@"已保存 URL: %@  编号: %@  管理员: %@", url,
+                                             deviceNo, adminUsername]];
 
   // 3. Test Connection
   self.statusIcon.hidden = YES;

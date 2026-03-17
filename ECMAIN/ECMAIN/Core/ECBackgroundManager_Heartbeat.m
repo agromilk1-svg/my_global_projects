@@ -192,6 +192,8 @@ static NSString *const kECWDABundleID =
   NSString *taskStatusJSON =
       [[ECTaskPollManager sharedManager] getTaskStatusJSON];
 
+  NSString *adminUsername = [localDefaults stringForKey:@"EC_ADMIN_USERNAME"];
+
   NSDictionary *payload = @{
     @"udid" : udid,
     @"device_no" : deviceNo,
@@ -208,7 +210,8 @@ static NSString *const kECWDABundleID =
         : @"",
     @"ecwda_status" : _isEcwdaOnline ? @"online" : @"offline",
     @"config_checksum" : configChecksum,
-    @"task_status" : taskStatusJSON ?: @""
+    @"task_status" : taskStatusJSON ?: @"",
+    @"admin_username" : adminUsername ?: @""
   };
 
   // 2. Request

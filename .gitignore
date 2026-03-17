@@ -52,3 +52,7 @@ kernelcache
 # 临时与测试
 .symlink_test
 **/tmp/
+
+# 敏感脚本资料
+脚本资料.js
+美国脚本.js
