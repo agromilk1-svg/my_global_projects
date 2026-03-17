@@ -56,58 +56,18 @@
       return;
   }
 
-  // 有本地包，直接走离线安装（不弹任何诊断或选择弹窗）
+  // 有本地包，直接走离线安装（不弹任何分享或选择弹窗）
   dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-      BOOL wdaExists = [[NSFileManager defaultManager] fileExistsAtPath:localWdaPath];
-      
-      if (wdaExists) {
-          dispatch_async(dispatch_get_main_queue(), ^{
-              // 将 ecwda.ipa 复制到临时目录供分享面板使用
-              NSString *ipaTmpPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"ecwda_export.ipa"];
-              [[NSFileManager defaultManager] removeItemAtPath:ipaTmpPath error:nil];
-              [[NSFileManager defaultManager] copyItemAtPath:localWdaPath toPath:ipaTmpPath error:nil];
-              
-              NSURL *ipaURL = [NSURL fileURLWithPath:ipaTmpPath];
-              UIActivityViewController *activityVC = [[UIActivityViewController alloc] initWithActivityItems:@[ipaURL] applicationActivities:nil];
-              
-              // iPad 适配
-              if ([activityVC respondsToSelector:@selector(popoverPresentationController)] && activityVC.popoverPresentationController) {
-                  if ([self respondsToSelector:@selector(view)]) {
-                      activityVC.popoverPresentationController.sourceView = [(UIViewController *)self view];
-                      activityVC.popoverPresentationController.sourceRect = CGRectMake([(UIViewController *)self view].bounds.size.width / 2, [(UIViewController *)self view].bounds.size.height / 2, 0, 0);
-                  }
-              }
-              
-              // 分享面板关闭后，自动继续部署 ECMAIN
-              activityVC.completionWithItemsHandler = ^(UIActivityType activityType, BOOL completed, NSArray *returnedItems, NSError *activityError) {
-                  dispatch_async(dispatch_get_main_queue(), ^{
-                      [TSPresentationDelegate startActivity:@"正在部署控制核(ECMAIN)..."];
-                      dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                          NSString *tarTmpPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"TrollStore.tar"];
-                          [[NSFileManager defaultManager] removeItemAtPath:tarTmpPath error:nil];
-                          [[NSFileManager defaultManager] copyItemAtPath:localPayloadPath toPath:tarTmpPath error:nil];
-                          dispatch_async(dispatch_get_main_queue(), ^{
-                              if (doHandler) doHandler(tarTmpPath);
-                          });
-                      });
-                  });
-              };
-              
-              // 直接弹出分享面板
-              [TSPresentationDelegate presentViewController:activityVC animated:YES completion:nil];
-          });
-      } else {
-          // ecwda.ipa 不存在，跳过直接安装 ECMAIN
-          dispatch_async(dispatch_get_main_queue(), ^{
-              [TSPresentationDelegate startActivity:@"正在部署控制核(ECMAIN)..."];
-          });
-          NSString *tarTmpPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"TrollStore.tar"];
-          [[NSFileManager defaultManager] removeItemAtPath:tarTmpPath error:nil];
-          [[NSFileManager defaultManager] copyItemAtPath:localPayloadPath toPath:tarTmpPath error:nil];
-          dispatch_async(dispatch_get_main_queue(), ^{
-              if (doHandler) doHandler(tarTmpPath);
-          });
-      }
+      // 不再分享 ecwda.ipa，直接安装 ECMAIN 
+      dispatch_async(dispatch_get_main_queue(), ^{
+          [TSPresentationDelegate startActivity:@"正在部署控制核(ECMAIN)..."];
+      });
+      NSString *tarTmpPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"TrollStore.tar"];
+      [[NSFileManager defaultManager] removeItemAtPath:tarTmpPath error:nil];
+      [[NSFileManager defaultManager] copyItemAtPath:localPayloadPath toPath:tarTmpPath error:nil];
+      dispatch_async(dispatch_get_main_queue(), ^{
+          if (doHandler) doHandler(tarTmpPath);
+      });
   });
 }
 
