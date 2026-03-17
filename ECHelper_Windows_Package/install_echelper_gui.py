@@ -3,6 +3,8 @@ import os
 import time
 import traceback
 import logging
+import platform
+import shutil
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QTextEdit, QLabel, QProgressBar, QListWidget, QListWidgetItem)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt
@@ -16,6 +18,36 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
     encoding='utf-8'
 )
+
+# --- 增强 PATH 环境以支持打包后的 macOS .app 寻找 tidevice ---
+def fix_env_path():
+    common_paths = [
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+        os.path.expanduser("~/Library/Python/3.9/bin"),
+        os.path.expanduser("~/Library/Python/3.8/bin"),
+        os.path.expanduser("/Library/Frameworks/Python.framework/Versions/3.9/bin"),
+        "/opt/homebrew/bin"
+    ]
+    current_path = os.environ.get("PATH", "")
+    for p in common_paths:
+        if os.path.exists(p) and p not in current_path:
+            current_path = p + os.pathsep + current_path
+    os.environ["PATH"] = current_path
+
+fix_env_path()
+
+def get_tidevice_path():
+    p = shutil.which("tidevice")
+    if not p and platform.system() == "Darwin":
+        # 最后的兜底尝试
+        user_bin = os.path.expanduser("~/Library/Python/3.9/bin/tidevice")
+        if os.path.exists(user_bin):
+            return user_bin
+    return p
 
 # 拦截所有未处理异常，防止 GUI 闪退后无报错信息
 def global_exception_handler(exctype, value, tb):
@@ -138,11 +170,12 @@ class InstallerThread(QThread):
                     self.log_signal.emit(f"🚀 正在自动拉起 ECHelper 触发底核部署...")
                     try:
                         import subprocess
-                        import shutil
-                        t_path = shutil.which("tidevice")
+                        t_path = get_tidevice_path()
                         if t_path:
                             subprocess.run([t_path, "-u", udid, "launch", "com.apple.Tips"], capture_output=True, timeout=10)
                             self.log_signal.emit("   ✅ 成功拉起！ECWDA 将在几秒内静默安装完毕")
+                        else:
+                            self.log_signal.emit("   ⚠️ 无法找到 tidevice 工具，请手动在手机上打开 [提示] App")
                     except Exception as e:
                         self.log_signal.emit(f"   ⚠️ 自动拉起出错，请手动在手机上打开 [提示] App: {e}")
         except Exception as e:
@@ -167,14 +200,12 @@ class LaunchEcwdaThread(QThread):
 
     def run(self):
         self.log_signal.emit(f"🚀 准备为 {len(self.udids)} 台设备启动 ECWDA 底核...")
-        import platform
-        import shutil
         import subprocess
         
-        t_path = shutil.which("tidevice")
+        t_path = get_tidevice_path()
         if not t_path:
-            self.log_signal.emit("❌ 未在系统 PATH 中找到 tidevice 命令行工具，请确保已安装潮汐通道！(pip install tidevice)")
-            self.finished_signal.emit()
+            self.log_signal.emit("❌ 未在系统 PATH 中找到 tidevice 命令行工具，请确保已安装！(pip install tidevice)")
+            self.finished_signal.emit(False)
             return
             
         try:
