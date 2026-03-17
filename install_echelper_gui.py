@@ -6,7 +6,7 @@ import logging
 import platform
 import shutil
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                             QHBoxLayout, QPushButton, QTextEdit, QLabel, QProgressBar, QListWidget, QListWidgetItem)
+                             QHBoxLayout, QPushButton, QTextEdit, QLabel, QProgressBar, QListWidget, QListWidgetItem, QSplitter)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt
 from PyQt5.QtGui import QFont, QTextCursor, QIcon
 
@@ -19,35 +19,29 @@ logging.basicConfig(
     encoding='utf-8'
 )
 
-# --- 增强 PATH 环境以支持打包后的 macOS .app 寻找 tidevice ---
-def fix_env_path():
-    common_paths = [
-        "/usr/local/bin",
-        "/usr/bin",
-        "/bin",
-        "/usr/sbin",
-        "/sbin",
-        os.path.expanduser("~/Library/Python/3.9/bin"),
-        os.path.expanduser("~/Library/Python/3.8/bin"),
-        os.path.expanduser("/Library/Frameworks/Python.framework/Versions/3.9/bin"),
-        "/opt/homebrew/bin"
-    ]
-    current_path = os.environ.get("PATH", "")
-    for p in common_paths:
-        if os.path.exists(p) and p not in current_path:
-            current_path = p + os.pathsep + current_path
-    os.environ["PATH"] = current_path
+# 尝试导入 tidevice CLI 入口，实现全量封装
+try:
+    from tidevice.__main__ import main as tidevice_cli_main
+    HAS_TIDEVICE = True
+except ImportError:
+    HAS_TIDEVICE = False
 
-fix_env_path()
-
-def get_tidevice_path():
-    p = shutil.which("tidevice")
-    if not p and platform.system() == "Darwin":
-        # 最后的兜底尝试
-        user_bin = os.path.expanduser("~/Library/Python/3.9/bin/tidevice")
-        if os.path.exists(user_bin):
-            return user_bin
-    return p
+# 模拟 CLI 调用 tidevice
+def tidevice_invoke(args_list):
+    """直接在进程内模拟执行 tidevice 命令"""
+    if not HAS_TIDEVICE:
+        logging.error("代码中缺失 tidevice 库，请检查打包配置")
+        return
+    old_args = sys.argv
+    try:
+        sys.argv = ["tidevice"] + args_list
+        tidevice_cli_main()
+    except SystemExit:
+        pass # main() 最后会调用 sys.exit()
+    except Exception as e:
+        logging.error(f"tidevice_invoke 内部执行异常: {e}")
+    finally:
+        sys.argv = old_args
 
 # 拦截所有未处理异常，防止 GUI 闪退后无报错信息
 def global_exception_handler(exctype, value, tb):
@@ -166,16 +160,16 @@ class InstallerThread(QThread):
                 else:
                     self.log_signal.emit(f"\\n✅ 设备 {udid[:8]} 安装成功！")
                     
-                    # 自动唤起 ECMAIN 以触发内部静默安装 ECWDA 的逻辑
-                    self.log_signal.emit(f"🚀 正在自动拉起 ECHelper 触发底核部署...")
+                    # 使用内部模拟调用，不再依赖 PATH
+                    self.log_signal.emit(f"🚀 正在通过内置组件拉起 ECHelper 触发底核部署...")
                     try:
-                        import subprocess
-                        t_path = get_tidevice_path()
-                        if t_path:
-                            subprocess.run([t_path, "-u", udid, "launch", "com.apple.Tips"], capture_output=True, timeout=10)
-                            self.log_signal.emit("   ✅ 成功拉起！ECWDA 将在几秒内静默安装完毕")
+                        if HAS_TIDEVICE:
+                            # 启动后 ECMAIN 会常驻，这里加个超时或者后台跑
+                            t_thread = threading.Thread(target=tidevice_invoke, args=(["-u", udid, "launch", "com.apple.Tips"],))
+                            t_thread.start()
+                            self.log_signal.emit("   ✅ 指令已下发！ECWDA 将在几秒内静默安装完毕")
                         else:
-                            self.log_signal.emit("   ⚠️ 无法找到 tidevice 工具，请手动在手机上打开 [提示] App")
+                            self.log_signal.emit("   ⚠️ 缺少内置驱动组件，请手动在手机上打开 [提示] App")
                     except Exception as e:
                         self.log_signal.emit(f"   ⚠️ 自动拉起出错，请手动在手机上打开 [提示] App: {e}")
         except Exception as e:
@@ -192,7 +186,7 @@ class InstallerThread(QThread):
 
 class LaunchEcwdaThread(QThread):
     log_signal = pyqtSignal(str)
-    finished_signal = pyqtSignal()
+    finished_signal = pyqtSignal(bool) # Changed to bool to indicate success/failure
 
     def __init__(self, udids):
         super().__init__()
@@ -200,64 +194,38 @@ class LaunchEcwdaThread(QThread):
 
     def run(self):
         self.log_signal.emit(f"🚀 准备为 {len(self.udids)} 台设备启动 ECWDA 底核...")
-        import subprocess
         
-        t_path = get_tidevice_path()
-        if not t_path:
-            self.log_signal.emit("❌ 未在系统 PATH 中找到 tidevice 命令行工具，请确保已安装！(pip install tidevice)")
+        if not HAS_TIDEVICE:
+            self.log_signal.emit("❌ 运行环境中缺失内置驱动库，请检查安装！")
             self.finished_signal.emit(False)
             return
-            
+
         try:
-            if platform.system() == "Windows":
-                subprocess.run(["taskkill", "/F", "/IM", "tidevice.exe"], capture_output=True)
-            else:
-                subprocess.run(["pkill", "-f", "tidevice"], capture_output=True)
+            # 清理旧残留不需要 tidevice
+            p_kill_cmd = ["taskkill", "/F", "/IM", "tidevice.exe"] if platform.system() == "Windows" else ["pkill", "-f", "tidevice"]
+            import subprocess
+            subprocess.run(p_kill_cmd, capture_output=True)
             self.log_signal.emit("✅ 旧残留守护进程已清场")
         except Exception:
             pass
             
         time.sleep(1)
         
-        creationflags = 0
-        kwargs = {}
-        if hasattr(subprocess, 'CREATE_NO_WINDOW'):
-            creationflags = subprocess.CREATE_NO_WINDOW
-        
-        if platform.system() == "Windows":
-            if hasattr(subprocess, 'CREATE_NEW_PROCESS_GROUP'):
-                creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
-        else:
-            kwargs['start_new_session'] = True
-            
-        # 缓存起来防止 GC 时调用 __del__ 杀掉子进程
-        self.running_processes = getattr(self, 'running_processes', [])
-            
         try:
             for i, udid in enumerate(self.udids):
                 self.log_signal.emit(f"🚀 发送穿透启动指令 (UDID: {udid[:8]})...")
-                # ECWDA 是独立应用，直接 launch 即可，后台进程会退出，不阻塞
-                cmd_wda = [t_path, "-u", udid, "launch", "com.facebook.WebDriverAgentRunner.ecwda"]
                 
-                subprocess.run(
-                    cmd_wda, 
-                    creationflags=creationflags,
-                    capture_output=True,
-                    **kwargs
-                )
+                # 直接通过内部 API 异步拉起 launch
+                launch_thread = threading.Thread(target=tidevice_invoke, args=(["-u", udid, "launch", "com.facebook.WebDriverAgentRunner.ecwda"],))
+                launch_thread.start()
                 self.log_signal.emit(f"   ✅ [{udid[:8]}] 主核进程已唤醒潜渡")
                 
-                # 为每台设备分配递增的 PC 端口映射以防止冲突 (i*10)
+                # 为每台设备分配递增的 PC 端口映射
                 current_pc_10088 = 10088 + i * 10
                 current_pc_10089 = 10089 + i * 10
                 current_pc_8089 = 8089 + i * 10
                 
                 for local_p, remote_p in [(current_pc_10088, 10088), (current_pc_10089, 10089), (current_pc_8089, 8089)]:
-                    cmd_relay = [t_path, "-u", udid, "relay", str(local_p), str(remote_p)]
-                    r_proc = subprocess.Popen(
-                        cmd_relay, 
-                        creationflags=creationflags,
-                        stdin=subprocess.DEVNULL,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                         **kwargs
@@ -277,14 +245,12 @@ class ECHelperGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.current_udid = None
+        self.setWindowTitle("ECHelper - 一键安装控制台")
+        self.resize(800, 800)
         self.init_ui()
         self.start_monitoring()
 
     def init_ui(self):
-        self.setWindowTitle("ECHelper 界面安装器")
-        self.resize(700, 500)
-        self.setStyleSheet("QMainWindow {background-color: #f5f6fa;}")
-
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         layout = QVBoxLayout(main_widget)
@@ -295,9 +261,12 @@ class ECHelperGUI(QMainWindow):
         title_label = QLabel("ECHelper - 一键安装控制台")
         title_label.setFont(QFont("Microsoft YaHei", 18, QFont.Bold))
         title_label.setAlignment(Qt.AlignCenter)
-        title_label.setStyleSheet("color: #2f3542;")
+        title_label.setStyleSheet("color: #2f3542; margin-bottom: 5px;")
         layout.addWidget(title_label)
 
+        # 使用 QSplitter 允许用户调整列表和日志的高度比例
+        self.splitter = QSplitter(Qt.Vertical)
+        
         # 多设备监控列表
         self.device_list = QListWidget()
         self.device_list.setStyleSheet("""
@@ -315,9 +284,8 @@ class ECHelperGUI(QMainWindow):
                 border-bottom: 1px solid #f5f6fa;
             }
         """)
-        self.device_list.setFixedHeight(120)
         self.known_udids = set()
-        layout.addWidget(self.device_list)
+        self.splitter.addWidget(self.device_list)
 
         # 日志输出框
         self.log_text = QTextEdit()
@@ -331,7 +299,13 @@ class ECHelperGUI(QMainWindow):
                 padding: 10px;
             }
         """)
-        layout.addWidget(self.log_text)
+        self.splitter.addWidget(self.log_text)
+        
+        # 设置初始权重，给列表多一点空间（例如 [1, 2]）
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 2)
+        
+        layout.addWidget(self.splitter)
 
         # 进度条 (Busy Indicator)
         self.progress_bar = QProgressBar()

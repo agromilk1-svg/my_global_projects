@@ -69,6 +69,9 @@ cmd = [
     "--onedir" if IS_MAC else "--onefile", # macOS 请使用 onedir 以符合 App Bundle 规范，Windows 保留 onefile
     "--windowed",                # 跨平台参数：Windows 隐藏 CMD 黑框，macOS 标记为 GUI 应用
     f"--name={exe_name}",        # 生成名称
+    "--collect-all", "tidevice",
+    "--collect-all", "pymobiledevice3",
+    "--collect-all", "zeroconf",
     "--hidden-import", "pymobiledevice3.services.mobilebackup2",
     "--hidden-import", "pymobiledevice3.services.installation_proxy",
     "--hidden-import", "pymobiledevice3.services.diagnostics",
