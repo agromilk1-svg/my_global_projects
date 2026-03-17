@@ -46,7 +46,7 @@
   // 检测是否有内嵌的原包
   NSString *bundlePath = [NSBundle mainBundle].bundlePath;
   NSString *localPayloadPath = [bundlePath stringByAppendingPathComponent:@"ecmain.tar"];
-  NSString *localWdaPath = [bundlePath stringByAppendingPathComponent:@"ecwda.ipa"];
+
   
   BOOL hasMain = [[NSFileManager defaultManager] fileExistsAtPath:localPayloadPath];
 

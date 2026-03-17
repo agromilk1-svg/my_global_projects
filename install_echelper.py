@@ -209,7 +209,7 @@ def perform_installation(serial: str = None) -> bool:
     )
 
     try:
-        perform_restore(back, reboot=False)
+        perform_restore(back, reboot=False, serial=serial)
     except PyMobileDevice3Exception as e:
         if "Find My" in str(e):
             click.secho(f"[{device_udid}] 必须先关闭“查找我的 iPhone”才能使用此工具。", fg="red")

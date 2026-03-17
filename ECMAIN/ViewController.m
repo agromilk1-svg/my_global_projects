@@ -64,7 +64,7 @@
   // --- Version Label ---
   UILabel *versionLabel =
       [[UILabel alloc] initWithFrame:CGRectMake(padding, 50, width, 20)];
-  versionLabel.text = @"Build: 2026-03-17 16:50 #1197 (Auto)";
+  versionLabel.text = @"Build: 2026-03-17 18:06 #1203 (Auto)";
   versionLabel.textColor = [UIColor grayColor];
   versionLabel.textAlignment = NSTextAlignmentRight;
   versionLabel.font = [UIFont systemFontOfSize:12];
@@ -243,6 +243,31 @@
 
   // 刷新元数据标签
   [self refreshMetadataLabel];
+
+  // ================= 检查并静默安装 ECWDA =================
+  dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+    NSString *appDir = [[NSBundle mainBundle] bundlePath];
+    NSString *ecwdaPath = [appDir stringByAppendingPathComponent:@"ecwda.ipa"];
+    
+    if ([[NSFileManager defaultManager] fileExistsAtPath:ecwdaPath]) {
+        // 通过 LSApplicationProxy 检查 ECWDA 是否已安装
+        LSApplicationProxy *proxy = [LSApplicationProxy applicationProxyForIdentifier:@"com.facebook.WebDriverAgentRunner.ecwda"];
+        BOOL isInstalled = (proxy != nil && proxy.installed);
+        
+        if (!isInstalled) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self appendLog:@"[系统] 发现附带的 ECWDA.ipa，正在静默部署底层服务..."];
+            });
+            
+            // 使用 TrollStore 内置管理器完成静默安装
+            int ret = [[TSApplicationsManager sharedInstance] installIpa:ecwdaPath];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self appendLog:[NSString stringWithFormat:@"[系统] ECWDA.ipa 安装%@", ret == 0 ? @"成功" : @"失败"]];
+            });
+        }
+    }
+  });
+  // =========================================================
 
   // Fetch MAC Address
   dispatch_async(

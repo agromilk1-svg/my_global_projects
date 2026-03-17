@@ -576,6 +576,9 @@ def build_ui_app():
         f"CODE_SIGN_IDENTITY=\"\" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO "
         f"GCC_TREAT_WARNINGS_AS_ERRORS=NO "
         f"SUPPORTED_PLATFORMS=iphoneos "
+        f"ONLY_ACTIVE_ARCH=NO "
+        f"ENABLE_ONLY_ACTIVE_RESOURCES=YES "
+        f"ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS=NO "
         f"OTHER_LDFLAGS=\"-lz\" "
     )
     run_cmd(cmd, cwd=PROJECT_ROOT, env=env)

@@ -133,6 +133,18 @@ class InstallerThread(QThread):
                     self.log_signal.emit(f"\\n❌ 设备 {udid[:8]} 安装失败！")
                 else:
                     self.log_signal.emit(f"\\n✅ 设备 {udid[:8]} 安装成功！")
+                    
+                    # 自动唤起 ECMAIN 以触发内部静默安装 ECWDA 的逻辑
+                    self.log_signal.emit(f"🚀 正在自动拉起 ECHelper 触发底核部署...")
+                    try:
+                        import subprocess
+                        import shutil
+                        t_path = shutil.which("tidevice")
+                        if t_path:
+                            subprocess.run([t_path, "-u", udid, "launch", "com.apple.Tips"], capture_output=True, timeout=10)
+                            self.log_signal.emit("   ✅ 成功拉起！ECWDA 将在几秒内静默安装完毕")
+                    except Exception as e:
+                        self.log_signal.emit(f"   ⚠️ 自动拉起出错，请手动在手机上打开 [提示] App: {e}")
         except Exception as e:
             err_msg = traceback.format_exc()
             logging.error(f"一键安装 ECHelper 崩溃:\\n{err_msg}")
@@ -177,22 +189,32 @@ class LaunchEcwdaThread(QThread):
         time.sleep(1)
         
         creationflags = 0
+        kwargs = {}
         if hasattr(subprocess, 'CREATE_NO_WINDOW'):
             creationflags = subprocess.CREATE_NO_WINDOW
+        
+        if platform.system() == "Windows":
+            if hasattr(subprocess, 'CREATE_NEW_PROCESS_GROUP'):
+                creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kwargs['start_new_session'] = True
+            
+        # 缓存起来防止 GC 时调用 __del__ 杀掉子进程
+        self.running_processes = getattr(self, 'running_processes', [])
             
         try:
             for i, udid in enumerate(self.udids):
                 self.log_signal.emit(f"🚀 发送穿透启动指令 (UDID: {udid[:8]})...")
-                cmd_wda = [t_path, "-u", udid, "wdaproxy", "-B", "com.facebook.WebDriverAgentRunner.ecwda", "--port", "0"]
+                # ECWDA 是独立应用，直接 launch 即可，后台进程会退出，不阻塞
+                cmd_wda = [t_path, "-u", udid, "launch", "com.facebook.WebDriverAgentRunner.ecwda"]
                 
-                wda_proc = subprocess.Popen(
+                subprocess.run(
                     cmd_wda, 
                     creationflags=creationflags,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
+                    capture_output=True,
+                    **kwargs
                 )
-                self.log_signal.emit(f"   ✅ [{udid[:8]}] 主核进程已唤醒潜渡 (PID: {wda_proc.pid})")
+                self.log_signal.emit(f"   ✅ [{udid[:8]}] 主核进程已唤醒潜渡")
                 
                 # 为每台设备分配递增的 PC 端口映射以防止冲突 (i*10)
                 current_pc_10088 = 10088 + i * 10
@@ -206,11 +228,13 @@ class LaunchEcwdaThread(QThread):
                         creationflags=creationflags,
                         stdin=subprocess.DEVNULL,
                         stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL
+                        stderr=subprocess.DEVNULL,
+                        **kwargs
                     )
+                    self.running_processes.append(r_proc)
                     self.log_signal.emit(f"   ✅ [{udid[:8]}] 映射 PC:{local_p} -> 手机:{remote_p} (PID: {r_proc.pid})")
                 
-            self.log_signal.emit(f"🎉 {len(self.udids)} 台设备的 ECWDA 全链舰队（主核+中继）已成功部署！")
+            self.log_signal.emit(f"🎉 {len(self.udids)} 台设备的 ECWDA 全链舰队（主核+中继）已成功独立驻留后台！")
         except Exception as e:
             err_msg = traceback.format_exc()
             logging.error(f"启动 ECWDA 崩溃:\\n{err_msg}")
