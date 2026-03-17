@@ -2236,7 +2236,10 @@ onMounted(async () => {
                  <th @click="sortBy('vpn_active')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">VPN <span v-if="sortKey==='vpn_active'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th @click="sortBy('vpn_ip')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">VPN 节点 <span v-if="sortKey==='vpn_ip'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th @click="sortBy('exec_time')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">启动时间 <span v-if="sortKey==='exec_time'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
+<<<<<<< HEAD
+=======
                  <th @click="sortBy('admin_username')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">管理员 <span v-if="sortKey==='admin_username'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
+>>>>>>> 8cf7e1e7a8e8c6043fbafa4a7be2acf0690efc47
                  <th class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-default">任务状态</th>
                  <th @click="sortBy('last_heartbeat')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-right cursor-pointer hover:bg-gray-800 transition-colors">最后上线 <span v-if="sortKey==='last_heartbeat'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-default">操作</th>
@@ -2298,9 +2301,12 @@ onMounted(async () => {
                     <span v-else class="text-gray-600 text-[10px] font-mono">--</span>
                  </td>
                  <td class="p-3 text-center">
+<<<<<<< HEAD
+=======
                     <span v-if="dev.admin_username" class="bg-purple-900/30 text-purple-400 border border-purple-800 px-2 py-0.5 rounded text-[10px] font-bold">{{ dev.admin_username }}</span>
                     <span v-else class="text-gray-600 text-[10px]">--</span>
                  </td>                 <td class="p-3 text-center">
+>>>>>>> 8cf7e1e7a8e8c6043fbafa4a7be2acf0690efc47
                     <div v-if="dev.task_status" class="flex flex-col gap-0.5">
                       <div v-for="(t, i) in ((() => { try { return JSON.parse(dev.task_status) } catch(e) { return [] } })())" :key="i" class="flex items-center gap-1 justify-center">
                         <span class="text-[10px] text-gray-300 truncate max-w-[80px]" :title="t.name">{{ t.name }}</span>
