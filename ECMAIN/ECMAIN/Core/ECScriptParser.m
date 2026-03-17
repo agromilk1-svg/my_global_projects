@@ -52,9 +52,9 @@ static const int kWDAPort = 10088;
 
 - (void)executeScript:(NSString *)script
            completion:(void (^)(BOOL success, NSArray *results))completion {
-  NSLog(@"[ECScriptEngine] ====== EXECUTE SCRIPT ======");
-  NSLog(@"[ECScriptEngine] Script Length: %lu", (unsigned long)script.length);
-  NSLog(@"[ECScriptEngine] Script Content:\n%@", script);
+  NSLog(@"[脚本动作] ====== 开始执行脚本 ======");
+  NSLog(@"[脚本动作] 脚本长度: %lu 字符", (unsigned long)script.length);
+  NSLog(@"[脚本动作] 脚本内容:\n%@", script);
 
   // 智能拦截：检测是否为代理 URI 而非 JS 脚本
   NSString *trimmed = [script
@@ -106,8 +106,8 @@ static const int kWDAPort = 10088;
 
   // Exception Handler
   context.exceptionHandler = ^(JSContext *context, JSValue *exception) {
-    NSLog(@"[ECScriptEngine] !!! JS Exception: %@", exception);
-    [self log:[NSString stringWithFormat:@"JS Error: %@", exception]];
+    NSLog(@"[脚本动作] ❌ JS 异常: %@", exception);
+    [self log:[NSString stringWithFormat:@"[脚本动作] JS Error: %@", exception]];
   };
 
   // Inject 'wda' object (self)
@@ -158,7 +158,7 @@ static const int kWDAPort = 10088;
 
   JSContext *context = [[JSContext alloc] init];
   context.exceptionHandler = ^(JSContext *ctx, JSValue *exception) {
-    [self log:[NSString stringWithFormat:@"JS Error: %@", exception]];
+    [self log:[NSString stringWithFormat:@"[脚本动作] JS Error: %@", exception]];
   };
   context[@"wda"] = self;
   context[@"console"] = @{};
@@ -266,7 +266,7 @@ static NSString *gActiveWDASessionId = nil;
       @"message" : message,
       @"timestamp" : @([[NSDate date] timeIntervalSince1970])
     }];
-    [[ECLogManager sharedManager] log:@"[Script] %@", message];
+    [[ECLogManager sharedManager] log:@"[脚本动作] %@", message];
 
     // 将日志存入全局缓存池，等待前端主动定时抓取（备用通道）
     [ECScriptParser addGlobalLog:@{

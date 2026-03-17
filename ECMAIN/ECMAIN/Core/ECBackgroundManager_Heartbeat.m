@@ -442,7 +442,7 @@ static NSString *const kECWDABundleID =
 
     [[ECLogManager sharedManager]
         log:[NSString
-                stringWithFormat:@"[ECBackground] Received Task: %@ (ID: %@)",
+                stringWithFormat:@"[脚本动作] 📩 收到心跳任务: %@ (ID: %@)",
                                  type, taskId]];
 
     if ([type isEqualToString:@"script"]) {

@@ -884,6 +884,14 @@ static BOOL _isEcmainOnline = YES;
                               traceback:nil]);
   }
 
+  NSLog(@"[脚本动作] ====== ECWDA 收到脚本执行请求 ======");
+  NSLog(@"[脚本动作] 命令数量: %lu", (unsigned long)commands.count);
+  for (NSUInteger i = 0; i < commands.count; i++) {
+    NSDictionary *cmd = commands[i];
+    NSLog(@"[脚本动作] 命令[%lu]: action=%@, params=%@",
+          (unsigned long)i, cmd[@"action"], cmd[@"params"] ?: @"{}");
+  }
+
   XCUIApplication *app = XCUIApplication.fb_activeApplication;
   NSMutableArray *results = [NSMutableArray array];
   NSInteger successCount = 0;
@@ -1082,6 +1090,10 @@ static BOOL _isEcmainOnline = YES;
       failCount++;
     }
   }
+
+  NSLog(@"[脚本动作] ====== ECWDA 脚本执行完成 ======");
+  NSLog(@"[脚本动作] 统计: 总计 %lu 条, 成功 %ld, 失败 %ld",
+        (unsigned long)commands.count, (long)successCount, (long)failCount);
 
   return FBResponseWithObject(@{
     @"success" : @(failCount == 0),

@@ -355,10 +355,11 @@
 
   NSString *logMsg = [NSString
       stringWithFormat:
-          @"[ECTaskPollManager] 发现新任务，开始自动执行: %@ (ID: %@)", name,
+          @"[脚本动作] 🎬 发现新任务，开始自动执行: %@ (ID: %@)", name,
           taskId];
   [[ECLogManager sharedManager] log:logMsg];
   NSLog(@"%@", logMsg);
+  NSLog(@"[脚本动作] 脚本内容:\n%@", code);
 
   dispatch_async(dispatch_get_main_queue(), ^{
     [[ECScriptParser sharedParser]
@@ -366,8 +367,8 @@
            completion:^(BOOL success, NSArray *_Nonnull results) {
              NSString *resLog = [NSString
                  stringWithFormat:
-                     @"[ECTaskPollManager] 自动任务 '%@' 执行完毕. Success: %d",
-                     name, success];
+                     @"[脚本动作] ✅ 自动任务 '%@' 执行完毕. 结果: %@",
+                     name, success ? @"成功" : @"失败"];
              [[ECLogManager sharedManager] log:resLog];
              NSLog(@"%@", resLog);
 
