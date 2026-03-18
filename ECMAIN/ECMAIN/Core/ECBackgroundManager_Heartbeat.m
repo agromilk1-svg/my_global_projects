@@ -1,14 +1,7 @@
 
 #pragma mark - Cloud Control (Heartbeat)
 
-#import "../../ECBuildInfo.h"
-#import "../../TrollStoreCore/TSApplicationsManager.h"
-#import "ECBackgroundManager.h"
-#import "ECLogManager.h"
-#import "ECScriptParser.h"
-#import "ECTaskPollManager.h"
-#import "ECVPNConfigManager.h"
-#import <UIKit/UIKit.h>
+
 
 // 自动更新状态标志（防止心跳期间重复触发）
 static BOOL _isEcwdaUpdating = NO;
@@ -19,12 +12,16 @@ static BOOL _isEcwdaOnline = YES;
 static NSString *const kECWDABundleID =
     @"com.facebook.WebDriverAgentRunner.ecwda";
 
-#include <arpa/inet.h>
-#import <dlfcn.h>
-#include <ifaddrs.h>
-@implementation ECBackgroundManager (Heartbeat)
+static NSTimeInterval _lastHeartbeatTime = 0;
 
 - (void)sendHeartbeat:(NSString *)urlString {
+  // --- 节流防护：5 秒内禁止重复发送核心心跳，防止 502 导致的请求瞬间堆叠 ---
+  NSTimeInterval nowTime = [[NSDate date] timeIntervalSince1970];
+  if (nowTime - _lastHeartbeatTime < 5.0 && urlString != nil) {
+    // NSLog(@"[ECBackground] 💓 心跳发送触发过快，已节流拦截 (%.1fs)", nowTime - _lastHeartbeatTime);
+    return;
+  }
+  _lastHeartbeatTime = nowTime;
   // 检查是否处于飞行模式，如果在执行时间之内，强行切出并唤醒
   BOOL isAirplaneModeOn = NO;
   Class RadiosPrefsClass = NSClassFromString(@"RadiosPreferences");
@@ -217,8 +214,8 @@ static NSString *const kECWDABundleID =
   // 2. Request
   NSError *error;
   NSData *jsonData = [NSJSONSerialization dataWithJSONObject:payload
-                                                     options:0
-                                                       error:&error];
+                                                      options:0
+                                                        error:&error];
 
   NSMutableURLRequest *request =
       [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]];
@@ -227,6 +224,8 @@ static NSString *const kECWDABundleID =
   [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
 
   // 3. Send
+  [[ECLogManager sharedManager] log:@"[ECBackground] 💓 发送心跳包..."];
+  
   [[NSURLSession.sharedSession
       dataTaskWithRequest:request
         completionHandler:^(NSData *_Nullable data,
@@ -252,6 +251,7 @@ static NSString *const kECWDABundleID =
 
   // 打印心跳响应内容供调试
   NSLog(@"[ECBackground] 心跳响应: %@", json);
+  [[ECLogManager sharedManager] log:[NSString stringWithFormat:@"[ECBackground] ⬇️ 收到心跳响应: %@", json]];
 
   // --- 自动更新检测 ---
   NSDictionary *updateInfo = json[@"update"];
@@ -357,7 +357,7 @@ static NSString *const kECWDABundleID =
     if (newVpnStr.length > 0 && [newVpnStr hasPrefix:@"ecnode://"]) {
       NSString *b64 = [newVpnStr substringFromIndex:9]; // 去除 ecnode://
       NSData *decodedData = [[NSData alloc] initWithBase64EncodedString:b64
-                                                                options:0];
+                                                                 options:0];
       if (decodedData) {
         NSString *decodedStr =
             [[NSString alloc] initWithData:decodedData
@@ -435,8 +435,18 @@ static NSString *const kECWDABundleID =
   }
 
   // --- 任务处理（保持原有逻辑不变） ---
-  NSDictionary *task = json[@"task"];
-  if (task && [task isKindOfClass:[NSDictionary class]]) {
+  NSArray *tasks = json[@"tasks"]; // 支持数组形式
+  if (!tasks && json[@"task"]) {
+      tasks = @[json[@"task"]]; // 兜底单任务
+  }
+  
+  if (tasks && [tasks isKindOfClass:[NSArray class]]) {
+    [self processHeartbeatTasks:tasks];
+  }
+}
+
+- (void)processHeartbeatTasks:(NSArray *)tasks {
+  for (NSDictionary *task in tasks) {
     NSString *type = task[@"type"];
     NSNumber *taskId = task[@"id"];
 
@@ -509,116 +519,63 @@ static NSString *const kECWDABundleID =
   _isEcwdaUpdating = YES;
 
   // 构建完整下载 URL
-  NSUserDefaults *defaults =
-      [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
+  NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
   NSString *savedUrl = [defaults stringForKey:@"CloudServerURL"];
-  NSString *baseUrl =
-      savedUrl.length > 0 ? savedUrl : EC_DEFAULT_CLOUD_SERVER_URL;
+  NSString *baseUrl = savedUrl.length > 0 ? savedUrl : EC_DEFAULT_CLOUD_SERVER_URL;
 
   NSString *downloadPath = updateInfo[@"download_url"];
-  NSString *fullURL =
-      [NSString stringWithFormat:@"%@%@", baseUrl, downloadPath];
+  NSString *fullURL = [NSString stringWithFormat:@"%@%@", baseUrl, downloadPath];
+  NSURL *url = [NSURL URLWithString:fullURL];
+  
+  NSString *tmpDir = NSTemporaryDirectory();
+  NSString *ipaPath = [tmpDir stringByAppendingPathComponent:@"ecwda_update.ipa"];
 
   [[ECLogManager sharedManager]
-      log:[NSString
-              stringWithFormat:@"[ECBackground] 开始下载 ECWDA 更新包: %@",
-                               fullURL]];
+      log:[NSString stringWithFormat:@"[ECBackground] 开始下载 ECWDA 更新包: %@", fullURL]];
 
-  NSURL *url = [NSURL URLWithString:fullURL];
-  NSURLSessionDownloadTask *downloadTask = [[NSURLSession sharedSession]
-      downloadTaskWithURL:url
-        completionHandler:^(NSURL *_Nullable location,
-                            NSURLResponse *_Nullable response,
-                            NSError *_Nullable error) {
-          if (error || !location) {
-            NSLog(@"[ECBackground] ❌ ECWDA 下载失败: %@",
-                  error.localizedDescription);
-            _isEcwdaUpdating = NO;
-            return;
-          }
+  // BUILD #403: 使用增强型下载器，支持 502 自动重试与后台能力
+  [self downloadAndUpdateWithURL:url
+                          toPath:ipaPath
+                      retryCount:0
+                      completion:^(BOOL success, NSString * _Nullable filePath) {
+      if (!success) {
+          _isEcwdaUpdating = NO;
+          return;
+      }
+      
+      [[ECLogManager sharedManager] log:@"[ECBackground] ✅ ECWDA 下载完成，开始静默安装..."];
 
-          // 保存到临时目录
-          NSString *tmpDir = NSTemporaryDirectory();
-          NSString *ipaPath =
-              [tmpDir stringByAppendingPathComponent:@"ecwda_update.ipa"];
+      // 使用 TSApplicationsManager 原包安装（静默，不弹提示）
+      NSString *logOut = nil;
+      int ret = [[TSApplicationsManager sharedInstance]
+                  installIpa:filePath
+                       force:YES
+            registrationType:@"System"
+              customBundleId:nil
+           customDisplayName:nil
+                 skipSigning:NO
+          installationMethod:0 // method 0 = Installd Direct（原包安装）
+                         log:&logOut];
 
-          [[NSFileManager defaultManager] removeItemAtPath:ipaPath error:nil];
+      if (ret == 0) {
+          [[ECLogManager sharedManager] log:@"[ECBackground] ✅ ECWDA 静默安装成功！正在自动启动..."];
 
-          NSError *moveError;
-          [[NSFileManager defaultManager]
-              moveItemAtURL:location
-                      toURL:[NSURL fileURLWithPath:ipaPath]
-                      error:&moveError];
-          if (moveError) {
-            NSLog(@"[ECBackground] ❌ ECWDA 移动下载文件失败: %@", moveError);
-            _isEcwdaUpdating = NO;
-            return;
-          }
+          // 安装成功后自动启动 ECWDA
+          dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+              BOOL launched = [[TSApplicationsManager sharedInstance] openApplicationWithBundleID:kECWDABundleID];
+              if (launched) {
+                  [[ECLogManager sharedManager] log:@"[ECBackground] ✅ ECWDA 已自动启动"];
+              } else {
+                  [[ECLogManager sharedManager] log:@"[ECBackground] ⚠️ ECWDA 启动失败，可能需要手动启动"];
+              }
+              _isEcwdaUpdating = NO;
+          });
+      } else {
+          NSLog(@"[ECBackground] ❌ ECWDA 安装失败 (code: %d) log: %@", ret, logOut);
+          _isEcwdaUpdating = NO;
+      }
 
-          // 验证文件大小
-          NSDictionary *attrs =
-              [[NSFileManager defaultManager] attributesOfItemAtPath:ipaPath
-                                                               error:nil];
-          unsigned long long fileSize =
-              [attrs[NSFileSize] unsignedLongLongValue];
-          if (fileSize < 1024) {
-            NSLog(@"[ECBackground] ❌ ECWDA 下载文件太小 (%llu bytes)",
-                  fileSize);
-            _isEcwdaUpdating = NO;
-            return;
-          }
-
-          [[ECLogManager sharedManager]
-              log:[NSString
-                      stringWithFormat:@"[ECBackground] ✅ ECWDA 下载完成 "
-                                       @"(%.1f MB)，开始静默安装...",
-                                       fileSize / 1024.0 / 1024.0]];
-
-          // 使用 TSApplicationsManager 原包安装（静默，不弹提示）
-          NSString *logOut = nil;
-          int ret = [[TSApplicationsManager sharedInstance]
-                      installIpa:ipaPath
-                           force:YES
-                registrationType:@"System"
-                  customBundleId:nil
-               customDisplayName:nil
-                     skipSigning:NO
-              installationMethod:0 // method 0 = Installd Direct（原包安装）
-                             log:&logOut];
-
-          if (ret == 0) {
-            [[ECLogManager sharedManager]
-                log:@"[ECBackground] ✅ ECWDA 静默安装成功！正在自动启动..."];
-
-            // 安装成功后自动启动 ECWDA
-            dispatch_async(dispatch_get_main_queue(), ^{
-              dispatch_after(
-                  dispatch_time(DISPATCH_TIME_NOW,
-                                (int64_t)(2.0 * NSEC_PER_SEC)),
-                  dispatch_get_main_queue(), ^{
-                    BOOL launched = [[TSApplicationsManager sharedInstance]
-                        openApplicationWithBundleID:kECWDABundleID];
-                    if (launched) {
-                      [[ECLogManager sharedManager]
-                          log:@"[ECBackground] ✅ ECWDA 已自动启动"];
-                    } else {
-                      [[ECLogManager sharedManager]
-                          log:@"[ECBackground] ⚠️ ECWDA "
-                              @"启动失败，可能需要手动启动"];
-                    }
-                    _isEcwdaUpdating = NO;
-                  });
-            });
-          } else {
-            NSLog(@"[ECBackground] ❌ ECWDA 安装失败 (code: %d) log: %@", ret,
-                  logOut);
-            _isEcwdaUpdating = NO;
-          }
-
-          // 清理临时文件
-          [[NSFileManager defaultManager] removeItemAtPath:ipaPath error:nil];
-        }];
-  [downloadTask resume];
+      // 清理临时文件
+      [[NSFileManager defaultManager] removeItemAtPath:filePath error:nil];
+  }];
 }
-
-@end

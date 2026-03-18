@@ -16,7 +16,7 @@ agromilk1 @gmail.com----- BoeQY8) 59gx----- 6pqujskaeq6jz5r74adfwltpj5q2n7ov----
 
 
 
-
+MusolinoSalmi @gmail.com----edue7q4p6m----kdljdm1eka3w3it7lmy2@anhnhat.onli ne----https://2fa.live/tok/nsc6g62xl22msix3lddhdusoexxxv6kg 格式为：账号 - 密码
 
 
 https://appium.github.io/appium-xcuitest-driver/4.16/wda-custom-server/
@@ -33,6 +33,10 @@ LinebergerMinvielle646 @gmail.com----0ub2dgkqng----ll3cuf2069hkgn3krcii@anhnhat.
 lenherrblute @gmail.com----qhsad7s8027----pn4g2lypxj8bp2ixdvbx@anhnhat.online----xcsrtzb5kusdhvg2hdg33o33eccoeb46----Italy
 AretuziaMagnanti @gmail.com----qcgnp5but----lz0f1nek1e2dyfjgg2ok@anhnhat.online----ieg7ga3spuhfxmn4xmdr2ohlm7g2evrh----Brazil
 
+ThiemanAyad482 @gmail.com| reyk29kazy | friesezajchb500@pliz.fr.nf| d465dpzw4ovcgv2kr7vfthyphvhpmbq5 | United States
+LandyCide99 @gmail.com| by6fgrgeai | tanjilimanac@outlook.com| jh2rmotcakewlykjfefqprh3h76saoab | United States
+KafferHeberte @gmail.com| pwa73z2mold | mottillolewinskikz325@zouz.fr.nf| 7qfxhypt6odjpae5fn36w3iynvf3z6nc | United States
+CockingsKhaldoun @gmail.com| vpqdcmjb25 | kuberayearwoodhn272@bmn.ch.ma| jyqlvzuxbjdukoej5qzgfcutzc5gjrgi | United States
 
 
 
@@ -230,3 +234,34 @@ iVBORw0KGgoAAAANSUhEUgAAANAAAABNCAYAAADXXOrpAAAQAElEQVR4Aeyd25Nc11XGv73PrbvnPqOR
 
 重启端口映射服务
 sudo launchctl stop com.cloudflare.cloudflared && sudo launchctl start com.cloudflare.cloudflared
+
+
+
+
+[
+    {
+        "port": "8950",
+        "password": "x3H0z0A3m2j6",
+        "cipher": "auto",
+        "server": "23.26.196.94",
+        "id": "5475496A-6C58-4960-A742-C20A546110DC",
+        "proxy_through_id": "6D5C2889-6E3D-4F22-B9D5-9529EC14D56D",
+        "proxy_port": 7890,
+        "type": "Socks5",
+        "user": "H0k8z7J9V1A8"
+    },
+    {
+        "id": "6D5C2889-6E3D-4F22-B9D5-9529EC14D56D",
+        "udp": true,
+        "server": "4e28daff-c517-4f78-9dfb-ed1090befc64.drive-glicloudccp.com",
+        "ws-path": "\\/",
+        "type": "Shadowsocks",
+        "proxy_port": 7890,
+        "password": "haMLMXirByn6rGVh",
+        "obfs-param": "4cb7bdbfb634.microsoft.com",
+        "obfs": "http",
+        "cipher": "aes-128-gcm",
+        "name": "🇭🇰 香港 01丨1x HK",
+        "port": "12022"
+    }
+]

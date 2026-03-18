@@ -32,8 +32,8 @@
     return [self parseTrojan:uri];
   } else if ([uri hasPrefix:@"socks://"]) {
     return [self parseSocks:uri];
-  } else if ([uri hasPrefix:@"{"] || [uri hasPrefix:@"["]) {
-    // Loose JSON / Object Syntax
+  } else  if ([uri hasPrefix:@"{"] || [uri hasPrefix:@"["] || ([uri containsString:@"\"host\""] && [uri containsString:@"\"port\""])) {
+    // Standard or Loose JSON / Object Syntax
     return [self parseLooseJSON:uri];
   }
 
@@ -43,59 +43,163 @@
 #pragma mark - Loose JSON Parser
 
 + (NSDictionary *)parseLooseJSON:(NSString *)content {
-  // Basic cleanup: remove { } [ ]
-  content = [content stringByReplacingOccurrencesOfString:@"{" withString:@""];
-  content = [content stringByReplacingOccurrencesOfString:@"}" withString:@""];
-  content = [content stringByReplacingOccurrencesOfString:@"[" withString:@""];
-  content = [content stringByReplacingOccurrencesOfString:@"]" withString:@""];
+  NSData *data = [content dataUsingEncoding:NSUTF8StringEncoding];
+  NSError *error = nil;
+  id json = [NSJSONSerialization JSONObjectWithData:data
+                                            options:NSJSONReadingAllowFragments
+                                              error:&error];
 
   NSMutableDictionary *config = [NSMutableDictionary dictionary];
 
-  // Split by comma
-  NSArray *pairs = [content componentsSeparatedByString:@","];
-  for (NSString *pair in pairs) {
-    NSRange colon = [pair rangeOfString:@":"];
-    if (colon.location != NSNotFound) {
-      NSString *key = [[pair substringToIndex:colon.location]
-          stringByTrimmingCharactersInSet:
-              [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-      NSString *val = [[pair substringFromIndex:colon.location + 1]
-          stringByTrimmingCharactersInSet:
-              [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  if (!error && [json isKindOfClass:[NSDictionary class]]) {
+    // ========== 标准 JSON 解析（零丢失策略） ==========
+    NSDictionary *dict = (NSDictionary *)json;
 
-      // Map keys
-      if ([key isEqualToString:@"type"]) {
-        if ([val.lowercaseString isEqualToString:@"ssr"])
-          config[@"type"] = @"ShadowsocksR";
-        else if ([val.lowercaseString isEqualToString:@"ss"])
-          config[@"type"] = @"Shadowsocks";
-        else
-          config[@"type"] = val;
-      } else if ([key isEqualToString:@"server"])
-        config[@"server"] = val;
-      else if ([key isEqualToString:@"port"])
-        config[@"port"] = val;
-      else if ([key isEqualToString:@"password"])
-        config[@"password"] = val;
-      else if ([key isEqualToString:@"cipher"] ||
-               [key isEqualToString:@"method"])
-        config[@"cipher"] = val;
-      else if ([key isEqualToString:@"protocol"])
-        config[@"protocol"] = val;
-      else if ([key isEqualToString:@"obfs"])
-        config[@"obfs"] = val;
-      else if ([key isEqualToString:@"protocol-param"])
-        config[@"protocol-param"] = val;
-      else if ([key isEqualToString:@"obfs-param"])
-        config[@"obfs-param"] = val;
-      else if ([key isEqualToString:@"udp"]) {
-        config[@"udp"] =
-            [val.lowercaseString isEqualToString:@"true"] ? @YES : @NO;
+    // --- 字段名标准化映射表 ---
+    // 左侧: 第三方应用可能使用的字段名
+    // 右侧: ECMAIN 内部标准字段名
+    NSDictionary *keyMapping = @{
+      // 通用字段
+      @"host"          : @"server",
+      @"add"           : @"server",
+      @"method"        : @"cipher",
+      @"scy"           : @"cipher",
+      @"title"         : @"name",
+      @"ps"            : @"name",
+      @"proto"         : @"protocol",
+      @"protoParam"    : @"protocol-param",
+      @"obfsParam"     : @"obfs-param",
+      @"pass"          : @"password",
+      @"aid"           : @"alterId",
+      @"net"           : @"network",
+      @"path"          : @"ws-path",
+      // VMess / VLESS
+      @"fp"            : @"client-fingerprint",
+      @"pbk"           : @"publicKey",
+      @"sid"           : @"shortId",
+      @"sni"           : @"servername",
+    };
+
+    // 需要跳过的无用元数据字段（不影响代理连接的纯 UI/时间戳字段）
+    NSSet *skipKeys = [NSSet setWithArray:@[
+      @"created", @"updated", @"weight", @"filter", @"data"
+    ]];
+
+    // 遍历原始 JSON 的每一个键值对
+    for (NSString *key in dict) {
+      id value = dict[key];
+
+      // 跳过无用元数据
+      if ([skipKeys containsObject:key]) continue;
+
+      // 跳过空字符串值（节省存储）
+      if ([value isKindOfClass:[NSString class]] &&
+          [(NSString *)value length] == 0) continue;
+
+      // 查找映射后的标准键名
+      NSString *mappedKey = keyMapping[key];
+      NSString *finalKey = mappedKey ?: key;
+
+      // 如果已经存在同名的标准键（由更优先的字段写入），不要覆盖
+      if (mappedKey && config[finalKey]) continue;
+
+      // 特殊处理: udp 字段转布尔
+      if ([finalKey isEqualToString:@"udp"]) {
+        config[@"udp"] = [value boolValue] ? @YES : @NO;
+        continue;
+      }
+
+      // 特殊处理: port 字段转字符串
+      if ([finalKey isEqualToString:@"port"]) {
+        config[@"port"] =
+            [NSString stringWithFormat:@"%@", value];
+        continue;
+      }
+
+      // 特殊处理: tls 字段
+      if ([finalKey isEqualToString:@"tls"]) {
+        if ([value isKindOfClass:[NSString class]]) {
+          config[@"tls"] =
+              [value isEqualToString:@"tls"] ? @YES : @NO;
+        } else {
+          config[@"tls"] = [value boolValue] ? @YES : @NO;
+        }
+        continue;
+      }
+
+      // 通用赋值
+      config[finalKey] = value;
+    }
+
+    // 确保 server 字段存在（优先级: server > host > add）
+    if (!config[@"server"]) config[@"server"] = @"";
+
+  } else {
+    // ========== 回退: 逐行分割解析 ==========
+    NSString *clean = [content stringByReplacingOccurrencesOfString:@"{"
+                                                         withString:@""];
+    clean = [clean stringByReplacingOccurrencesOfString:@"}" withString:@""];
+    clean = [clean stringByReplacingOccurrencesOfString:@"[" withString:@""];
+    clean = [clean stringByReplacingOccurrencesOfString:@"]" withString:@""];
+
+    NSArray *pairs = [clean componentsSeparatedByString:@","];
+    for (NSString *pair in pairs) {
+      NSRange colon = [pair rangeOfString:@":"];
+      if (colon.location != NSNotFound) {
+        NSString *key = [[pair substringToIndex:colon.location]
+            stringByTrimmingCharactersInSet:
+                [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        key = [key stringByReplacingOccurrencesOfString:@"\"" withString:@""];
+
+        NSString *val = [[pair substringFromIndex:colon.location + 1]
+            stringByTrimmingCharactersInSet:
+                [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        val = [val stringByReplacingOccurrencesOfString:@"\"" withString:@""];
+
+        if (val.length == 0) continue;
+
+        // 归一化常用别名
+        if ([key isEqualToString:@"host"] ||
+            [key isEqualToString:@"add"])
+          key = @"server";
+        else if ([key isEqualToString:@"method"] ||
+                 [key isEqualToString:@"scy"])
+          key = @"cipher";
+        else if ([key isEqualToString:@"title"] ||
+                 [key isEqualToString:@"ps"])
+          key = @"name";
+        else if ([key isEqualToString:@"proto"])
+          key = @"protocol";
+        else if ([key isEqualToString:@"protoParam"])
+          key = @"protocol-param";
+        else if ([key isEqualToString:@"obfsParam"])
+          key = @"obfs-param";
+        else if ([key isEqualToString:@"pass"])
+          key = @"password";
+
+        // 类型简写归一
+        if ([key isEqualToString:@"type"]) {
+          if ([val.lowercaseString isEqualToString:@"ssr"])
+            val = @"ShadowsocksR";
+          else if ([val.lowercaseString isEqualToString:@"ss"])
+            val = @"Shadowsocks";
+        }
+
+        // udp 特殊处理
+        if ([key isEqualToString:@"udp"]) {
+          config[@"udp"] = ([val isEqualToString:@"true"] ||
+                            [val isEqualToString:@"1"])
+                               ? @YES
+                               : @NO;
+          continue;
+        }
+
+        config[key] = val;
       }
     }
   }
 
-  // Default type if missing but has SSR params
+  // 自动推断类型
   if (!config[@"type"]) {
     if (config[@"protocol"] && config[@"obfs"]) {
       config[@"type"] = @"ShadowsocksR";
@@ -321,10 +425,71 @@
   NSString *content = [uri substringFromIndex:5]; // "ss://".length
 
   // Extract fragment (name)
+  NSString *name = nil;
   NSRange fragmentRange = [content rangeOfString:@"#"];
   if (fragmentRange.location != NSNotFound) {
+    name = [[content substringFromIndex:fragmentRange.location + 1] stringByRemovingPercentEncoding];
     content = [content substringToIndex:fragmentRange.location];
   }
+  if (name && name.length > 0) {
+    config[@"name"] = name;
+  }
+
+  // Extract query parameters
+  NSDictionary *params = @{};
+  NSRange queryRange = [content rangeOfString:@"?"];
+  if (queryRange.location != NSNotFound) {
+    NSString *queryString = [content substringFromIndex:queryRange.location + 1];
+    params = [self parseQueryString:queryString];
+    content = [content substringToIndex:queryRange.location];
+  }
+
+  // Handle SIP002 plugin options parsed from query string
+  if (params[@"plugin"]) {
+    // Expected format: plugin=obfs-local;obfs=http;obfs-host=bing.com
+    NSString *pluginStr = params[@"plugin"];
+    NSArray *parts = [pluginStr componentsSeparatedByString:@";"];
+    NSString *pluginName = parts.firstObject; // obfs-local, v2ray-plugin, etc.
+
+    if ([pluginName isEqualToString:@"obfs-local"] || [pluginName isEqualToString:@"simple-obfs"]) {
+      NSMutableDictionary *opts = [NSMutableDictionary dictionary];
+      for (NSInteger i = 1; i < parts.count; i++) {
+        NSString *kv = parts[i];
+        NSRange eq = [kv rangeOfString:@"="];
+        if (eq.location != NSNotFound) {
+          NSString *k = [kv substringToIndex:eq.location];
+          NSString *v = [kv substringFromIndex:eq.location + 1];
+          opts[k] = v;
+        }
+      }
+      if (opts[@"obfs"]) config[@"obfs"] = opts[@"obfs"];
+      if (opts[@"obfs-host"]) config[@"obfs-param"] = opts[@"obfs-host"];
+      if (opts[@"obfs-uri"]) config[@"ws-path"] = opts[@"obfs-uri"];
+    } else {
+      // Direct pass-through for other plugins
+      config[@"plugin"] = pluginName;
+      NSMutableArray *optPairs = [NSMutableArray array];
+      for (NSInteger i = 1; i < parts.count; i++) {
+        NSString *kv = parts[i];
+        NSRange eq = [kv rangeOfString:@"="];
+        if (eq.location != NSNotFound) {
+          NSString *k = [kv substringToIndex:eq.location];
+          NSString *v = [kv substringFromIndex:eq.location + 1];
+          [optPairs addObject:[NSString stringWithFormat:@"%@: %@", k, v]];
+        }
+      }
+      if (optPairs.count > 0) {
+        config[@"plugin-opts"] = [optPairs componentsJoinedByString:@", "];
+      }
+    }
+  }
+
+  // 补全所有通用查询参数 (如 uuid, protocol, flag, ws-host 等)
+  [params enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSString *obj, BOOL *stop) {
+    if (![key isEqualToString:@"plugin"]) {
+      config[key] = obj;
+    }
+  }];
 
   // Check for SIP002 format (has @ after base64)
   NSRange atRange = [content rangeOfString:@"@"];
@@ -334,19 +499,8 @@
     NSString *serverPart = [content substringFromIndex:atRange.location + 1];
 
     // Decode method:password
-    NSData *data = [[NSData alloc] initWithBase64EncodedString:base64Part
-                                                       options:0];
-    if (!data) {
-      base64Part = [[base64Part stringByReplacingOccurrencesOfString:@"-"
-                                                          withString:@"+"]
-          stringByReplacingOccurrencesOfString:@"_"
-                                    withString:@"/"];
-      data = [[NSData alloc] initWithBase64EncodedString:base64Part options:0];
-    }
-
-    if (data) {
-      NSString *decoded = [[NSString alloc] initWithData:data
-                                                encoding:NSUTF8StringEncoding];
+    NSString *decoded = [self decodeBase64:base64Part];
+    if (decoded) {
       NSRange colonRange = [decoded rangeOfString:@":"];
       if (colonRange.location != NSNotFound) {
         config[@"cipher"] = [decoded substringToIndex:colonRange.location];
@@ -364,17 +518,14 @@
     }
   } else {
     // Legacy format - entire thing is base64
-    NSData *data = [[NSData alloc] initWithBase64EncodedString:content
-                                                       options:0];
-    if (!data)
-      return nil;
+    NSString *decoded = [self decodeBase64:content];
+    if (!decoded)
+      return config;
 
-    NSString *decoded = [[NSString alloc] initWithData:data
-                                              encoding:NSUTF8StringEncoding];
     // Format: method:password@server:port
     NSRange atRange2 = [decoded rangeOfString:@"@"];
     if (atRange2.location == NSNotFound)
-      return nil;
+      return config;
 
     NSString *methodPass = [decoded substringToIndex:atRange2.location];
     NSString *serverPort = [decoded substringFromIndex:atRange2.location + 1];
@@ -395,6 +546,11 @@
   }
 
   config[@"udp"] = @YES;
+  
+  // Ensure we have server and port to be a valid node
+  if (!config[@"server"] || !config[@"port"]) {
+      return nil;
+  }
 
   return config;
 }
@@ -594,24 +750,7 @@
   return params;
 }
 
-+ (NSString *)decodeBase64:(NSString *)base64Str {
-  if (!base64Str || base64Str.length == 0)
-    return nil;
-  NSString *padded = base64Str;
-  if (padded.length % 4 != 0) {
-    NSUInteger paddingLength = 4 - (padded.length % 4);
-    padded = [padded stringByPaddingToLength:padded.length + paddingLength
-                                  withString:@"="
-                             startingAtIndex:0];
-  }
-  NSData *data = [[NSData alloc]
-      initWithBase64EncodedString:padded
-                          options:NSDataBase64DecodingIgnoreUnknownCharacters];
-  if (data) {
-    return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-  }
-  return nil;
-}
+
 
 + (NSArray<NSDictionary *> *)parseClashYAMLProxies:(NSString *)yamlContent
                                          withGroup:(NSString *)groupName {
@@ -809,6 +948,29 @@
                                                        error:nil];
   NSString *b64 = [jsonData base64EncodedStringWithOptions:0];
   return [NSString stringWithFormat:@"ecnode://%@", b64];
+}
+
++ (NSString *)decodeBase64:(NSString *)base64Str {
+  if (!base64Str || base64Str.length == 0)
+    return nil;
+
+  NSString *padded = [[base64Str stringByReplacingOccurrencesOfString:@"-"
+                                                           withString:@"+"]
+      stringByReplacingOccurrencesOfString:@"_"
+                                withString:@"/"];
+
+  // Add padding if missing
+  while (padded.length % 4 != 0) {
+    padded = [padded stringByAppendingString:@"="];
+  }
+
+  NSData *data = [[NSData alloc]
+      initWithBase64EncodedString:padded
+                          options:NSDataBase64DecodingIgnoreUnknownCharacters];
+  if (data) {
+    return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+  }
+  return nil;
 }
 
 @end

@@ -79,8 +79,8 @@
                        message:@"请输入 ECMAIN 下载地址 (tar)"
                 preferredStyle:UIAlertControllerStyleAlert];
   [inputAlert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
-    textField.placeholder = @"http://...";
-    textField.text = @"http://tar.ecmain.site:8010/ecmain.tar"; // Default
+    textField.placeholder = @"https://...";
+    textField.text = @"https://s.ecmain.site/api/ecmain/download"; // Default
   }];
 
   UIAlertAction *installAction = [UIAlertAction
@@ -205,6 +205,51 @@
       // System-level respring: kill backboardd instead of SpringBoard
       killall(@"backboardd", YES);
 
+      if ([self isTrollStore]) {
+        exit(0);
+      } else {
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [TSPresentationDelegate stopActivityWithCompletion:^{
+            [self reloadSpecifiers];
+          }];
+        });
+      }
+    } else {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [TSPresentationDelegate stopActivityWithCompletion:^{
+          UIAlertController *errorAlert = [UIAlertController
+              alertControllerWithTitle:@"安装失败 (Fail)"
+                               message:[NSString
+                                           stringWithFormat:
+                                               @"Trollhelper returned error "
+                                               @"code: %d\n\nStderr:\n%@",
+                                               ret,
+                                               stdErr ?: @"(No stderr output)"]
+                        preferredStyle:UIAlertControllerStyleAlert];
+          UIAlertAction *closeAction =
+              [UIAlertAction actionWithTitle:@"Close"
+                                       style:UIAlertActionStyleDefault
+                                     handler:nil];
+          [errorAlert addAction:closeAction];
+          [TSPresentationDelegate presentViewController:errorAlert
+                                               animated:YES
+                                             completion:nil];
+        }];
+      });
+    }
+  }];
+}
+
+// 允许外部调用网络在线安装的方法
+- (void)installTrollStoreOnlinePressed {
+  [self _showOnlineDownloadPromptWithHandler:^(NSString *tmpTarPath) {
+    NSString *stdErr = nil;
+    int ret = spawnRoot(rootHelperPath(),
+                        @[ @"install-trollstore", tmpTarPath ], nil, &stdErr);
+    [[NSFileManager defaultManager] removeItemAtPath:tmpTarPath error:nil];
+
+    if (ret == 0) {
+      killall(@"backboardd", YES);
       if ([self isTrollStore]) {
         exit(0);
       } else {

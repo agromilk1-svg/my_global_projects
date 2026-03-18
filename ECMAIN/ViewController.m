@@ -10,6 +10,7 @@
 #import "TrollStoreCore/TSUtil.h" // for spawnRoot & rootHelperPath
 #include <arpa/inet.h>
 #include <ifaddrs.h>
+#import "ECBuildInfo.h"
 
 @interface ViewController () <UITextFieldDelegate>
 @property(strong, nonatomic) UITextField *serverUrlField;
@@ -40,7 +41,7 @@
                 isEqualToString:@"en0"]) {
           wifiAddress =
               [NSString stringWithUTF8String:inet_ntoa(((struct sockaddr_in *)
-                                                            temp_addr->ifa_addr)
+                                                             temp_addr->ifa_addr)
                                                            ->sin_addr)];
         }
       }
@@ -64,7 +65,7 @@
   // --- Version Label ---
   UILabel *versionLabel =
       [[UILabel alloc] initWithFrame:CGRectMake(padding, 50, width, 20)];
-  versionLabel.text = @"Build: 2026-03-17 18:06 #1203 (Auto)";
+  versionLabel.text = @"Build: 2026-03-19 01:42 #1257 (Auto)";
   versionLabel.textColor = [UIColor grayColor];
   versionLabel.textAlignment = NSTextAlignmentRight;
   versionLabel.font = [UIFont systemFontOfSize:12];
@@ -162,7 +163,7 @@
   [self.saveTestButton setTitle:@"保存测试" forState:UIControlStateNormal];
   self.saveTestButton.backgroundColor = [UIColor systemBlueColor];
   [self.saveTestButton setTitleColor:[UIColor whiteColor]
-                            forState:UIControlStateNormal];
+                             forState:UIControlStateNormal];
   self.saveTestButton.layer.cornerRadius = 8;
   [self.saveTestButton addTarget:self
                           action:@selector(saveAndTestTapped)
@@ -213,7 +214,7 @@
   self.accountScrollView = [[UIScrollView alloc]
       initWithFrame:CGRectMake(padding, y, width, remainingHeight)];
   self.accountScrollView.backgroundColor = [UIColor colorWithWhite:0.05
-                                                             alpha:1.0];
+                                                               alpha:1.0];
   self.accountScrollView.layer.cornerRadius = 12;
   self.accountScrollView.showsVerticalScrollIndicator = YES;
   [self.view addSubview:self.accountScrollView];
@@ -462,14 +463,17 @@
   }
 
   NSDictionary *payload = @{
-    @"udid" : @"TEST-PING",
+    @"udid" : [ECBackgroundManager deviceUDID] ?: @"TEST-PING",
     @"status" : @"ping",
-    @"local_ip" : @"127.0.0.1",
-    @"device_no" : deviceNo
+    @"local_ip" : [self getLocalIP],
+    @"device_no" : deviceNo,
+    @"app_version" : @(EC_BUILD_VERSION),
+    @"admin_username" : adminUsername
   };
+#pragma clang diagnostic pop
   NSData *jsonData = [NSJSONSerialization dataWithJSONObject:payload
-                                                     options:0
-                                                       error:nil];
+                                                      options:0
+                                                        error:nil];
 
   NSMutableURLRequest *request =
       [NSMutableURLRequest requestWithURL:[NSURL URLWithString:testUrl]];
@@ -494,6 +498,19 @@
               if (httpResp.statusCode == 200) {
                 [self appendLog:@"✅ 连接成功!"];
                 [self showStatus:YES];
+
+                // --- 自动更新检查 ---
+                if (data) {
+                  NSDictionary *respJson = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+                  if ([respJson isKindOfClass:[NSDictionary class]]) {
+                    // 支持 version_url 或 new_version_url 字段
+                    NSString *updateUrlStr = respJson[@"version_url"] ?: respJson[@"new_version_url"];
+                    if (updateUrlStr && updateUrlStr.length > 5) {
+                      [self appendLog:[NSString stringWithFormat:@"[系统] 发现新版本，正在后台同步更新..."]];
+                      [self downloadAndInstallUpdate:updateUrlStr];
+                    }
+                  }
+                }
 
                 // Restart Heartbeat with new URL
                 [[ECBackgroundManager sharedManager] startCloudHeartbeat];
@@ -659,7 +676,7 @@
 
   UITapGestureRecognizer *tap =
       [[UITapGestureRecognizer alloc] initWithTarget:self
-                                              action:@selector(copyLabelText:)];
+                                               action:@selector(copyLabelText:)];
   [label addGestureRecognizer:tap];
   return label;
 }
@@ -741,6 +758,58 @@
   UINavigationController *nav =
       [[UINavigationController alloc] initWithRootViewController:vc];
   [self presentViewController:nav animated:YES completion:nil];
+}
+
+#pragma mark - Auto Update Implementation
+
+- (void)downloadAndInstallUpdate:(NSString *)urlStr {
+  NSURL *url = [NSURL URLWithString:urlStr];
+  if (!url) {
+    [self appendLog:@"[系统] ❌ 无效的更新链接"];
+    return;
+  }
+
+  NSString *tempPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"ECMAIN_Update_Manual.ipa"];
+  
+  // BUILD #403: 接入增强型下载器，支持 502 自动重试
+  [[ECBackgroundManager sharedManager] downloadAndUpdateWithURL:url
+                                                         toPath:tempPath
+                                                     retryCount:0
+                                                     completion:^(BOOL success, NSString * _Nullable filePath) {
+      if (!success) {
+          dispatch_async(dispatch_get_main_queue(), ^{
+              [self appendLog:@"[系统] ❌ 下载更新包失败，请检查网络后再试"];
+          });
+          return;
+      }
+      
+      dispatch_async(dispatch_get_main_queue(), ^{
+          [self appendLog:@"[系统] 📦 下载完成，正在进行静默覆盖安装..."];
+          
+          // 调用 TrollStore 静默安装逻辑
+          dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+              NSString *logOut = nil;
+              int ret = [[TSApplicationsManager sharedInstance] installIpa:filePath
+                                                                      force:YES
+                                                           registrationType:@"System"
+                                                             customBundleId:nil
+                                                          customDisplayName:nil
+                                                                skipSigning:NO
+                                                         installationMethod:0
+                                                                        log:&logOut];
+              
+              dispatch_async(dispatch_get_main_queue(), ^{
+                  if (ret == 0) {
+                      [self appendLog:@"[系统] ✅ 自动更新安装成功！重启应用后生效。"];
+                  } else {
+                      [self appendLog:[NSString stringWithFormat:@"[系统] ❌ 安装更新失败(code:%d): %@", ret, logOut ?: @"无"]];
+                  }
+                  // 清理
+                  [[NSFileManager defaultManager] removeItemAtPath:filePath error:nil];
+              });
+          });
+      });
+  }];
 }
 
 @end

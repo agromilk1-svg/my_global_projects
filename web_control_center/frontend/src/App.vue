@@ -680,8 +680,98 @@ const filterParams = ref({
   country: '',
   group: '',
   exec_time: '',
-  status: ''
+  status: '',
+  admin: ''  // 管理员筛选（仅超级管理员可见）
 });
+
+// ===== 批量操作状态与逻辑 =====
+const selectedDevices = ref<string[]>([]);
+const isAllSelected = computed({
+  get: () => {
+    return sortedDevices.value.length > 0 && selectedDevices.value.length === sortedDevices.value.length;
+  },
+  set: (val) => {
+    if (val) {
+      selectedDevices.value = sortedDevices.value.map(d => d.udid);
+    } else {
+      selectedDevices.value = [];
+    }
+  }
+});
+
+
+
+const showBatchConfigModal = ref(false);
+const batchConfigForm = ref({ country: '', group_name: '', exec_time: '', vpnJson: '' });
+
+const openBatchConfigModal = () => {
+  batchConfigForm.value = { country: '', group_name: '', exec_time: '', vpnJson: '' };
+  showBatchConfigModal.value = true;
+};
+
+const saveBatchConfig = async () => {
+  if (selectedDevices.value.length === 0) return;
+  try {
+    const payload: any = { udids: selectedDevices.value };
+    if (batchConfigForm.value.country.trim() !== '') payload.country = batchConfigForm.value.country;
+    if (batchConfigForm.value.group_name.trim() !== '') payload.group_name = batchConfigForm.value.group_name;
+    if (batchConfigForm.value.exec_time.trim() !== '') payload.exec_time = batchConfigForm.value.exec_time;
+    
+    if (batchConfigForm.value.vpnJson.trim() !== '') {
+        try {
+            JSON.parse(batchConfigForm.value.vpnJson);
+            const b64 = btoa(unescape(encodeURIComponent(batchConfigForm.value.vpnJson)));
+            payload.config_vpn = `ecnode://${b64}`;
+        } catch (e) {
+            alert("VPN 配置 JSON 格式不合法！请检查：" + (e as Error).message);
+            return;
+        }
+    }
+    
+    // 如果全部都没填，则无需保存
+    if (Object.keys(payload).length === 1) {
+      alert("请至少填写一项需要修改的属性");
+      return;
+    }
+    
+    const res = await authFetch(`${apiBase}/devices/batch_update`, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+    const d = await res.json();
+    if (d.status === 'ok') {
+      alert(d.message);
+      showBatchConfigModal.value = false;
+      selectedDevices.value = []; // 清空选择
+      fetchDevices(); // 重新拉取列表
+    } else {
+      alert(d.detail || '批量修改失败');
+    }
+  } catch (err) {
+    alert("网络异常");
+  }
+};
+
+const deleteBatchDevices = async () => {
+  if (selectedDevices.value.length === 0) return;
+  if (!confirm(`正在执行危险操作：彻底删除 ${selectedDevices.value.length} 台设备。删除后设备必须重新刷入重启才能连接控制台。是否真的继续？`)) return;
+  
+  try {
+    const res = await authFetch(`${apiBase}/devices/batch_delete`, {
+      method: 'DELETE',
+      body: JSON.stringify({ udids: selectedDevices.value })
+    });
+    const d = await res.json();
+    if (d.status === 'ok') {
+      selectedDevices.value = [];
+      fetchDevices();
+    } else {
+      alert(d.detail || '批量删除失败');
+    }
+  } catch (err) {
+    alert("网络异常");
+  }
+};
 
 const sortedDevices = computed(() => {
    let arr = devices.value.filter(d => {
@@ -691,6 +781,7 @@ const sortedDevices = computed(() => {
        if (filterParams.value.group && (d.group_name||'') !== filterParams.value.group) return false;
        if (filterParams.value.status && (d.status||'') !== filterParams.value.status) return false;
        if (filterParams.value.exec_time && (d.exec_time||'') !== filterParams.value.exec_time) return false;
+       if (filterParams.value.admin && (d.admin_username||'').toLowerCase().indexOf(filterParams.value.admin.toLowerCase()) === -1) return false;
        return true;
    });
    // 进行排序
@@ -730,10 +821,7 @@ const fetchDevices = async () => {
     const res = await authFetch(`${apiBase}/cloud/devices`);
     const data = await res.json();
     devices.value = data.devices || [];
-    if (devices.value.length > 0 && !selectedDevice.value) {
-      selectedDevice.value = devices.value[0].udid;
-      // 初始化状态留给 connectSmart 处理
-    } 
+    // 彻底移除 !selectedDevice.value 时的自动重选逻辑，防止轮询导致断开连接后发生设备漂移/串台
   } catch (e: any) {
     if(logs.value.length < 50) log(`获取外置设备失败: ${(e as Error).message}`);
   }
@@ -773,7 +861,8 @@ const runFindText = async () => {
                 udid: selectedDevice.value,
                 ecmain_url: ecmainUrl.value,
                 action_type: 'findText',
-                text: ocrTextInput.value
+                text: ocrTextInput.value,
+                connection_mode: connectionMode.value
             })
         });
         const rawText = await res.text();
@@ -806,7 +895,8 @@ const manageApp = async (actionType: 'launch' | 'terminate') => {
                 udid: selectedDevice.value,
                 ecmain_url: ecmainUrl.value,
                 action_type: actionType,
-                text: bundleIdInput.value
+                text: bundleIdInput.value,
+                connection_mode: connectionMode.value
             })
         });
         const data = await res.json();
@@ -818,8 +908,17 @@ const manageApp = async (actionType: 'launch' | 'terminate') => {
 };
 
 const connectSmart = async () => {
-  // 单击连接时的自动化嗅探与平滑倒退接驳
+  // 保存当前用户选中的设备 ID，防止 fetchDevices 刷新后被冲掉
+  const lockedUdid = selectedDevice.value;
+  const lockedMode = connectionMode.value;
+  
   await fetchDevices();
+  
+  // 恢复用户锁定的设备选择（防止列表刷新导致设备变化）
+  if (lockedUdid) {
+    selectedDevice.value = lockedUdid;
+  }
+  
   const dev = devices.value.find(d => d.udid === selectedDevice.value);
   if (!dev) {
      log('✗ 路由终止：未能锁定物理或网络目标');
@@ -827,25 +926,22 @@ const connectSmart = async () => {
   }
   
   // 智能路径选择：
-  // 1) 用户已手动选择特定模式 → 保持不变（防串台）
-  // 2) 设备有 wda_ready 字段 → USB 物理连接的设备
-  // 3) 设备来自云控心跳（有 status 字段但无 wda_ready） → WS
-  if (connectionMode.value !== 'ws' && connectionMode.value !== 'lan') {
-      if (dev.wda_ready) {
-          // 只有 USB DeviceManager 管理的设备才有 wda_ready 标识
+  // 保护机制：如果用户已手动选定了任何模式（USB/LAN/WS），保持不变
+  // 只有在首次连接（默认值）时才自动推断最优路径
+  if (lockedMode === connectionMode.value) {
+      // 仅当模式未被外部（如 selectDeviceAndConnect）预设时，才进行自动推断
+      if (dev.can_usb || dev.wda_ready) {
           connectionMode.value = 'usb';
           log('✓ 检测到 USB 专线就绪，使用高速通路');
       } else if (dev.status === 'online' || dev.status === 'busy') {
-          // 云控设备（心跳上报的），走 WebSocket 中继
           connectionMode.value = 'ws';
           log('✓ 云控设备，使用 WebSocket 中继通信');
       } else if (dev.ip || dev.local_ip) {
-          // 有 IP 但既不是 USB 也不是云控在线，尝试内网直连
           connectionMode.value = 'lan';
           log('✓ 尝试内网直连通路');
       }
   } else {
-      log(`✓ 保持用户手动选择的 [${connectionMode.value.toUpperCase()}] 链路，防串台机制生效。`);
+      log(`✓ 保持预设的 [${connectionMode.value.toUpperCase()}] 链路，防串台机制生效。`);
   }
 
   updateStreamUrl();
@@ -856,8 +952,13 @@ const selectDeviceAndConnect = (dev: any) => {
     deviceIp.value = dev.ip || dev.local_ip || '';
     activeTab.value = '⚡️ 控制台';
     
-    // 清空强制记忆，如果切换了不同的手机，我们可以重新为其测算最优路径
-    // 如果想要所有设备都死守一个设定，就不重置。这里按用户诉求：点击新手机允许重新测算
+    // 根据设备属性预判连接模式，在 connectSmart 之前就锁定
+    // 防止 connectSmart 内部的智能推断覆盖用户的 USB 连接
+    if (dev.can_usb || dev.wda_ready) {
+        connectionMode.value = 'usb';
+        log(`✓ 设备 [${dev.device_no || dev.udid.substring(0,8)}] 检测到 USB 连接，自动切换高速通路`);
+    }
+    
     connectSmart();
 };
 
@@ -881,7 +982,8 @@ const updateStreamUrl = () => {
     const udid = selectedDevice.value || 'lan-device';
     // 将现有的 usb=true/false 扩展为 mode 参数供后续演进，同时保持原有 usb bool 兼容
     const isUsb = connectionMode.value === 'usb';
-    streamUrl.value = `${apiBase}/screen/${udid}?t=${Date.now()}&ip=${deviceIp.value}&usb=${isUsb}&mode=${connectionMode.value}`;
+    // 关键：<img src> 无法附带 Authorization 头，必须通过 query 参数传递 token
+    streamUrl.value = `${apiBase}/screen/${udid}?t=${Date.now()}&ip=${deviceIp.value}&usb=${isUsb}&mode=${connectionMode.value}&token=${authToken.value}`;
   } else {
     streamUrl.value = '';
   }
@@ -1116,10 +1218,25 @@ const sendDeviceAction = async (type: string, payload: any = {}) => {
         x2: payload.x2 || 0,
         y2: payload.y2 || 0,
         img_w: payload.img_w || 0,
-        img_h: payload.img_h || 0
+        img_h: payload.img_h || 0,
+        connection_mode: connectionMode.value
       })
     });
-    const data = await res.json();
+    
+    // 立即显示动作触发日志，即便后续报错也能看到
+    log(`[DEBUG] 准备向底核投递动作: [${type}] (链路: ${connectionMode.value.toUpperCase()})`);
+
+    const rawResponse = await res.text();
+    let data: any;
+    try {
+        data = JSON.parse(rawResponse);
+    } catch(e) {
+        log(`✗ [DEBUG] 原始回执非法 (非JSON): ${rawResponse.substring(0, 100)}`);
+        return false;
+    }
+    
+    // [DEBUG LOG] 增加详细链路日志
+    log(`[DEBUG] 链路: ${connectionMode.value.toUpperCase()} | 动作: ${type} | 状态: ${data.status}`);
     
     // 透传日志流
     if (data.logs && Array.isArray(data.logs)) {
@@ -1466,9 +1583,9 @@ const clearQueue = () => {
 
 const disconnectDevice = () => {
   if (selectedDevice.value) {
-    selectedDevice.value = '';
+    // 仅清空推流地址和日志流，但保留 selectedDevice 不变 (锁定当前手机)，防止 fetchDevices 轮询导致串台
     streamUrl.value = '';
-    log('已断开与设备的 USB 同步流');
+    log('已断开与设备的 USB 同步流，设备锁定状态维持。');
   }
 }
 
@@ -2087,6 +2204,11 @@ onMounted(async () => {
          </select>
        </div>
        
+       <div v-if="isSuperAdmin" class="flex items-center gap-2">
+         <span class="text-gray-500 font-medium">管理员:</span>
+         <input v-model="filterParams.admin" type="text" placeholder="管理员账号" class="bg-gray-950 border border-gray-700 rounded px-2 py-1 text-gray-200 outline-none focus:border-blue-500 focus:bg-gray-800 w-28 transition-colors">
+       </div>
+       
        <!-- 以前有应用按钮，现在由于双向计算属性绑定，可不删且无需绑定事件，也可去除。这里留存 -->
        <button class="ml-auto bg-blue-600 opacity-0 pointer-events-none hover:bg-blue-500 text-white px-4 py-1.5 rounded shadow-md transition-colors font-bold tracking-wider active:scale-[0.98]">应用</button>
     </div>
@@ -2219,7 +2341,16 @@ onMounted(async () => {
     <!-- 手机列表真实渲染 -->
     <div v-show="activeTab === '📱 手机列表'" class="flex flex-1 flex-col overflow-hidden p-6 gap-4 bg-gray-950">
       <div class="flex items-center justify-between mb-2">
-         <h2 class="text-gray-200 text-lg font-bold tracking-wide flex items-center gap-2">📱 在线雷达设备矩阵</h2>
+         <div class="flex items-center gap-4">
+            <h2 class="text-gray-200 text-lg font-bold tracking-wide flex items-center gap-2">📱 在线雷达设备矩阵</h2>
+            <div v-if="selectedDevices.length > 0" class="flex items-center gap-2 bg-indigo-900/40 border border-indigo-500/50 px-3 py-1.5 rounded-lg animate-in fade-in slide-in-from-left-4 duration-300">
+               <span class="text-indigo-200 text-xs font-bold">已选 {{ selectedDevices.length }} 台</span>
+               <div class="h-4 w-px bg-indigo-500/30 mx-1"></div>
+               <button @click="openBatchConfigModal" class="text-indigo-300 hover:text-white text-xs font-bold transition-colors">📝 批量修改</button>
+               <button @click="deleteBatchDevices" class="text-red-400 hover:text-red-300 text-xs font-bold transition-colors ml-2">🗑 批量删除</button>
+               <button @click="selectedDevices = []" class="text-gray-400 hover:text-white text-xs ml-2">取消</button>
+            </div>
+         </div>
          <button @click="fetchDevices" class="bg-gray-800 hover:bg-gray-700 text-gray-300 px-4 py-1.5 rounded shadow border border-gray-700 font-bold transition-colors">🔄 刷新矩阵</button>
       </div>
       
@@ -2227,6 +2358,9 @@ onMounted(async () => {
          <table class="w-full text-left border-collapse text-xs">
            <thead class="bg-gray-900 border-b border-gray-800 sticky top-0 select-none">
               <tr>
+                 <th class="p-3 w-10 text-center select-none border-r border-gray-800 bg-gray-900/50">
+                   <input type="checkbox" v-model="isAllSelected" class="w-4 h-4 rounded border-gray-700 bg-gray-950 text-indigo-600 focus:ring-indigo-500 focus:ring-offset-gray-900 transition-all cursor-pointer">
+                 </th>
                  <th @click="sortBy('device_no')" class="p-3 text-gray-400 font-bold uppercase tracking-wider w-1/5 cursor-pointer hover:bg-gray-800 transition-colors">设备编号 / UDID <span v-if="sortKey==='device_no'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th @click="sortBy('ip')" class="p-3 text-gray-400 font-bold uppercase tracking-wider cursor-pointer hover:bg-gray-800 transition-colors">局域 IP/归属 <span v-if="sortKey==='ip'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th @click="sortBy('status')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">状态 <span v-if="sortKey==='status'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
@@ -2236,10 +2370,7 @@ onMounted(async () => {
                  <th @click="sortBy('vpn_active')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">VPN <span v-if="sortKey==='vpn_active'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th @click="sortBy('vpn_ip')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">VPN 节点 <span v-if="sortKey==='vpn_ip'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th @click="sortBy('exec_time')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">启动时间 <span v-if="sortKey==='exec_time'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
-<<<<<<< HEAD
-=======
                  <th @click="sortBy('admin_username')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">管理员 <span v-if="sortKey==='admin_username'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
->>>>>>> 8cf7e1e7a8e8c6043fbafa4a7be2acf0690efc47
                  <th class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-default">任务状态</th>
                  <th @click="sortBy('last_heartbeat')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-right cursor-pointer hover:bg-gray-800 transition-colors">最后上线 <span v-if="sortKey==='last_heartbeat'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-default">操作</th>
@@ -2247,11 +2378,14 @@ onMounted(async () => {
            </thead>
            <tbody class="divide-y divide-gray-800 select-text">
               <tr v-if="sortedDevices.length === 0">
-                 <td colspan="11" class="p-8 text-center text-gray-500 font-medium tracking-wide pointer-events-none">
+                 <td colspan="14" class="p-8 text-center text-gray-500 font-medium tracking-wide pointer-events-none">
                    暂无高并发设备从底核发送微波跳变信号...
                  </td>
               </tr>
-              <tr v-for="dev in sortedDevices" :key="dev.udid" class="hover:bg-gray-900/50 transition-colors group">
+              <tr v-for="dev in sortedDevices" :key="dev.udid" :class="[selectedDevices.includes(dev.udid) ? 'bg-indigo-900/10 shadow-inner' : '', 'hover:bg-gray-900/50 transition-colors group']">
+                 <td class="p-3 text-center border-r border-gray-800/30">
+                   <input type="checkbox" :value="dev.udid" v-model="selectedDevices" class="w-4 h-4 rounded border-gray-700 bg-gray-950 text-indigo-600 focus:ring-indigo-500 focus:ring-offset-gray-900 transition-all cursor-pointer">
+                 </td>
                  <td class="p-3 text-cyan-400 font-mono tracking-tighter relative">
                    <div class="flex items-center gap-2">
                      <div class="font-bold text-sm">{{ dev.device_no || '未知编号' }}</div>
@@ -2301,12 +2435,10 @@ onMounted(async () => {
                     <span v-else class="text-gray-600 text-[10px] font-mono">--</span>
                  </td>
                  <td class="p-3 text-center">
-<<<<<<< HEAD
-=======
                     <span v-if="dev.admin_username" class="bg-purple-900/30 text-purple-400 border border-purple-800 px-2 py-0.5 rounded text-[10px] font-bold">{{ dev.admin_username }}</span>
                     <span v-else class="text-gray-600 text-[10px]">--</span>
-                 </td>                 <td class="p-3 text-center">
->>>>>>> 8cf7e1e7a8e8c6043fbafa4a7be2acf0690efc47
+                 </td>
+                 <td class="p-3 text-center">
                     <div v-if="dev.task_status" class="flex flex-col gap-0.5">
                       <div v-for="(t, i) in ((() => { try { return JSON.parse(dev.task_status) } catch(e) { return [] } })())" :key="i" class="flex items-center gap-1 justify-center">
                         <span class="text-[10px] text-gray-300 truncate max-w-[80px]" :title="t.name">{{ t.name }}</span>
@@ -2392,14 +2524,23 @@ onMounted(async () => {
 
         <!-- 底侧分离坐标观测器 -->
         <div class="bg-gray-900 border-t border-gray-700/80 p-2 shrink-0">
-           <div class="px-3 py-1.5 bg-black rounded-md text-gray-300 flex justify-between text-[11px] font-mono border border-gray-800 items-center">
-             <div class="flex items-center gap-2">
-                <span class="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
-                <span class="text-gray-500">PNT:</span> 
-                <span class="text-indigo-400 font-bold tracking-wider" v-if="pntX !== '--'">({{pntX}}, {{pntY}})</span>
-                <span class="text-gray-600 font-bold tracking-wider" v-else>(--, --)</span>
-             </div>
-           </div>
+            <div class="px-3 py-1.5 bg-black rounded-md text-gray-300 flex justify-between text-[11px] font-mono border border-gray-800 items-center">
+              <div class="flex items-center gap-3">
+                 <div class="flex items-center gap-1.5">
+                    <span class="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
+                    <span class="text-gray-500">PNT:</span> 
+                    <span class="text-indigo-400 font-bold tracking-wider" v-if="pntX !== '--'">({{pntX}}, {{pntY}})</span>
+                    <span class="text-gray-600 font-bold tracking-wider" v-else>(--, --)</span>
+                 </div>
+                 <div class="w-px h-3 bg-gray-800 mx-1"></div>
+                 <div class="flex items-center gap-1.5">
+                    <span class="text-gray-500">DEV:</span>
+                    <span class="text-green-400 font-bold tracking-tight truncate max-w-[120px]" :title="selectedDevice">
+                        {{ devices.find(d => d.udid === selectedDevice)?.device_no || devices.find(d => d.udid === selectedDevice)?.udid || 'N/A' }}
+                    </span>
+                 </div>
+              </div>
+            </div>
         </div>
         </div>
 
@@ -3355,7 +3496,70 @@ onMounted(async () => {
     </div>
 
   </div>
+    <!-- 批量配置 Modal -->
+    <div v-if="showBatchConfigModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-[999] flex items-center justify-center p-4">
+        <div class="bg-gray-900 border border-gray-800 w-full max-w-md rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in duration-200">
+            <div class="p-6 border-b border-gray-800 bg-gray-900/50 flex justify-between items-center">
+                <h3 class="text-lg font-bold text-gray-100 flex items-center gap-3">
+                    <span class="p-2 bg-indigo-900/50 rounded-lg text-indigo-400">📝</span>
+                    批量修改配置 ({{ selectedDevices.length }} 台)
+                </h3>
+                <button @click="showBatchConfigModal = false" class="text-gray-500 hover:text-white transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            
+            <div class="p-6 space-y-5">
+                <p class="text-xs text-gray-500 bg-indigo-900/10 p-3 rounded-lg border border-indigo-900/30">
+                    💡 提示：仅修改您填写的字段，留空的字段将保持各手机原有配置。
+                </p>
+
+                <!-- 批量修改选项 -->
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-xs font-bold text-gray-500 uppercase tracking-widest mb-2">所属国家</label>
+                        <select v-model="batchConfigForm.country" class="w-full bg-black border border-gray-800 rounded-xl px-4 py-3 text-sm text-gray-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-all">
+                            <option value="">(不修改)</option>
+                            <option v-for="c in countries" :key="c.id" :value="c.name">{{ c.name }}</option>
+                        </select>
+                    </div>
+                    
+                    <div>
+                        <label class="block text-xs font-bold text-gray-500 uppercase tracking-widest mb-2">设备分组</label>
+                        <select v-model="batchConfigForm.group_name" class="w-full bg-black border border-gray-800 rounded-xl px-4 py-3 text-sm text-gray-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-all">
+                            <option value="">(不修改)</option>
+                            <option v-for="g in groups" :key="g.id" :value="g.name">{{ g.name }}</option>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-bold text-gray-500 uppercase tracking-widest mb-2">自动执行时辰</label>
+                        <select v-model="batchConfigForm.exec_time" class="w-full bg-black border border-gray-800 rounded-xl px-4 py-3 text-sm text-gray-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-all">
+                            <option value="">(不修改)</option>
+                            <option v-for="t in execTimes" :key="t.id" :value="t.name">{{ t.name }} 点整</option>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-bold text-gray-500 uppercase tracking-widest flex justify-between items-center mb-2">
+                           <span>VPN Node JSON</span>
+                           <span class="text-[10px] text-gray-600 font-normal normal-case">V2ray/Xray/Clash 等节点结构</span>
+                        </label>
+                        <textarea v-model="batchConfigForm.vpnJson" rows="4" placeholder="填入新的 VPN JSON。留空表示保持原有节点不替换。" class="w-full font-mono text-xs bg-black/50 border border-gray-800 rounded-xl px-4 py-3 text-emerald-400 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none leading-relaxed transition-all placeholder:text-gray-700 custom-scrollbar"></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <div class="p-6 bg-gray-900/80 border-t border-gray-800 flex justify-end gap-3 px-8 pb-8">
+                <button @click="showBatchConfigModal = false" class="px-5 py-2 text-gray-400 hover:text-white font-medium text-xs transition-colors tracking-widest">取消</button>
+                <button @click="saveBatchConfig" class="bg-indigo-600 hover:bg-indigo-500 text-white px-8 py-2.5 rounded-xl shadow-lg shadow-indigo-500/20 transition-all font-bold text-xs tracking-widest">
+                    同步配置至雷达矩阵
+                </button>
+            </div>
+        </div>
+    </div>
 </template>
+
 
 <style>
 .custom-scrollbar::-webkit-scrollbar {

@@ -355,7 +355,7 @@
       @"id" : @"mtu",
       @"label" : @"MTU",
       @"type" : @"number",
-      @"placeholder" : @"1420"
+      @"placeholder" : @"1300"
     }];
   } else if ([type isEqualToString:@"Tuic"]) {
     [vpnRows
@@ -468,15 +468,62 @@
   }
   if ([type isEqualToString:@"Shadowsocks"]) {
     [vpnRows addObject:@{
+      @"id" : @"uuid",
+      @"label" : @"UUID",
+      @"type" : @"text"
+    }];
+    [vpnRows addObject:@{
       @"id" : @"udp",
       @"label" : @"UDP 转发",
       @"type" : @"switch"
     }];
     [vpnRows addObject:@{
+      @"id" : @"protocol",
+      @"label" : @"协议",
+      @"type" : @"text",
+      @"placeholder" : @"none"
+    }];
+    [vpnRows addObject:@{
+      @"id" : @"protocol-param",
+      @"label" : @"协议参数",
+      @"type" : @"text"
+    }];
+    [vpnRows addObject:@{
+      @"id" : @"ws-path",
+      @"label" : @"WS 路径",
+      @"type" : @"text",
+      @"placeholder" : @"/"
+    }];
+    [vpnRows addObject:@{
+      @"id" : @"ws-host",
+      @"label" : @"WS Host",
+      @"type" : @"text"
+    }];
+    [vpnRows addObject:@{
+      @"id" : @"flag",
+      @"label" : @"地区标签",
+      @"type" : @"text",
+      @"placeholder" : @"HK"
+    }];
+    // 混淆（simple-obfs，与 Shadowrocket 的 Obfuscation 对应）
+    [vpnRows addObject:@{
+      @"id" : @"obfs",
+      @"label" : @"混淆",
+      @"type" : @"text",
+      @"placeholder" : @"none / http / tls"
+    }];
+    [vpnRows addObject:@{
+      @"id" : @"obfs-param",
+      @"label" : @"混淆参数",
+      @"type" : @"text",
+      @"placeholder" : @"混淆 Host"
+    }];
+    // SIP003 插件（独立于混淆）
+    [vpnRows addObject:@{
       @"id" : @"plugin",
       @"label" : @"插件",
       @"type" : @"text",
-      @"placeholder" : @"obfs"
+      @"placeholder" : @"none"
     }];
     [vpnRows addObject:@{
       @"id" : @"plugin-opts",
@@ -513,7 +560,7 @@
     @"id" : @"mtu",
     @"label" : @"MTU",
     @"type" : @"number",
-    @"placeholder" : @"1400"
+    @"placeholder" : @"1300"
   }];
 
   // 1.4 Proxy Settings

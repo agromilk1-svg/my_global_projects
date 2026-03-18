@@ -40,6 +40,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// 获取所有任务的状态 JSON 字符串（供心跳上报使用）
 - (NSString *)getTaskStatusJSON;
 
+/// 获取指定任务的上次执行日志（含错误信息、最后执行的指令、全部日志等）
+- (nullable NSDictionary *)getTaskExecutionLog:(NSNumber *)taskId;
+
 @end
 
 NS_ASSUME_NONNULL_END

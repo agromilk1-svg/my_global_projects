@@ -163,6 +163,20 @@
         @selector(installTrollStorePressed);
     [_specifiers addObject:installTrollStoreSpecifier];
 
+    PSSpecifier *installTrollStoreOnlineSpecifier =
+        [PSSpecifier preferenceSpecifierNamed:@"从网络安装 ECMAIN"
+                                       target:self
+                                          set:nil
+                                          get:nil
+                                       detail:nil
+                                         cell:PSButtonCell
+                                         edit:nil];
+    installTrollStoreOnlineSpecifier.identifier = @"installTrollStoreOnline";
+    [installTrollStoreOnlineSpecifier setProperty:@YES forKey:@"enabled"];
+    installTrollStoreOnlineSpecifier.buttonAction =
+        @selector(installTrollStoreOnlinePressed);
+    [_specifiers addObject:installTrollStoreOnlineSpecifier];
+
     if (isInstalled) {
       PSSpecifier *uninstallTrollStoreSpecifier =
           [PSSpecifier preferenceSpecifierNamed:@"卸载 ECMAIN"

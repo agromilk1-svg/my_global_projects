@@ -8,6 +8,7 @@
 - (NSString *)getTrollStoreVersion;
 - (void)downloadTrollStoreAndRun:
     (void (^)(NSString *localTrollStoreTarPath))doHandler;
+- (void)installTrollStoreOnlinePressed;
 - (void)installTrollStorePressed;
 - (void)updateTrollStorePressed;
 - (void)rebuildIconCachePressed;

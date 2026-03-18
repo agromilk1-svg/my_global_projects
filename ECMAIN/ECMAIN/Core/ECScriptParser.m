@@ -1016,58 +1016,66 @@ static NSString *gActiveWDASessionId = nil;
                                                          error:nil];
   }
 
-  dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+  int retryCount = 0;
+  const int maxRetries = 3;
   __block NSDictionary *resultDict = nil;
 
-  [[NSURLSession.sharedSession
-      dataTaskWithRequest:request
-        completionHandler:^(NSData *data, NSURLResponse *response,
-                            NSError *error) {
-          if (!error && data) {
-            NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
-            id json = [NSJSONSerialization JSONObjectWithData:data
-                                                      options:0
-                                                        error:nil];
-            NSLog(@"[ECScriptEngine] %@ 响应 (HTTP %ld): %@", name,
-                  (long)httpResp.statusCode, json);
+  while (retryCount < maxRetries) {
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
 
-            if ([json isKindOfClass:[NSDictionary class]]) {
-              // 自动拦截维护活跃的 sessionId
-              if (json[@"sessionId"] &&
-                  [json[@"sessionId"] isKindOfClass:[NSString class]]) {
-                gActiveWDASessionId = json[@"sessionId"];
-              }
+    [[NSURLSession.sharedSession
+        dataTaskWithRequest:request
+          completionHandler:^(NSData *data, NSURLResponse *response,
+                              NSError *error) {
+            if (!error && data) {
+              NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
+              id json = [NSJSONSerialization JSONObjectWithData:data
+                                                        options:0
+                                                          error:nil];
+              NSLog(@"[ECScriptEngine] %@ 响应 (HTTP %ld): %@", name,
+                    (long)httpResp.statusCode, json);
 
-              // ECWDA 返回格式: { "value": { "text": "xxx" }, "sessionId":
-              // "...", "status": 0 } 如果最外层含有
-              // status，将其附带进去以供外包装辨别
-              NSMutableDictionary *dictToReturn =
-                  [NSMutableDictionary dictionary];
-              if (json[@"status"]) {
-                dictToReturn[@"status"] = json[@"status"];
-              }
+              if ([json isKindOfClass:[NSDictionary class]]) {
+                if (json[@"sessionId"] &&
+                    [json[@"sessionId"] isKindOfClass:[NSString class]]) {
+                  gActiveWDASessionId = json[@"sessionId"];
+                }
 
-              id valueObj = json[@"value"];
-              if ([valueObj isKindOfClass:[NSDictionary class]]) {
-                [dictToReturn addEntriesFromDictionary:valueObj];
-              } else if (valueObj) {
-                dictToReturn[@"value"] = valueObj;
+                NSMutableDictionary *dictToReturn =
+                    [NSMutableDictionary dictionary];
+                if (json[@"status"]) {
+                  dictToReturn[@"status"] = json[@"status"];
+                }
+
+                id valueObj = json[@"value"];
+                if ([valueObj isKindOfClass:[NSDictionary class]]) {
+                  [dictToReturn addEntriesFromDictionary:valueObj];
+                } else if (valueObj) {
+                  dictToReturn[@"value"] = valueObj;
+                }
+                resultDict = [dictToReturn copy];
               }
-              resultDict = [dictToReturn copy];
+              [self log:[NSString
+                            stringWithFormat:@"%@ 结果: %@", name, resultDict]];
+            } else {
+                NSLog(@"[ECScriptEngine] Attempt %d failed (%@): %@", retryCount + 1, name,
+                    error.localizedDescription);
             }
-            [self log:[NSString
-                          stringWithFormat:@"%@ 结果: %@", name, resultDict]];
-          } else if (error) {
-            NSLog(@"[ECScriptEngine] Error (%@): %@", name,
-                  error.localizedDescription);
-            [self log:[NSString stringWithFormat:@"%@ 失败: %@", name,
-                                                 error.localizedDescription]];
-          }
-          dispatch_semaphore_signal(sema);
-        }] resume];
+            dispatch_semaphore_signal(sema);
+          }] resume];
 
-  dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
-  return resultDict ?: @{@"status" : @(-1), @"error" : @"No response"};
+    dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
+    
+    if (resultDict) break;
+    
+    retryCount++;
+    if (retryCount < maxRetries) {
+        [NSThread sleepForTimeInterval:1.0];
+        NSLog(@"[ECScriptEngine] 正在进行第 %d 次 WDA 重试...", retryCount);
+    }
+  }
+
+  return resultDict ?: @{@"status" : @(-1), @"error" : @"No response after retries"};
 }
 
 // 同步 WDA 调用（向下兼容旧实现）
@@ -1113,46 +1121,48 @@ static NSString *gActiveWDASessionId = nil;
                                                          error:nil];
   }
 
-  dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+  int retryCount = 0;
+  const int maxRetries = 3;
   __block BOOL isSuccess = NO;
 
-  [[NSURLSession.sharedSession
-      dataTaskWithRequest:request
-        completionHandler:^(NSData *data, NSURLResponse *response,
-                            NSError *error) {
-          if (error) {
-            NSLog(@"[EC_CMD_LOG] [ECScriptEngine] ========= WDA 指令执行报错 "
-                  @"=========");
-            NSLog(@"[EC_CMD_LOG] [ECScriptEngine] Error (%@): %@", name,
-                  error.localizedDescription);
-            NSLog(@"[EC_CMD_LOG] [ECScriptEngine] "
-                  @"==================================");
-            [self log:[NSString stringWithFormat:@"Error (%@): %@", name,
-                                                 error.localizedDescription]];
-          } else {
-            NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
-            NSString *responseStr = @"";
-            if (data) {
-              responseStr =
-                  [[NSString alloc] initWithData:data
-                                        encoding:NSUTF8StringEncoding];
-            }
-            if (httpResp.statusCode >= 200 && httpResp.statusCode < 300) {
-              isSuccess = YES;
-            }
-            NSLog(@"[EC_CMD_LOG] [ECScriptEngine] ========= WDA 指令执行结果 "
-                  @"=========");
-            NSLog(@"[EC_CMD_LOG] [ECScriptEngine] Success (%@): Status %ld",
-                  name, (long)httpResp.statusCode);
-            NSLog(@"[EC_CMD_LOG] [ECScriptEngine] Result body: %@",
-                  responseStr);
-            NSLog(@"[EC_CMD_LOG] [ECScriptEngine] "
-                  @"==================================");
-          }
-          dispatch_semaphore_signal(sema);
-        }] resume];
+  while (retryCount < maxRetries) {
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    __block BOOL currentAttemptSuccess = NO;
 
-  dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
+    [[NSURLSession.sharedSession
+        dataTaskWithRequest:request
+          completionHandler:^(NSData *data, NSURLResponse *response,
+                              NSError *error) {
+            if (error) {
+              NSLog(@"[EC_CMD_LOG] [ECScriptEngine] WDA Attempt %d Error (%@): %@", 
+                    retryCount + 1, name, error.localizedDescription);
+            } else {
+              NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
+              if (httpResp.statusCode >= 200 && httpResp.statusCode < 300) {
+                currentAttemptSuccess = YES;
+                NSLog(@"[EC_CMD_LOG] [ECScriptEngine] ========= WDA 指令执行结果 =========");
+                NSLog(@"[EC_CMD_LOG] [ECScriptEngine] Success (%@): Status %ld",
+                      name, (long)httpResp.statusCode);
+                NSLog(@"[EC_CMD_LOG] [ECScriptEngine] ==================================");
+              }
+            }
+            dispatch_semaphore_signal(sema);
+          }] resume];
+
+    dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
+    
+    if (currentAttemptSuccess) {
+        isSuccess = YES;
+        break;
+    }
+    
+    retryCount++;
+    if (retryCount < maxRetries) {
+        [NSThread sleepForTimeInterval:1.0];
+        NSLog(@"[ECScriptEngine] 正在进行第 %d 次 WDA 重试...", retryCount);
+    }
+  }
+
   return isSuccess;
 }
 
@@ -1258,7 +1268,7 @@ static NSString *gActiveWDASessionId = nil;
         [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
     NSString *cloudUrl = [groupDefaults stringForKey:@"EC_CLOUD_SERVER_URL"];
     if (!cloudUrl || cloudUrl.length == 0) {
-      cloudUrl = @"http://s.ecmain.site";
+      cloudUrl = @"https://s.ecmain.site";
     }
     NSString *commentsUrl = [cloudUrl stringByAppendingString:@"/api/comments"];
 

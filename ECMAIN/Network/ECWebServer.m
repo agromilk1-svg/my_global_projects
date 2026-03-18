@@ -137,6 +137,10 @@ void handleRequest(int socket) {
   NSLog(@"[ECWebServer] Raw request length: %lu bytes",
         (unsigned long)requestData.length);
 
+  // 解析第一行以获取 Method 和 Path
+  NSString *firstLine = [[request componentsSeparatedByString:@"\r\n"] firstObject];
+  NSLog(@"[ECWebServer] Request Line: %@", firstLine);
+
   // Check for GET /ping
   if ([request hasPrefix:@"GET /ping"]) {
     const char *response =

@@ -111,7 +111,7 @@ wda.sleep(3);
 wda.home();
 wda.sleep(1);
 
-if (!wda.isVPNConnected()) {
+if (wda.isVPNConnected()) {
 
     // 启动 TikTok
     wda.launch("com.zhiliaoapp.musically");
@@ -209,7 +209,7 @@ if (!wda.isVPNConnected()) {
                             wda.sleep(1);
                             totalSleepSec += 1;
                             //随机获取评论内容并输入，es-MX (墨西哥) | pt-BR (巴西)de-DE (德国) | en-SG (新加坡)ja-JP (日本) | en-US (美国)es-ES (西班牙) | en-GB (英国)fr-FR (法国) | zh-CN (中文)
-                            var cmt = wda.getRandomComment("en-US");
+                            var cmt = wda.getRandomComment("es-MX");
                             wda.input(cmt);
                             wda.sleep(1);
                             totalSleepSec += 1;

@@ -415,8 +415,8 @@ def get_all_cloud_devices() -> List[dict]:
             now = time.time()
             for r in cursor.fetchall():
                 d = dict(r)
-                # 超过 120 秒未有心跳，动态将状态覆盖为离线
-                if (now - d['last_heartbeat']) >= 120:
+                # 超过 180 秒（3 分钟）未有心跳，动态将状态覆盖为离线
+                if (now - d['last_heartbeat']) >= 180:
                     d['status'] = 'offline'
                 devices.append(d)
                 
@@ -434,6 +434,58 @@ def delete_device(udid: str):
             conn.commit()
     except Exception as e:
         logger.error(f"Error deleting device {udid}: {e}")
+
+def batch_delete_devices(udids: list) -> bool:
+    """批量从数据库彻底删除指定设备"""
+    if not udids:
+        return True
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            placeholders = ','.join(['?'] * len(udids))
+            cursor.execute(f'DELETE FROM ec_devices WHERE udid IN ({placeholders})', udids)
+            conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Error batch deleting devices: {e}")
+        return False
+
+def batch_update_devices_config(udids: list, country: str = None, group_name: str = None, exec_time: str = None, config_vpn: str = None) -> bool:
+    """批量更新设备的国家、分组、启动时间或 VPN 配置，值为 None 则不修改"""
+    if not udids:
+        return True
+    updates = []
+    params = []
+    
+    if country is not None:
+        updates.append("country = ?")
+        params.append(country)
+    if group_name is not None:
+        updates.append("group_name = ?")
+        params.append(group_name)
+    if exec_time is not None:
+        updates.append("exec_time = ?")
+        params.append(exec_time)
+    if config_vpn is not None:
+        updates.append("config_vpn = ?")
+        params.append(config_vpn)
+        
+    if not updates:
+        return True # 没有需要修改的字段
+        
+    placeholders = ','.join(['?'] * len(udids))
+    query = f"UPDATE ec_devices SET {', '.join(updates)} WHERE udid IN ({placeholders})"
+    params.extend(udids)
+    
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Error batch updating configs: {e}")
+        return False
 
 def get_device_config(udid: str) -> dict:
     """获取设备的静态 IP 和 VPN 配置"""

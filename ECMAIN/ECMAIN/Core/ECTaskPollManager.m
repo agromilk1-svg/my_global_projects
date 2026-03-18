@@ -20,15 +20,23 @@
 @property(nonatomic, strong) dispatch_queue_t pollQueue;
 @property(nonatomic, assign) BOOL isPolling;
 @property(nonatomic, assign) BOOL isExecuting;
+// 节流与退避相关
+@property(nonatomic, assign) NSTimeInterval lastFetchTime;
+@property(nonatomic, assign) NSTimeInterval backoffInterval;
 // 本地存储已获取的任务 JSON 数组
 @property(nonatomic, strong) NSMutableArray<NSDictionary *> *localTasks;
 // 记录已执行任务的日期字典，key=taskId字符串, value=执行日期(yyyy-MM-dd)
 // 同一任务当天只执行一次，过了 0 点自动解锁
 @property(nonatomic, strong)
     NSMutableDictionary<NSString *, NSString *> *executedTaskDates;
+// 每个任务的执行日志，key=taskId字符串, value=日志字典
+@property(nonatomic, strong)
+    NSMutableDictionary<NSString *, NSDictionary *> *taskExecutionLogs;
 @end
 
 @implementation ECTaskPollManager
+
+@synthesize isPolling = _isPolling;
 
 + (instancetype)sharedManager {
   static ECTaskPollManager *instance = nil;
@@ -65,6 +73,13 @@
     _executedTaskDates = [dates mutableCopy];
   } else {
     _executedTaskDates = [NSMutableDictionary dictionary];
+  }
+
+  NSDictionary *logs = [defaults dictionaryForKey:@"EC_TASK_EXECUTION_LOGS"];
+  if (logs) {
+    _taskExecutionLogs = [logs mutableCopy];
+  } else {
+    _taskExecutionLogs = [NSMutableDictionary dictionary];
   }
 }
 
@@ -112,6 +127,8 @@
   [defaults setObject:[_localTasks copy] forKey:@"EC_SAVED_AUTO_SCRIPTS"];
   [defaults setObject:[_executedTaskDates copy]
                forKey:@"EC_EXECUTED_TASK_DATES"];
+  [defaults setObject:[_taskExecutionLogs copy]
+               forKey:@"EC_TASK_EXECUTION_LOGS"];
   [defaults synchronize];
 }
 
@@ -180,6 +197,14 @@
     return; // 防重入
   }
 
+  // --- 节流与退避逻辑 ---
+  NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+  if (now - self.lastFetchTime < (10.0 + self.backoffInterval)) {
+    // NSLog(@"[ECTaskPollManager] 轮询请求太频繁，跳过 (退避中: %.1fs)", self.backoffInterval);
+    return;
+  }
+  self.lastFetchTime = now;
+
   NSLog(@"[ECTaskPollManager] Fetching global scripts...");
 
   // 获取设备填写的中心配置 URL
@@ -218,11 +243,23 @@
         completionHandler:^(NSData *_Nullable data,
                             NSURLResponse *_Nullable response,
                             NSError *_Nullable error) {
-          if (error || !data) {
-            NSLog(@"[ECTaskPollManager] 获取任务失败: %@",
-                  error.localizedDescription);
+          NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
+          if (error || !data || (httpResp && httpResp.statusCode != 200)) {
+            NSLog(@"[ECTaskPollManager] 获取任务异常 (Status: %ld): %@", 
+                  (long)(httpResp ? httpResp.statusCode : 0),
+                  error.localizedDescription ?: @"HTTP Error");
+            
+            // 遭遇 502 或其他服务端错误，实施指数退避 (10s -> 20s -> 40s -> max 300s)
+            if (self.backoffInterval < 10) {
+                self.backoffInterval = 10.0;
+            } else {
+                self.backoffInterval = MIN(self.backoffInterval * 2.0, 300.0);
+            }
             return;
           }
+
+          // 请求成功，重置退避
+          self.backoffInterval = 0;
 
           NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data
                                                                options:0
@@ -367,23 +404,52 @@
            completion:^(BOOL success, NSArray *_Nonnull results) {
              NSString *resLog = [NSString
                  stringWithFormat:
-                     @"[脚本动作] ✅ 自动任务 '%@' 执行完毕. 结果: %@",
+                     @"[脚本动作] %@ 自动任务 '%@' 执行完毕. 结果: %@",
+                     success ? @"✅" : @"❌",
                      name, success ? @"成功" : @"失败"];
              [[ECLogManager sharedManager] log:resLog];
              NSLog(@"%@", resLog);
 
+             // === 持久化保存执行日志 ===
+             NSMutableArray *logMessages = [NSMutableArray array];
+             NSString *lastCommand = @"（无）";
+             NSString *errorInfo = @"";
+             for (NSDictionary *logEntry in results) {
+               NSString *msg = logEntry[@"message"] ?: @"";
+               [logMessages addObject:msg];
+               // 提取最后一条非错误的消息作为"最后执行的指令"
+               if (![msg containsString:@"Error"] && ![msg containsString:@"❌"] && msg.length > 0) {
+                 lastCommand = msg;
+               }
+               // 提取错误信息
+               if ([msg containsString:@"Error"] || [msg containsString:@"❌"]) {
+                 if (errorInfo.length > 0) {
+                   errorInfo = [errorInfo stringByAppendingString:@"\n"];
+                 }
+                 errorInfo = [errorInfo stringByAppendingString:msg];
+               }
+             }
+
+             NSDictionary *logRecord = @{
+               @"success" : @(success),
+               @"error" : errorInfo ?: @"",
+               @"last_command" : lastCommand ?: @"",
+               @"log_count" : @(logMessages.count),
+               @"logs" : logMessages,
+               @"timestamp" : [self currentDateTimeString]
+             };
+
+             dispatch_async(self.pollQueue, ^{
+               self.taskExecutionLogs[[taskId stringValue]] = logRecord;
+               [self savePersistedData];
+             });
+
              // 如果脚本执行出错，弹窗显示错误信息
              if (!success) {
-               NSMutableString *errorMsg = [NSMutableString string];
-               for (NSDictionary *logEntry in results) {
-                 NSString *msg = logEntry[@"message"];
-                 if (msg && [msg containsString:@"Error"]) {
-                   [errorMsg appendFormat:@"%@\n", msg];
-                 }
-               }
-               if (errorMsg.length == 0) {
-                 [errorMsg appendString:@"脚本执行过程中发生未知错误"];
-               }
+               NSString *alertMsg = [NSString
+                   stringWithFormat:@"错误信息:\n%@\n\n最后执行的指令:\n%@",
+                   errorInfo.length > 0 ? errorInfo : @"未知错误",
+                   lastCommand];
 
                dispatch_async(dispatch_get_main_queue(), ^{
                  UIAlertController *errorAlert = [UIAlertController
@@ -391,7 +457,7 @@
                                                  stringWithFormat:
                                                      @"⚠️ 脚本执行出错\n%@",
                                                      name]
-                                     message:errorMsg
+                                     message:alertMsg
                               preferredStyle:UIAlertControllerStyleAlert];
                  [errorAlert
                      addAction:[UIAlertAction
@@ -518,6 +584,14 @@
                         object:nil];
     });
   });
+}
+
+- (NSDictionary *)getTaskExecutionLog:(NSNumber *)taskId {
+  __block NSDictionary *log = nil;
+  dispatch_sync(self.pollQueue, ^{
+    log = self.taskExecutionLogs[[taskId stringValue]];
+  });
+  return log;
 }
 
 @end

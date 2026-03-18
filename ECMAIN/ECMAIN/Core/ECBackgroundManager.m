@@ -6,9 +6,11 @@
 //
 
 #import "ECBackgroundManager.h"
-#import "../../ECBuildInfo.h" // 版本号常量，用于自动更新
-#import "ECLogManager.h"      // Import Log Manager
-#import "ECScriptParser.h"    // Import Script Parser
+#import "../../ECBuildInfo.h"
+#import "../../TrollStoreCore/TSApplicationsManager.h"
+#import "ECLogManager.h"
+#import "ECScriptParser.h"
+#import "ECTaskPollManager.h"
 #import "ECVPNConfigManager.h"
 #import <AVFoundation/AVFoundation.h>
 #import <NetworkExtension/NetworkExtension.h>
@@ -52,7 +54,9 @@ static BOOL _isUpdating = NO;
   NSURLSession *_tunnelSession;
   BOOL _isTunnelConnecting;
   NSTimer *_wsPingTimer; // 30 秒 Ping 保活定时器，防止 TCP 空闲超时
+  dispatch_source_t _heartbeatGCDTimer; // 修复 GCD 定时器提前释放的问题
 }
+
 
 + (instancetype)sharedManager {
   static ECBackgroundManager *instance = nil;
@@ -79,8 +83,35 @@ static BOOL _isUpdating = NO;
         [self toggleMicrophoneKeepAlive:YES];
       });
     }
+
+    // 监听后台/息屏事件，确保联网保活不中断
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(ensureBackgroundNetworkAlive)
+               name:UIApplicationDidEnterBackgroundNotification
+             object:nil];
   }
   return self;
+}
+
+#pragma mark - 后台息屏联网保活
+
+- (void)ensureBackgroundNetworkAlive {
+  // 综合检查当前保活层状态，若全部未激活则自动启动麦克风保活作为兜底
+  if (_isAudioActive) {
+    NSLog(@"[ECBackground] ✅ 后台保活已就绪（麦克风录音活跃）");
+    return;
+  }
+
+  // 麦克风保活是息屏后最强效的持久后台联网手段，自动激活
+  NSLog(@"[ECBackground] 🔄 检测到进入后台/息屏，自动激活麦克风保活以维持联网...");
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [self toggleMicrophoneKeepAlive:YES];
+    // 同步刷新用户设置，避免下次启动时被关闭
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setBool:YES forKey:@"EC_AUTO_MIC_ALIVE"];
+    [defaults synchronize];
+  });
 }
 
 #pragma mark - VPN Keep-Alive
@@ -678,7 +709,7 @@ static NSString *_cachedDeviceUDID = nil;
         log:[NSString stringWithFormat:@"[Tunnel] %.0f秒后尝试重连...", delay]];
   });
 
-  __weak typeof(self) weakSelf = self;
+  __unsafe_unretained typeof(self) weakSelf = self;
   dispatch_after(
       dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
       dispatch_get_main_queue(), ^{
@@ -893,7 +924,7 @@ static NSString *_cachedDeviceUDID = nil;
   if (!currentTask)
     return;
 
-  __weak typeof(self) weakSelf = self;
+  __unsafe_unretained typeof(self) weakSelf = self;
 
   [currentTask receiveMessageWithCompletionHandler:^(
                    NSURLSessionWebSocketMessage *_Nullable message,
@@ -989,7 +1020,7 @@ static NSString *_cachedDeviceUDID = nil;
     NSData *d = [NSJSONSerialization dataWithJSONObject:resp
                                                 options:0
                                                   error:nil];
-    [_webSocketTask sendMessage:[[NSURLSessionWebSocketMessage alloc]
+    [self.webSocketTask sendMessage:[[NSURLSessionWebSocketMessage alloc]
                                     initWithString:
                                         [[NSString alloc]
                                             initWithData:d
@@ -1009,7 +1040,7 @@ static NSString *_cachedDeviceUDID = nil;
     NSData *d = [NSJSONSerialization dataWithJSONObject:resp
                                                 options:0
                                                   error:nil];
-    [_webSocketTask sendMessage:[[NSURLSessionWebSocketMessage alloc]
+    [self.webSocketTask sendMessage:[[NSURLSessionWebSocketMessage alloc]
                                     initWithString:
                                         [[NSString alloc]
                                             initWithData:d
@@ -1022,7 +1053,16 @@ static NSString *_cachedDeviceUDID = nil;
   if (!targetURL) {
     // 【新增】拦截后端的实时推流唤醒信号，实现脚本秒杀下发
     if ([url isEqualToString:@"/api/wakeup_task"]) {
+      static NSTimeInterval lastWakeTime = 0;
+      NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+      
       dispatch_async(dispatch_get_main_queue(), ^{
+        if (now - lastWakeTime < 5.0) {
+            // NSLog(@"[Tunnel] ⚠️ 唤醒波频率过高，已忽略 (%.1fs)", now - lastWakeTime);
+            return;
+        }
+        lastWakeTime = now;
+        
         [[ECLogManager sharedManager]
             log:@"[Tunnel] 收到实时任务推流波！开始本地即刻执行..."];
         // 伪装响应
@@ -1078,7 +1118,7 @@ static NSString *_cachedDeviceUDID = nil;
   }
   request.timeoutInterval = 5.0;
 
-  __weak typeof(self) weakSelf = self;
+  __unsafe_unretained typeof(self) weakSelf = self;
   [[NSURLSession.sharedSession
       dataTaskWithRequest:request
         completionHandler:^(NSData *_Nullable data,
@@ -1266,41 +1306,44 @@ static BOOL _isStreamingActive = NO;
         [self sendHeartbeat:serverUrl];
       });
 
-  // Start Loop (60s) for 100k Concurrent Devices Optimization & WS Ping
-  [NSTimer
-      scheduledTimerWithTimeInterval:60.0
-                             repeats:YES
-                               block:^(NSTimer *_Nonnull timer) {
-                                 [self sendHeartbeat:serverUrl];
-                                 // 同时发送 WebSocket Ping 延烧隧道保活
-                                 if (self->_isTunnelConnected &&
-                                     self->_webSocketTask) {
-                                   NSDictionary *pingMsg = @{@"type" : @"ping"};
-                                   NSData *d = [NSJSONSerialization
-                                       dataWithJSONObject:pingMsg
-                                                  options:0
-                                                    error:nil];
-                                   [self->_webSocketTask
-                                             sendMessage:
-                                                 [[NSURLSessionWebSocketMessage
-                                                     alloc]
-                                                     initWithString:
-                                                         [[NSString alloc]
-                                                             initWithData:d
-                                                                 encoding:
-                                                                     NSUTF8StringEncoding]]
-                                       completionHandler:^(
-                                           NSError *_Nullable err) {
-                                         if (err) {
-                                           NSLog(
-                                               @"[Tunnel] WS Ping 发送失败: %@",
-                                               err.localizedDescription);
-                                         }
-                                       }];
-                                 } else {
-                                   [self startTunnel];
-                                 }
-                               }];
+  // BUILD #402: 使用 GCD dispatch_source_t 替代 NSTimer
+  // NSTimer 依赖 Main RunLoop DefaultMode，息屏后会被冻结导致心跳中断
+  // GCD Timer 运行在独立 queue 上，不受 RunLoop 影响，息屏后也能正常触发
+  if (_heartbeatGCDTimer) {
+      dispatch_source_cancel(_heartbeatGCDTimer);
+      _heartbeatGCDTimer = nil;
+  }
+  
+  dispatch_queue_t heartbeatQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+  _heartbeatGCDTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, heartbeatQueue);
+  dispatch_source_set_timer(_heartbeatGCDTimer,
+      dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC),  // 首次 60 秒后触发
+      60 * NSEC_PER_SEC,   // 间隔 60 秒
+      5 * NSEC_PER_SEC);   // 允许 5 秒抖动（省电优化）
+  
+  __weak typeof(self) weakSelf = self;
+  dispatch_source_set_event_handler(_heartbeatGCDTimer, ^{
+      typeof(self) strongSelf = weakSelf;
+      if (!strongSelf) return;
+      
+      [strongSelf sendHeartbeat:serverUrl];
+      // 同时发送 WebSocket Ping 延烧隧道保活
+      if (strongSelf->_isTunnelConnected && strongSelf->_webSocketTask) {
+          NSDictionary *pingMsg = @{@"type" : @"ping"};
+          NSData *d = [NSJSONSerialization dataWithJSONObject:pingMsg options:0 error:nil];
+          [strongSelf->_webSocketTask
+              sendMessage:[[NSURLSessionWebSocketMessage alloc]
+                              initWithString:[[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding]]
+              completionHandler:^(NSError *_Nullable err) {
+                  if (err) {
+                      NSLog(@"[Tunnel] WS Ping 发送失败: %@", err.localizedDescription);
+                  }
+              }];
+      } else {
+          [strongSelf startTunnel];
+      }
+  });
+  dispatch_resume(_heartbeatGCDTimer);
 
   // Fire immediately
   [self sendHeartbeat:serverUrl];
@@ -1343,57 +1386,22 @@ static BOOL _isStreamingActive = NO;
       log:[NSString
               stringWithFormat:@"[ECBackground] 开始下载更新包: %@", fullURL]];
 
-  // 使用 NSURLSession 下载
   NSURL *url = [NSURL URLWithString:fullURL];
-  NSURLSessionDownloadTask *downloadTask = [[NSURLSession sharedSession]
-      downloadTaskWithURL:url
-        completionHandler:^(NSURL *_Nullable location,
-                            NSURLResponse *_Nullable response,
-                            NSError *_Nullable error) {
-          if (error || !location) {
-            NSLog(@"[ECBackground] ❌ 下载失败: %@",
-                  error.localizedDescription);
-            _isUpdating = NO;
-            return;
-          }
+  NSString *tmpDir = NSTemporaryDirectory();
+  NSString *tarPath = [tmpDir stringByAppendingPathComponent:@"ecmain_update.tar"];
 
-          // 将下载的文件移动到临时目录
-          NSString *tmpDir = NSTemporaryDirectory();
-          NSString *tarPath =
-              [tmpDir stringByAppendingPathComponent:@"ecmain_update.tar"];
-
-          // 删除旧的临时文件
-          [[NSFileManager defaultManager] removeItemAtPath:tarPath error:nil];
-
-          NSError *moveError;
-          [[NSFileManager defaultManager]
-              moveItemAtURL:location
-                      toURL:[NSURL fileURLWithPath:tarPath]
-                      error:&moveError];
-          if (moveError) {
-            NSLog(@"[ECBackground] ❌ 移动下载文件失败: %@", moveError);
-            _isUpdating = NO;
-            return;
-          }
-
-          // 验证文件存在且大小合理
-          NSDictionary *attrs =
-              [[NSFileManager defaultManager] attributesOfItemAtPath:tarPath
-                                                               error:nil];
-          unsigned long long fileSize =
-              [attrs[NSFileSize] unsignedLongLongValue];
-          if (fileSize < 1024) {
-            NSLog(@"[ECBackground] ❌ 下载的文件太小 (%llu bytes)，可能已损坏",
-                  fileSize);
-            _isUpdating = NO;
-            return;
-          }
-
-          [[ECLogManager sharedManager]
-              log:[NSString
-                      stringWithFormat:
-                          @"[ECBackground] ✅ 下载完成 (%.1f MB)，准备安装...",
-                          fileSize / 1024.0 / 1024.0]];
+  // BUILD #403: 使用增强型下载器，支持 502 自动重试与后台能力
+  [self downloadAndUpdateWithURL:url
+                          toPath:tarPath
+                      retryCount:0
+                      completion:^(BOOL success, NSString * _Nullable filePath) {
+      if (!success) {
+          _isUpdating = NO;
+          return;
+      }
+      
+      // 下载成功后的安装逻辑
+      NSString *tarPathToInstall = filePath;
 
           extern int spawnRoot(NSString * path, NSArray * args,
                                NSString * *stdOut, NSString * *stdErr);
@@ -1540,9 +1548,75 @@ static BOOL _isStreamingActive = NO;
           }
 
           // 清理临时文件
-          [[NSFileManager defaultManager] removeItemAtPath:tarPath error:nil];
-        }];
-  [downloadTask resume];
+          [[NSFileManager defaultManager] removeItemAtPath:tarPathToInstall error:nil];
+      }];
+}
+
+// BUILD #403: 增强型下载器实现 - 支持 502 重试、状态码校验、后台 Session
+- (void)downloadAndUpdateWithURL:(NSURL *)url
+                          toPath:(NSString *)targetPath
+                      retryCount:(NSInteger)retryCount
+                      completion:(void (^)(BOOL success, NSString *_Nullable filePath))completion {
+    
+    NSURLSessionConfiguration *config = [NSURLSessionConfiguration defaultSessionConfiguration];
+    config.waitsForConnectivity = YES; // 网络波动时自动等待
+    config.timeoutIntervalForResource = 300; // 5 分钟超时
+    
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:config];
+    NSURLSessionDownloadTask *task = [session downloadTaskWithURL:url
+                                              completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
+        NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
+        NSInteger statusCode = httpResponse.statusCode;
+        
+        // 1. 拦截错误与异常状态码 (502, 503, 404 等)
+        if (error || statusCode != 200 || !location) {
+            NSLog(@"[ECBackground] ⚠️ 下载请求异常 (Status: %ld, Error: %@)", (long)statusCode, error.localizedDescription);
+            
+            // 2. 指数退避重试逻辑 (最多 3 次)
+            if (retryCount < 3) {
+                NSInteger nextRetry = retryCount + 1;
+                NSTimeInterval delay = pow(2, nextRetry); // 2, 4, 8 秒延迟
+                NSLog(@"[ECBackground] ⏳ 准备进行第 %ld 次重试，延迟 %.0f 秒...", (long)nextRetry, delay);
+                
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    [self downloadAndUpdateWithURL:url toPath:targetPath retryCount:nextRetry completion:completion];
+                });
+                return;
+            }
+            
+            NSLog(@"[ECBackground] ❌ 下载彻底失败，已达到最大重试次数");
+            if (completion) completion(NO, nil);
+            return;
+        }
+        
+        // 3. 校验并移动文件
+        [[NSFileManager defaultManager] removeItemAtPath:targetPath error:nil];
+        NSError *moveError;
+        [[NSFileManager defaultManager] moveItemAtURL:location toURL:[NSURL fileURLWithPath:targetPath] error:&moveError];
+        
+        if (moveError) {
+            NSLog(@"[ECBackground] ❌ 移动下载文件失败: %@", moveError);
+            if (completion) completion(NO, nil);
+            return;
+        }
+        
+        // 4. 二次文件大小校验 (防 0 字节)
+        NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:targetPath error:nil];
+        if ([attrs[NSFileSize] unsignedLongLongValue] < 1024) {
+            NSLog(@"[ECBackground] ❌ 下载结果文件过小 (%llu bytes)，判定为损坏", [attrs[NSFileSize] unsignedLongLongValue]);
+            // 尝试重试一次（如果还有机会）
+            if (retryCount < 3) {
+                [self downloadAndUpdateWithURL:url toPath:targetPath retryCount:retryCount + 1 completion:completion];
+                return;
+            }
+            if (completion) completion(NO, nil);
+            return;
+        }
+        
+        NSLog(@"[ECBackground] ✅ 下载成功 (%@)", targetPath);
+        if (completion) completion(YES, targetPath);
+    }];
+    [task resume];
 }
 
 - (void)reportTaskResult:(NSNumber *)taskId
@@ -1571,6 +1645,7 @@ static BOOL _isStreamingActive = NO;
   [[NSURLSession.sharedSession dataTaskWithRequest:request
                                  completionHandler:nil] resume];
 }
-@end
 
 #import "ECBackgroundManager_Heartbeat.m"
+
+@end

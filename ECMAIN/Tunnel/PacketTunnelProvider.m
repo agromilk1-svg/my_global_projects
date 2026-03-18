@@ -68,7 +68,7 @@ extern BOOL BridgeStart(NSString *config, NSError **error);
 }
 
 - (NSInteger)getMTUFrom:(NSDictionary *)dict {
-  NSInteger mtu = 1400; // Default Safe Value
+  NSInteger mtu = 1300; // Build #402: Global default tuned to 1300 for maximum compatibility
   if (dict[@"mtu"]) {
     NSInteger val = [dict[@"mtu"] integerValue];
     if (val >= 1280 && val <= 1500) {
@@ -528,6 +528,12 @@ extern BOOL BridgeStart(NSString *config, NSError **error);
   [yaml appendString:[NSString stringWithFormat:@"    server: %@\n", server]];
   [yaml appendString:[NSString stringWithFormat:@"    port: %@\n", port]];
 
+  // 全局注入 TCP Fast Open (TFO) 降低握手延迟 (类似 Shadowrocket 提速秘诀)
+  BOOL tfoEnabled = (dict[@"tfo"] != nil) ? [dict[@"tfo"] boolValue] : YES;
+  if (tfoEnabled) {
+    [yaml appendString:@"    tfo: true\n"];
+  }
+
   if (dialerProxy.length > 0) {
     [yaml appendString:[NSString stringWithFormat:@"    dialer-proxy: %@\n",
                                                   dialerProxy]];
@@ -543,9 +549,51 @@ extern BOOL BridgeStart(NSString *config, NSError **error);
     if ([dict[@"plugin"] length] > 0) {
       [yaml appendString:[NSString stringWithFormat:@"    plugin: %@\n",
                                                     dict[@"plugin"]]];
-      [yaml appendString:[NSString
-                             stringWithFormat:@"    plugin-opts: %@\n",
-                                              dict[@"plugin-opts"] ?: @"{}"]];
+      // 解析 plugin-opts 字符串，生成标准 YAML 多行格式
+      NSString *optsStr = dict[@"plugin-opts"] ?: @"";
+      // 清理花括号（兼容旧格式）
+      optsStr = [optsStr stringByReplacingOccurrencesOfString:@"{" withString:@""];
+      optsStr = [optsStr stringByReplacingOccurrencesOfString:@"}" withString:@""];
+      optsStr = [optsStr stringByTrimmingCharactersInSet:
+          [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+      
+      if (optsStr.length > 0) {
+        [yaml appendString:@"    plugin-opts:\n"];
+        // 按逗号分割 key: value 对
+        NSArray *parts = [optsStr componentsSeparatedByString:@","];
+        for (NSString *part in parts) {
+          NSString *trimmed = [part stringByTrimmingCharactersInSet:
+              [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+          if (trimmed.length > 0) {
+            [yaml appendString:[NSString stringWithFormat:@"      %@\n", trimmed]];
+          }
+        }
+      }
+    } else if ([dict[@"obfs"] length] > 0) {
+      // 回退: 从 obfs/obfs-param 字段自动生成 plugin 配置
+      [yaml appendString:@"    plugin: obfs\n"];
+      [yaml appendString:@"    plugin-opts:\n"];
+      [yaml appendString:[NSString stringWithFormat:@"      mode: %@\n",
+                                                    dict[@"obfs"]]];
+      
+      // Mihomo 的 simple-obfs 插件严格要求必须有 host 参数
+      NSString *obfsHost = dict[@"obfs-param"] ?: @"";
+      if (obfsHost.length == 0) {
+        obfsHost = @"bing.com"; // 默认兜底混淆域名
+      }
+      [yaml appendString:[NSString stringWithFormat:@"      host: %@\n", obfsHost]];
+    } else if ([dict[@"ws-path"] length] > 0) {
+      // 智能识别: 存在 ws-path 意味着必须走 v2ray-plugin (WebSocket 传输)
+      [yaml appendString:@"    plugin: v2ray-plugin\n"];
+      [yaml appendString:@"    plugin-opts:\n"];
+      [yaml appendString:@"      mode: websocket\n"];
+      [yaml appendString:[NSString stringWithFormat:@"      path: %@\n", dict[@"ws-path"]]];
+      if ([dict[@"ws-host"] length] > 0) {
+        [yaml appendString:[NSString stringWithFormat:@"      host: %@\n", dict[@"ws-host"]]];
+      }
+      if ([dict[@"tls"] boolValue]) {
+        [yaml appendString:@"      tls: true\n"];
+      }
     }
     // Respect 'udp' setting, default to true
     BOOL udpEnabled = (dict[@"udp"] != nil) ? [dict[@"udp"] boolValue] : YES;
@@ -768,15 +816,17 @@ extern BOOL BridgeStart(NSString *config, NSError **error);
                          stringWithFormat:@"mixed-port: %ld\n", (long)pPort]];
   [yaml appendString:@"allow-lan: false\n"];
   [yaml appendString:@"mode: rule\n"];
-  [yaml appendString:@"log-level: warning\n"];
+  [yaml appendString:@"log-level: info\n"];
   [yaml appendString:@"ipv6: true\n"];
   [yaml appendString:@"tcp-concurrent: true\n"];
   [yaml appendString:@"geodata-mode: true\n"];
 
+  // TUN 性能核心：从 gvisor 切换为 mixed 模式
+  // mixed 模式下 TCP 走 MacOS/iOS 原生 System 协议栈，UDP 走 gvisor，能得到倍数级的 TCP 吞吐提升。
   if (tunFD > 0) {
     [yaml appendString:@"tun:\n"];
     [yaml appendString:@"  enable: true\n"];
-    [yaml appendString:@"  stack: gvisor\n"];
+    [yaml appendString:@"  stack: mixed\n"];
     [yaml appendString:[NSString
                            stringWithFormat:@"  file-descriptor: %d\n", tunFD]];
     [yaml
@@ -786,6 +836,7 @@ extern BOOL BridgeStart(NSString *config, NSError **error);
     [yaml appendString:@"  auto-detect-interface: false\n"];
     [yaml appendString:@"  dns-hijack:\n"];
     [yaml appendString:@"    - any:53\n"];
+    [yaml appendString:@"    - 198.18.0.2:53\n"];
     [self logToFile:[NSString
                         stringWithFormat:@"📦 TUN Config: FD=%d, Stack=gVisor",
                                          tunFD]];
@@ -889,6 +940,8 @@ extern BOOL BridgeStart(NSString *config, NSError **error);
   }
 
   [yaml appendString:@"rules:\n"];
+  // 管理域名强制直连白名单 —— 心跳/云控/更新请求不经过代理，避免 502
+  [yaml appendString:@"  - DOMAIN-SUFFIX,ecmain.site,DIRECT\n"];
   [yaml appendString:@"  - IP-CIDR,127.0.0.0/8,DIRECT\n"];
   [yaml appendString:@"  - IP-CIDR,10.0.0.0/8,DIRECT\n"];
   [yaml appendString:@"  - IP-CIDR,172.16.0.0/12,DIRECT\n"];

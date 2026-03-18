@@ -77,7 +77,7 @@
           [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
       NSString *cloudUrl = [groupDefaults stringForKey:@"EC_CLOUD_SERVER_URL"];
       if (!cloudUrl || cloudUrl.length == 0) {
-        cloudUrl = @"http://s.ecmain.site";
+        cloudUrl = @"https://s.ecmain.site";
         NSLog(@"[ECMAIN_ERR] 未能在组字典读取到有效的 EC_CLOUD_SERVER_URL "
               @"(用户可能尚未按【保存配置】或【连接云控】)"
               @"。本次同步将使用默认域名: %@，可能导致后续网络超时失败！",
@@ -119,19 +119,40 @@
 - (void)applicationDidEnterBackground:(UIApplication *)application {
   NSLog(@"[ECMAIN] Entered Background");
 
-  __block UIBackgroundTaskIdentifier bgTask =
-      [application beginBackgroundTaskWithExpirationHandler:^{
-        NSLog(@"[ECMAIN] Background Task Expiring");
-        [application endBackgroundTask:bgTask];
-        bgTask = UIBackgroundTaskInvalid;
-      }];
+  // 立即确保保活体系被激活（麦克风录音 + 静音播放）
+  [[ECBackgroundManager sharedManager] ensureBackgroundNetworkAlive];
 
-  if (bgTask == UIBackgroundTaskInvalid) {
-    NSLog(@"[ECMAIN] Failed to start background task!");
-  } else {
-    NSLog(@"[ECMAIN] Background Task Started (Time Remaining: %f)",
-          application.backgroundTimeRemaining);
+  // BUILD #402: 无限递归 BackgroundTask 续命链
+  // 每次到期前立即申请新 Task，确保进程永远有有效的后台执行权
+  [self registerInfiniteBackgroundTask];
+}
+
+// BUILD #402: 递归式后台任务续命（参考 ECKeepAlive 的经典模式）
+- (void)registerInfiniteBackgroundTask {
+  UIApplication *app = [UIApplication sharedApplication];
+  __block UIBackgroundTaskIdentifier oldTask = self.bgTaskId;
+  
+  self.bgTaskId = [app beginBackgroundTaskWithExpirationHandler:^{
+    NSLog(@"[ECMAIN] Background Task Expiring, re-registering (infinite chain)...");
+    // 递归续命：到期前再申请新 Task
+    [self registerInfiniteBackgroundTask];
+  }];
+  
+  // 结束旧 Task（如果存在）
+  if (oldTask != UIBackgroundTaskInvalid) {
+    [app endBackgroundTask:oldTask];
   }
+  
+  if (self.bgTaskId == UIBackgroundTaskInvalid) {
+    NSLog(@"[ECMAIN] ❌ Failed to start background task!");
+  } else {
+    NSLog(@"[ECMAIN] ✅ Background Task Registered (Remaining: %.1f sec)",
+          app.backgroundTimeRemaining);
+  }
+}
+
+- (void)applicationWillEnterForeground:(UIApplication *)application {
+  NSLog(@"[ECMAIN] Will Enter Foreground - 网络保活恢复正常模式");
 }
 
 @end

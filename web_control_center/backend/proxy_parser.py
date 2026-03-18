@@ -14,9 +14,90 @@ def pad_base64(data):
 def decode_base64_string(s):
     try:
         s = s.replace('-', '+').replace('_', '/')
-        return base64.b64decode(pad_base64(s)).decode('utf-8')
+        # Add padding if missing
+        missing_padding = len(s) % 4
+        if missing_padding:
+            s += '=' * (4 - missing_padding)
+        return base64.b64decode(s).decode('utf-8')
     except Exception:
         return ""
+
+def parse_json_node(content: str) -> dict:
+    """尝试将内容解析为单节点 JSON 配置（零丢失策略）"""
+    content = content.strip()
+    if not (content.startswith("{") and content.endswith("}")):
+        return None
+    try:
+        data = json.loads(content)
+        if not isinstance(data, dict): return None
+
+        # 字段名标准化映射表（第三方 → ECMAIN 内部标准）
+        key_mapping = {
+            "host": "server", "add": "server",
+            "method": "cipher", "scy": "cipher",
+            "title": "name", "ps": "name",
+            "proto": "protocol",
+            "protoParam": "protocol-param",
+            "obfsParam": "obfs-param",
+            "pass": "password",
+            "aid": "alterId",
+            "net": "network",
+            "path": "ws-path",
+            "fp": "client-fingerprint",
+            "pbk": "publicKey",
+            "sid": "shortId",
+            "sni": "servername",
+        }
+
+        # 不保留的纯元数据字段
+        skip_keys = {"created", "updated", "weight", "filter", "data"}
+
+        config = {}
+        for key, value in data.items():
+            # 跳过无用元数据
+            if key in skip_keys:
+                continue
+            # 跳过空字符串值
+            if isinstance(value, str) and len(value) == 0:
+                continue
+
+            # 标准化键名
+            final_key = key_mapping.get(key, key)
+
+            # 如果已被更优先的字段写入，不覆盖
+            if key in key_mapping and final_key in config:
+                continue
+
+            # 特殊处理: port 转整数
+            if final_key == "port":
+                config["port"] = int(value) if str(value).isdigit() else 0
+                continue
+
+            # 特殊处理: udp 转布尔
+            if final_key == "udp":
+                config["udp"] = bool(value)
+                continue
+
+            config[final_key] = value
+
+        # 确保有 server
+        if not config.get("server"):
+            config["server"] = ""
+
+        # 自动推断类型
+        if not config.get("type"):
+            if config.get("protocol") and config.get("obfs"):
+                config["type"] = "ShadowsocksR"
+            else:
+                config["type"] = "Shadowsocks"
+
+        # 必须有服务器和端口才算有效节点
+        if config.get("server") and config.get("port"):
+            return config
+    except Exception:
+        pass
+    return None
+
 
 def parse_proxy_uri(uri: str) -> dict:
     uri = uri.strip()
@@ -89,6 +170,45 @@ def parse_proxy_uri(uri: str) -> dict:
                 name = urllib.parse.unquote(frag)
             config['name'] = name
             
+            if '?' in main_part:
+                main_part, query_part = main_part.split('?', 1)
+                params = {}
+                for pair in query_part.split('&'):
+                    if '=' in pair:
+                        k, v = pair.split('=', 1)
+                        params[urllib.parse.unquote(k)] = urllib.parse.unquote(v)
+                
+                if 'plugin' in params:
+                    plugin_str = params['plugin']
+                    parts = plugin_str.split(';')
+                    plugin_name = parts[0]
+                    if plugin_name in ('obfs-local', 'simple-obfs'):
+                        opts = {}
+                        for p in parts[1:]:
+                            if '=' in p:
+                                k, v = p.split('=', 1)
+                                opts[k] = v
+                        if 'obfs' in opts:
+                            config['obfs'] = opts['obfs']
+                        if 'obfs-host' in opts:
+                            config['obfs-param'] = opts['obfs-host']
+                        if 'obfs-uri' in opts:
+                            config['ws-path'] = opts['obfs-uri']
+                    else:
+                        config['plugin'] = plugin_name
+                        opts_list = []
+                        for p in parts[1:]:
+                            if '=' in p:
+                                k, v = p.split('=', 1)
+                                opts_list.append(f"{k}: {v}")
+                        if opts_list:
+                            config['plugin-opts'] = ", ".join(opts_list)
+
+                # 补全所有通用查询参数 (如 uuid, protocol, flag, ws-host 等)
+                for k, v in params.items():
+                    if k != 'plugin':
+                        config[k] = v
+
             if '@' in main_part:
                 # SIP002 format
                 b64_auth, server_port = main_part.split('@', 1)
@@ -226,9 +346,15 @@ def parse_proxy_uri(uri: str) -> dict:
     return None
 
 def fetch_and_parse(content: str) -> list:
-    content = content.strip()
     nodes = []
     
+    # 优先尝试作为单节点 JSON 解析
+    json_node = parse_json_node(content)
+    if json_node:
+        json_node['id'] = str(abs(hash(content)))
+        json_node['raw_uri'] = content
+        return [json_node]
+
     if content.startswith("ecnode://"):
         try:
             b64_str = content[9:]

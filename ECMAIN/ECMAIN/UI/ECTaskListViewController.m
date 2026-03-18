@@ -90,14 +90,35 @@
   NSString *completionTime =
       [[ECTaskPollManager sharedManager] taskCompletionTime:taskId];
 
+  // 获取执行日志记录（用于判断成功/失败）
+  NSDictionary *logRecord =
+      [[ECTaskPollManager sharedManager] getTaskExecutionLog:taskId];
+  BOOL hasLog = (logRecord != nil);
+  BOOL lastSuccess = [logRecord[@"success"] boolValue];
+
   NSString *statusText;
-  if (executed && completionTime) {
+  if (executed && completionTime && hasLog) {
     statusText = [NSString
-        stringWithFormat:@"✅ 完成于 %@", completionTime];
+        stringWithFormat:@"%@ 完成于 %@",
+        lastSuccess ? @"✅" : @"❌", completionTime];
   } else if (executed) {
     statusText = @"✅ 已完成";
   } else {
     statusText = @"⏳ 等待执行";
+  }
+
+  // 如果上次执行失败，追加错误摘要
+  if (hasLog && !lastSuccess) {
+    NSString *errInfo = logRecord[@"error"] ?: @"";
+    if (errInfo.length > 0) {
+      // 截取前 60 个字符的错误摘要
+      NSString *errPreview = errInfo.length > 60
+          ? [[errInfo substringToIndex:60] stringByAppendingString:@"..."]
+          : errInfo;
+      errPreview = [errPreview stringByReplacingOccurrencesOfString:@"\n"
+                                                        withString:@" "];
+      statusText = [statusText stringByAppendingFormat:@"\n⚠️ %@", errPreview];
+    }
   }
 
   // iOS 14+ 支持直接设置 defaultContentConfiguration
@@ -106,8 +127,10 @@
       [NSString stringWithFormat:@"[%@] %@", taskId, name];
   config.secondaryText =
       [NSString stringWithFormat:@"%@\n%@", statusText, codePreview];
-  config.secondaryTextProperties.numberOfLines = 3;
-  config.secondaryTextProperties.color = [UIColor darkGrayColor];
+  config.secondaryTextProperties.numberOfLines = 4;
+  config.secondaryTextProperties.color = (hasLog && !lastSuccess)
+      ? [UIColor systemRedColor]
+      : [UIColor darkGrayColor];
   cell.contentConfiguration = config;
 
   return cell;
@@ -144,36 +167,99 @@
   NSDictionary *task = self.tasks[indexPath.row];
   NSString *name = task[@"name"] ?: @"无名任务";
   NSString *code = task[@"code"];
+  NSNumber *taskId = task[@"id"];
 
-  UIAlertController *alert =
-      [UIAlertController alertControllerWithTitle:name
-                                          message:@"需要手动再次执行该任务吗？"
-                                   preferredStyle:UIAlertControllerStyleAlert];
+  UIAlertController *sheet = [UIAlertController
+      alertControllerWithTitle:name
+                       message:nil
+                preferredStyle:UIAlertControllerStyleActionSheet];
 
-  [alert addAction:[UIAlertAction actionWithTitle:@"取消"
+  // === 查看执行日志按钮 ===
+  [sheet addAction:[UIAlertAction
+      actionWithTitle:@"📋 查看执行日志"
+                style:UIAlertActionStyleDefault
+              handler:^(UIAlertAction *_Nonnull action) {
+                [self showLogForTaskId:taskId taskName:name];
+              }]];
+
+  // === 立即执行按钮 ===
+  [sheet addAction:[UIAlertAction
+      actionWithTitle:@"▶️ 立即执行"
+                style:UIAlertActionStyleDestructive
+              handler:^(UIAlertAction *_Nonnull action) {
+                [[ECTaskPollManager sharedManager] suspendPolling];
+                [[ECScriptParser sharedParser]
+                    executeScript:code
+                       completion:^(BOOL success,
+                                    NSArray *_Nonnull results) {
+                         dispatch_async(dispatch_get_main_queue(), ^{
+                           [[ECTaskPollManager sharedManager] resumePolling];
+                         });
+                       }];
+              }]];
+
+  [sheet addAction:[UIAlertAction actionWithTitle:@"取消"
                                             style:UIAlertActionStyleCancel
                                           handler:nil]];
-  [alert
-      addAction:[UIAlertAction
-                    actionWithTitle:@"立即执行"
-                              style:UIAlertActionStyleDestructive
-                            handler:^(UIAlertAction *_Nonnull action) {
-                              // 先挂起自动轮询
-                              [[ECTaskPollManager sharedManager]
-                                  suspendPolling];
-                              [[ECScriptParser sharedParser]
-                                  executeScript:code
-                                     completion:^(BOOL success,
-                                                  NSArray *_Nonnull results) {
-                                       dispatch_async(
-                                           dispatch_get_main_queue(), ^{
-                                             [[ECTaskPollManager sharedManager]
-                                                 resumePolling];
-                                           });
-                                     }];
-                            }]];
 
-  [self presentViewController:alert animated:YES completion:nil];
+  [self presentViewController:sheet animated:YES completion:nil];
+}
+
+#pragma mark - 日志查看
+
+- (void)showLogForTaskId:(NSNumber *)taskId taskName:(NSString *)name {
+  NSDictionary *logRecord =
+      [[ECTaskPollManager sharedManager] getTaskExecutionLog:taskId];
+
+  if (!logRecord) {
+    UIAlertController *noLog = [UIAlertController
+        alertControllerWithTitle:@"暂无日志"
+                         message:[NSString stringWithFormat:
+                             @"任务 [%@] 尚未执行过，暂无日志记录。", name]
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [noLog addAction:[UIAlertAction actionWithTitle:@"确定"
+                                              style:UIAlertActionStyleDefault
+                                            handler:nil]];
+    [self presentViewController:noLog animated:YES completion:nil];
+    return;
+  }
+
+  BOOL success = [logRecord[@"success"] boolValue];
+  NSString *errorInfo = logRecord[@"error"] ?: @"";
+  NSString *lastCmd = logRecord[@"last_command"] ?: @"（无）";
+  NSString *timestamp = logRecord[@"timestamp"] ?: @"未知";
+  NSArray *logs = logRecord[@"logs"] ?: @[];
+
+  // 构建日志消息
+  NSMutableString *message = [NSMutableString string];
+  [message appendFormat:@"执行时间: %@\n", timestamp];
+  [message appendFormat:@"执行结果: %@\n\n", success ? @"✅ 成功" : @"❌ 失败"];
+
+  if (!success && errorInfo.length > 0) {
+    [message appendFormat:@"🔴 错误信息:\n%@\n\n", errorInfo];
+  }
+
+  [message appendFormat:@"📌 最后执行的指令:\n%@\n\n", lastCmd];
+
+  // 完整展示所有日志
+  [message appendFormat:@"📝 完整日志 (共 %lu 条):\n",
+      (unsigned long)logs.count];
+  for (NSInteger i = 0; i < (NSInteger)logs.count; i++) {
+    NSString *logLine = logs[i];
+    [message appendFormat:@"%ld. %@\n", (long)(i + 1), logLine];
+  }
+
+  UIAlertController *logAlert = [UIAlertController
+      alertControllerWithTitle:[NSString stringWithFormat:@"%@ 执行日志\n%@",
+          success ? @"✅" : @"❌", name]
+                       message:message
+                preferredStyle:UIAlertControllerStyleAlert];
+
+  [logAlert addAction:[UIAlertAction actionWithTitle:@"关闭"
+                                               style:UIAlertActionStyleDefault
+                                             handler:nil]];
+
+  [self presentViewController:logAlert animated:YES completion:nil];
 }
 
 @end
