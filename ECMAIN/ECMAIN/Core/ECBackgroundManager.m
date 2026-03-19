@@ -1466,9 +1466,9 @@ static BOOL _isStreamingActive = NO;
       savedUrl.length > 0 ? savedUrl : EC_DEFAULT_CLOUD_SERVER_URL;
   NSString *serverUrl = [baseUrl stringByAppendingString:@"/devices/heartbeat"];
 
-  // 启动时延迟 1.5 秒发送首帧心跳，确保 VPN Manager 等底盘异步配置项加载完毕
+  // 启动时立即发送首帧心跳（延迟 0.5 秒以确保系统底盘加载），汇报版本与状态
   dispatch_after(
-      dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+      dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
       dispatch_get_main_queue(), ^{
         [self sendHeartbeat:serverUrl];
       });
