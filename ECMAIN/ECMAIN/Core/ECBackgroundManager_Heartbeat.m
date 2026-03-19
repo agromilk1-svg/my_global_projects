@@ -15,9 +15,17 @@ static NSString *const kECWDABundleID =
 static NSTimeInterval _lastHeartbeatTime = 0;
 
 - (void)sendHeartbeat:(NSString *)urlString {
+  // 兜底：如果外部传了 nil，安全降级为读取系统默认配置，防止 NSMutableURLRequest 崩溃
+  if (!urlString || urlString.length == 0) {
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
+    NSString *savedUrl = [defaults stringForKey:@"CloudServerURL"];
+    NSString *baseUrl = savedUrl.length > 0 ? savedUrl : EC_DEFAULT_CLOUD_SERVER_URL;
+    urlString = [baseUrl stringByAppendingString:@"/devices/heartbeat"];
+  }
+
   // --- 节流防护：5 秒内禁止重复发送核心心跳，防止 502 导致的请求瞬间堆叠 ---
   NSTimeInterval nowTime = [[NSDate date] timeIntervalSince1970];
-  if (nowTime - _lastHeartbeatTime < 5.0 && urlString != nil) {
+  if (nowTime - _lastHeartbeatTime < 5.0) {
     // NSLog(@"[ECBackground] 💓 心跳发送触发过快，已节流拦截 (%.1fs)", nowTime - _lastHeartbeatTime);
     return;
   }
