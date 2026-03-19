@@ -3560,8 +3560,6 @@ onMounted(async () => {
         </div>
     </div>
 
-  </div>
-
     <!-- =============== 一次性任务管理 ================= -->
     <div v-show="activeTab === '⚡ 一次性任务'" class="flex flex-1 flex-col overflow-auto p-6 bg-[#0B0F19]">
         <div class="max-w-6xl mx-auto w-full space-y-4">
@@ -3614,6 +3612,9 @@ onMounted(async () => {
             </div>
         </div>
     </div>
+
+  </div> <!-- End Main App Container -->
+
     <!-- 批量配置 Modal -->
     <div v-if="showBatchConfigModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-[999] flex items-center justify-center p-4">
         <div class="bg-gray-900 border border-gray-800 w-full max-w-md rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in duration-200">
