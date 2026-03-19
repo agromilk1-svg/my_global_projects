@@ -241,14 +241,6 @@
 
   [message appendFormat:@"📌 最后执行的指令:\n%@\n\n", lastCmd];
 
-  // 完整展示所有日志
-  [message appendFormat:@"📝 完整日志 (共 %lu 条):\n",
-      (unsigned long)logs.count];
-  for (NSInteger i = 0; i < (NSInteger)logs.count; i++) {
-    NSString *logLine = logs[i];
-    [message appendFormat:@"%ld. %@\n", (long)(i + 1), logLine];
-  }
-
   UIAlertController *logAlert = [UIAlertController
       alertControllerWithTitle:[NSString stringWithFormat:@"%@ 执行日志\n%@",
           success ? @"✅" : @"❌", name]

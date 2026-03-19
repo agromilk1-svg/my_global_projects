@@ -411,12 +411,10 @@
              NSLog(@"%@", resLog);
 
              // === 持久化保存执行日志 ===
-             NSMutableArray *logMessages = [NSMutableArray array];
              NSString *lastCommand = @"（无）";
              NSString *errorInfo = @"";
              for (NSDictionary *logEntry in results) {
                NSString *msg = logEntry[@"message"] ?: @"";
-               [logMessages addObject:msg];
                // 提取最后一条非错误的消息作为"最后执行的指令"
                if (![msg containsString:@"Error"] && ![msg containsString:@"❌"] && msg.length > 0) {
                  lastCommand = msg;
@@ -434,8 +432,8 @@
                @"success" : @(success),
                @"error" : errorInfo ?: @"",
                @"last_command" : lastCommand ?: @"",
-               @"log_count" : @(logMessages.count),
-               @"logs" : logMessages,
+               @"log_count" : @(results.count),
+               @"logs" : @[], // 优化：不再保存冗长的全部历史日志
                @"timestamp" : [self currentDateTimeString]
              };
 
