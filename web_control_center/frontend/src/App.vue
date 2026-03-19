@@ -97,7 +97,7 @@ const restoreSession = async () => {
 
 // 动态标签页列表（根据角色过滤）
 const visibleTabs = computed(() => {
-  const all = ['📱 手机列表', '⚡️ 控制台', '📋 任务列表', '⚙️ 配置中心', '💬 评论管理', '🎵 TikTok 账号', '👤 用户管理'];
+  const all = ['📱 手机列表', '⚡️ 控制台', '📋 任务列表', '⚡ 一次性任务', '⚙️ 配置中心', '💬 评论管理', '🎵 TikTok 账号', '👤 用户管理'];
   if (isSuperAdmin.value) return all;
   // 普通管理员隐藏配置中心、评论管理、用户管理
   return all.filter(t => !['⚙️ 配置中心', '💬 评论管理', '👤 用户管理'].includes(t));
@@ -211,6 +211,7 @@ const initAllData = () => {
   fetchGroups();
   fetchExecTimes();
   fetchTiktokAccounts();
+  fetchOneshotTasks();
   if (isSuperAdmin.value) fetchAdmins();
 };
 
@@ -3560,6 +3561,59 @@ onMounted(async () => {
     </div>
 
   </div>
+
+    <!-- =============== 一次性任务管理 ================= -->
+    <div v-show="activeTab === '⚡ 一次性任务'" class="flex flex-1 flex-col overflow-auto p-6 bg-[#0B0F19]">
+        <div class="max-w-6xl mx-auto w-full space-y-4">
+            <div class="flex justify-between items-center bg-gray-900 p-4 rounded-lg border border-gray-800 shadow-md">
+                <div>
+                    <h2 class="text-xl font-bold text-gray-100 tracking-wide flex items-center gap-2">⚡ 一次性任务管理</h2>
+                    <p class="text-xs text-gray-500 mt-1">当前待执行的一次性任务共 {{ oneshotTasks.length }} 个。任务完成后会自动删除。</p>
+                </div>
+                <button @click="fetchOneshotTasks" class="bg-gray-800 hover:bg-gray-700 text-gray-300 px-4 py-1.5 rounded shadow border border-gray-700 font-bold text-xs transition-colors">🔄 刷新</button>
+            </div>
+
+            <div v-if="oneshotTasks.length === 0" class="text-center py-16 text-gray-600">
+                <p class="text-4xl mb-3">✅</p>
+                <p class="text-sm">暂无待执行的一次性任务</p>
+            </div>
+
+            <div v-else class="overflow-hidden rounded-xl border border-gray-800">
+                <table class="w-full text-left text-xs">
+                    <thead class="bg-gray-900 border-b border-gray-800">
+                        <tr>
+                            <th class="px-4 py-3 text-gray-500 font-bold">ID</th>
+                            <th class="px-4 py-3 text-gray-500 font-bold">设备编号</th>
+                            <th class="px-4 py-3 text-gray-500 font-bold">UDID</th>
+                            <th class="px-4 py-3 text-gray-500 font-bold">任务名称</th>
+                            <th class="px-4 py-3 text-gray-500 font-bold">状态</th>
+                            <th class="px-4 py-3 text-gray-500 font-bold">脚本预览</th>
+                            <th class="px-4 py-3 text-gray-500 font-bold">创建时间</th>
+                            <th class="px-4 py-3 text-gray-500 font-bold">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr v-for="task in oneshotTasks" :key="task.id" class="border-b border-gray-800/50 hover:bg-gray-900/50 transition-colors">
+                            <td class="px-4 py-3 text-gray-400 font-mono">#{{ task.id }}</td>
+                            <td class="px-4 py-3 text-gray-300">{{ task.device_no || '-' }}</td>
+                            <td class="px-4 py-3 text-gray-500 font-mono text-[10px]">{{ task.udid?.substring(0, 12) }}...</td>
+                            <td class="px-4 py-3 text-emerald-400 font-bold">{{ task.name }}</td>
+                            <td class="px-4 py-3">
+                                <span :class="task.status === 'pending' ? 'bg-amber-900/30 text-amber-400 border-amber-700' : 'bg-blue-900/30 text-blue-400 border-blue-700'" class="px-2 py-0.5 rounded-full text-[10px] font-bold border">
+                                    {{ task.status === 'pending' ? '❤️ 待执行' : '🔄 执行中' }}
+                                </span>
+                            </td>
+                            <td class="px-4 py-3 text-gray-500 font-mono text-[10px] max-w-[200px] truncate">{{ task.code?.substring(0, 60) }}...</td>
+                            <td class="px-4 py-3 text-gray-500 text-[10px]">{{ task.created_at ? new Date(task.created_at * 1000).toLocaleString('zh-CN') : '-' }}</td>
+                            <td class="px-4 py-3">
+                                <button @click="deleteOneshotTask(task.id)" class="text-red-400 hover:text-red-300 text-[10px] font-bold border border-red-800/50 hover:border-red-600 px-2 py-0.5 rounded transition-colors">🗑 删除</button>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
     <!-- 批量配置 Modal -->
     <div v-if="showBatchConfigModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-[999] flex items-center justify-center p-4">
         <div class="bg-gray-900 border border-gray-800 w-full max-w-md rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in duration-200">
