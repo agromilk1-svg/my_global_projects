@@ -1,2 +1,2 @@
-#define EC_BUILD_INFO @"Build: 2026-03-19 14:34 #1258 (Auto)"
-#define EC_BUILD_VERSION 1258
+#define EC_BUILD_INFO @"Build: 2026-03-19 14:39 #1260 (Auto)"
+#define EC_BUILD_VERSION 1260

@@ -69,6 +69,8 @@
 		FDEC6CA98AE216F3B6C9C2D1 /* Mihomo.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 12ACC38D780C7B52A1B72D12 /* Mihomo.xcframework */; };
 		QRSCAN001000001 /* ECQRScannerViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = QRSCAN001000002 /* ECQRScannerViewController.m */; };
 		QRSCAN001000003 /* ECProxyURIParser.m in Sources */ = {isa = PBXBuildFile; fileRef = QRSCAN001000004 /* ECProxyURIParser.m */; };
+		ECONESHOT00001 /* ECOneshotTaskManager.m in Sources */ = {isa = PBXBuildFile; fileRef = ECONESHOT00003 /* ECOneshotTaskManager.m */; };
+		ECONESHOT00002 /* ECOneshotTaskManager.h in Headers */ = {isa = PBXBuildFile; fileRef = ECONESHOT00004 /* ECOneshotTaskManager.h */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -196,6 +198,8 @@
 		QRSCAN001000004 /* ECProxyURIParser.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = ECProxyURIParser.m; path = ECMAIN/Core/ECProxyURIParser.m; sourceTree = SOURCE_ROOT; };
 		QRSCAN001000005 /* ECQRScannerViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ECQRScannerViewController.h; path = ECMAIN/UI/ECQRScannerViewController.h; sourceTree = SOURCE_ROOT; };
 		QRSCAN001000006 /* ECProxyURIParser.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ECProxyURIParser.h; path = ECMAIN/Core/ECProxyURIParser.h; sourceTree = SOURCE_ROOT; };
+		ECONESHOT00003 /* ECOneshotTaskManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = ECOneshotTaskManager.m; path = ECMAIN/Core/ECOneshotTaskManager.m; sourceTree = SOURCE_ROOT; };
+		ECONESHOT00004 /* ECOneshotTaskManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ECOneshotTaskManager.h; path = ECMAIN/Core/ECOneshotTaskManager.h; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -283,6 +287,8 @@
 				43E64561B8B9BB19C490F0ED /* ECTaskPollManager.h */,
 				D6D74131BD5ADD79E03839D5 /* ECTaskListViewController.m */,
 				3817440B83876CD1493D800C /* ECTaskListViewController.h */,
+				ECONESHOT00003 /* ECOneshotTaskManager.m */,
+				ECONESHOT00004 /* ECOneshotTaskManager.h */,
 			);
 			sourceTree = "<group>";
 		};
@@ -421,6 +427,7 @@
 				2FAE42549F67FAEA75227DEF /* ECDeviceInfoViewController.h in Headers */,
 				755047388A7C000138D8F7E1 /* ECTaskPollManager.h in Headers */,
 				4E5A418B8C0CF1EA82D6C104 /* ECTaskListViewController.h in Headers */,
+				ECONESHOT00002 /* ECOneshotTaskManager.h in Headers */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -570,6 +577,7 @@
 				92345F5981AA8D0A430C1A05 /* ECConnectionTester.m in Sources */,
 				84EC48129B5674E22E254639 /* ECTaskPollManager.m in Sources */,
 				3B92455287E1B9517CA0799A /* ECTaskListViewController.m in Sources */,
+				ECONESHOT00001 /* ECOneshotTaskManager.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
