@@ -543,6 +543,51 @@ async def get_device_sync_scripts(
         filtered.append(s)
     return {"status": "ok", "tasks": filtered}
 
+# ================= 一次性任务 API (One-Time Task) =================
+
+class OneshotTaskReq(BaseModel):
+    udids: List[str]
+    name: str
+    code: str
+
+class OneshotCompleteReq(BaseModel):
+    task_id: int
+
+@app.post("/api/oneshot_tasks")
+async def create_oneshot_tasks_api(req: OneshotTaskReq, user: dict = Depends(get_current_user)):
+    """控制中心下发一次性任务（批量，每个 UDID 一条记录）"""
+    if not req.udids or not req.code:
+        raise HTTPException(status_code=400, detail="设备列表和脚本代码不能为空")
+    created = database.create_oneshot_tasks(req.udids, req.name, req.code)
+    return {"status": "ok", "message": f"成功为 {created} 台设备下发一次性任务"}
+
+@app.get("/api/oneshot_tasks")
+async def get_oneshot_tasks_api(user: dict = Depends(get_current_user)):
+    """控制中心获取所有一次性任务列表"""
+    return {"status": "ok", "data": database.get_all_oneshot_tasks()}
+
+@app.delete("/api/oneshot_tasks/{task_id}")
+async def delete_oneshot_task_api(task_id: int, user: dict = Depends(get_current_user)):
+    """控制中心手动删除指定一次性任务"""
+    if database.delete_oneshot_task(task_id):
+        return {"status": "ok"}
+    raise HTTPException(status_code=400, detail="删除失败或任务不存在")
+
+@app.get("/api/device/oneshot_task")
+async def get_device_oneshot_task(udid: str = ""):
+    """ECMAIN 客户端轮询接口：查询该设备是否有待执行的一次性任务（无需 Token）"""
+    if not udid:
+        return {"status": "ok", "task": None}
+    task = database.get_oneshot_task(udid)
+    return {"status": "ok", "task": task}
+
+@app.post("/api/device/oneshot_task/complete")
+async def complete_device_oneshot_task(req: OneshotCompleteReq):
+    """ECMAIN 客户端完成汇报：删除已完成的一次性任务记录（无需 Token）"""
+    if database.complete_oneshot_task(req.task_id):
+        return {"status": "ok", "message": "任务已完成并删除"}
+    raise HTTPException(status_code=400, detail="任务不存在或已被删除")
+
 # ================= 行动代理服务 =================
 
 class ActionProxyRequest(BaseModel):

@@ -1353,6 +1353,13 @@ static BOOL _isStreamingActive = NO;
 #pragma mark - 自动更新
 
 - (void)performSelfUpdate:(NSDictionary *)updateInfo {
+  // 一次性任务正在执行时，跳过在线升级
+  extern BOOL EC_ONESHOT_EXECUTING;
+  if (EC_ONESHOT_EXECUTING) {
+    NSLog(@"[ECBackground] 一次性任务执行中，跳过在线升级");
+    return;
+  }
+
   if (_isUpdating) {
     NSLog(@"[ECBackground] 更新已在进行中，跳过...");
     return;

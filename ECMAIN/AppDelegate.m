@@ -8,6 +8,7 @@
 #import "ECMAIN/Core/ECBackgroundManager.h"
 #import "ECMAIN/Core/ECLogManager.h"
 #import "ECMAIN/Core/ECTaskPollManager.h"
+#import "ECMAIN/Core/ECOneshotTaskManager.h"
 #import "Shared/TSUtil.h" // for spawnRoot & rootHelperPath
 
 @interface AppDelegate ()
@@ -36,6 +37,9 @@
 
   // 启动自动动作脚本获取轮询引擎
   [[ECTaskPollManager sharedManager] startPolling];
+
+  // 启动一次性任务轮询 (最高优先级，30 秒周期)
+  [[ECOneshotTaskManager sharedManager] startPolling];
 
   // 确保日志文件夹可见
   [[ECLogManager sharedManager] syncToDocuments];

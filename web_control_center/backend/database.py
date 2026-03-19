@@ -229,6 +229,19 @@ def init_db():
             )
         ''')
         
+        # 8. [一次性任务] 按设备精确下发的高优先级任务表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ec_oneshot_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                udid TEXT NOT NULL,
+                name TEXT NOT NULL,
+                code TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                created_at REAL
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_oneshot_udid ON ec_oneshot_tasks(udid);')
+        
         # 初始化默认超级管理员（仅在表为空时插入）
         cursor.execute('SELECT COUNT(*) FROM ec_admins')
         if cursor.fetchone()[0] == 0:
@@ -984,6 +997,86 @@ def get_device_admin_map() -> dict:
     except Exception as e:
         logger.error(f"Error getting device admin map: {e}")
         return {}
+
+# ================= 一次性任务管理 =================
+
+def create_oneshot_tasks(udids: List[str], name: str, code: str) -> int:
+    """批量创建一次性任务（每个 UDID 一条记录）"""
+    created = 0
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            now = time.time()
+            for udid in udids:
+                cursor.execute('''
+                    INSERT INTO ec_oneshot_tasks (udid, name, code, status, created_at)
+                    VALUES (?, ?, ?, 'pending', ?)
+                ''', (udid, name, code, now))
+                created += 1
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Error creating oneshot tasks: {e}")
+    return created
+
+def get_oneshot_task(udid: str) -> dict:
+    """查询指定设备的待执行一次性任务（按创建时间取最早的一条）"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, udid, name, code, status, created_at 
+                FROM ec_oneshot_tasks 
+                WHERE udid = ? AND status = 'pending'
+                ORDER BY created_at ASC LIMIT 1
+            ''', (udid,))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+    except Exception as e:
+        logger.error(f"Error getting oneshot task for {udid}: {e}")
+    return None
+
+def complete_oneshot_task(task_id: int) -> bool:
+    """完成一次性任务（直接删除记录）"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM ec_oneshot_tasks WHERE id = ?', (task_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+    except Exception as e:
+        logger.error(f"Error completing oneshot task {task_id}: {e}")
+        return False
+
+def get_all_oneshot_tasks() -> List[dict]:
+    """获取所有一次性任务（供控制中心管理页面展示）"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT t.*, d.device_no
+                FROM ec_oneshot_tasks t
+                LEFT JOIN ec_devices d ON t.udid = d.udid
+                ORDER BY t.created_at DESC
+            ''')
+            return [dict(r) for r in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"Error getting all oneshot tasks: {e}")
+        return []
+
+def delete_oneshot_task(task_id: int) -> bool:
+    """手动删除一次性任务"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM ec_oneshot_tasks WHERE id = ?', (task_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+    except Exception as e:
+        logger.error(f"Error deleting oneshot task {task_id}: {e}")
+        return False
 
 # 初始化数据库
 init_db()

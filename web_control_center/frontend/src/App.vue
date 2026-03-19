@@ -752,6 +752,69 @@ const saveBatchConfig = async () => {
   }
 };
 
+// ================= 一次性任务 =================
+const showOneshotModal = ref(false);
+const oneshotForm = ref({ name: '', code: '' });
+const oneshotTasks = ref<any[]>([]);
+
+const openOneshotModal = () => {
+  if (selectedDevices.value.length === 0) {
+    alert('请先勾选要执行一次性任务的设备');
+    return;
+  }
+  oneshotForm.value = { name: '', code: '' };
+  showOneshotModal.value = true;
+};
+
+const submitOneshotTask = async () => {
+  if (!oneshotForm.value.name.trim()) {
+    alert('请输入任务名称');
+    return;
+  }
+  if (!oneshotForm.value.code.trim()) {
+    alert('请输入脚本代码');
+    return;
+  }
+  try {
+    const res = await authFetch(`${apiBase}/oneshot_tasks`, {
+      method: 'POST',
+      body: JSON.stringify({
+        udids: selectedDevices.value,
+        name: oneshotForm.value.name,
+        code: oneshotForm.value.code
+      })
+    });
+    const d = await res.json();
+    if (d.status === 'ok') {
+      alert(d.message);
+      showOneshotModal.value = false;
+      selectedDevices.value = [];
+      fetchOneshotTasks();
+    } else {
+      alert(d.detail || '下发失败');
+    }
+  } catch (err) {
+    alert('网络异常');
+  }
+};
+
+const fetchOneshotTasks = async () => {
+  try {
+    const res = await authFetch(`${apiBase}/oneshot_tasks`);
+    const d = await res.json();
+    if (d.status === 'ok') oneshotTasks.value = d.data || [];
+  } catch (e) {}
+};
+
+const deleteOneshotTask = async (id: number) => {
+  if (!confirm('确定删除这个一次性任务？')) return;
+  try {
+    const res = await authFetch(`${apiBase}/oneshot_tasks/${id}`, { method: 'DELETE' });
+    const d = await res.json();
+    if (d.status === 'ok') fetchOneshotTasks();
+  } catch (e) {}
+};
+
 const deleteBatchDevices = async () => {
   if (selectedDevices.value.length === 0) return;
   if (!confirm(`正在执行危险操作：彻底删除 ${selectedDevices.value.length} 台设备。删除后设备必须重新刷入重启才能连接控制台。是否真的继续？`)) return;
@@ -2347,6 +2410,7 @@ onMounted(async () => {
                <span class="text-indigo-200 text-xs font-bold">已选 {{ selectedDevices.length }} 台</span>
                <div class="h-4 w-px bg-indigo-500/30 mx-1"></div>
                <button @click="openBatchConfigModal" class="text-indigo-300 hover:text-white text-xs font-bold transition-colors">📝 批量修改</button>
+               <button @click="openOneshotModal" class="text-emerald-300 hover:text-white text-xs font-bold transition-colors ml-2">⚡ 下发一次性任务</button>
                <button @click="deleteBatchDevices" class="text-red-400 hover:text-red-300 text-xs font-bold transition-colors ml-2">🗑 批量删除</button>
                <button @click="selectedDevices = []" class="text-gray-400 hover:text-white text-xs ml-2">取消</button>
             </div>
@@ -3554,6 +3618,44 @@ onMounted(async () => {
                 <button @click="showBatchConfigModal = false" class="px-5 py-2 text-gray-400 hover:text-white font-medium text-xs transition-colors tracking-widest">取消</button>
                 <button @click="saveBatchConfig" class="bg-indigo-600 hover:bg-indigo-500 text-white px-8 py-2.5 rounded-xl shadow-lg shadow-indigo-500/20 transition-all font-bold text-xs tracking-widest">
                     同步配置至雷达矩阵
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 一次性任务下发弹窗 -->
+    <div v-if="showOneshotModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-[999] flex items-center justify-center p-4">
+        <div class="bg-gray-900 border border-gray-800 w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in duration-200">
+            <div class="p-6 border-b border-gray-800 bg-gray-900/50 flex justify-between items-center">
+                <h3 class="text-lg font-bold text-gray-100 flex items-center gap-3">
+                    <span class="p-2 bg-emerald-900/50 rounded-lg text-emerald-400">⚡</span>
+                    下发一次性任务 ({{ selectedDevices.length }} 台)
+                </h3>
+                <button @click="showOneshotModal = false" class="text-gray-500 hover:text-white transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+
+            <div class="p-6 space-y-5">
+                <p class="text-xs text-gray-500 bg-emerald-900/10 p-3 rounded-lg border border-emerald-900/30">
+                    ⚡ 一次性任务拥有最高优先级，客户端会在 30 秒内自动拉取并执行。执行期间常规任务和在线升级都会暂停。完成后自动删除。
+                </p>
+
+                <div>
+                    <label class="block text-xs font-bold text-gray-500 uppercase tracking-widest mb-2">任务名称</label>
+                    <input v-model="oneshotForm.name" type="text" placeholder="例如：紧急更新VPN、重启应用..." class="w-full bg-black border border-gray-800 rounded-xl px-4 py-3 text-sm text-gray-300 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all" />
+                </div>
+
+                <div>
+                    <label class="block text-xs font-bold text-gray-500 uppercase tracking-widest mb-2">脚本代码</label>
+                    <textarea v-model="oneshotForm.code" rows="10" placeholder="输入要执行的 JavaScript 脚本代码..." class="w-full font-mono text-xs bg-black/50 border border-gray-800 rounded-xl px-4 py-3 text-emerald-400 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none leading-relaxed transition-all placeholder:text-gray-700 custom-scrollbar"></textarea>
+                </div>
+            </div>
+
+            <div class="p-6 bg-gray-900/80 border-t border-gray-800 flex justify-end gap-3 px-8 pb-8">
+                <button @click="showOneshotModal = false" class="px-5 py-2 text-gray-400 hover:text-white font-medium text-xs transition-colors tracking-widest">取消</button>
+                <button @click="submitOneshotTask" class="bg-emerald-600 hover:bg-emerald-500 text-white px-8 py-2.5 rounded-xl shadow-lg shadow-emerald-500/20 transition-all font-bold text-xs tracking-widest">
+                    ⭐ 立即下发
                 </button>
             </div>
         </div>
