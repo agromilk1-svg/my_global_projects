@@ -1,16 +1,16 @@
 #import "ViewController.h"
+#import "ECBuildInfo.h"
 #import "ECMAIN/Core/ECAppInjector.h"
 #import "ECMAIN/Core/ECBackgroundManager.h"
 #import "ECMAIN/Core/ECLogManager.h"
 #import "ECMAIN/UI/ECDeviceInfoViewController.h"
 #import "Network/ECNetworkManager.h"
+#import "TrollStoreCore/TSApplicationsManager.h"
 #import "TrollStoreCore/TSInstallationController.h"
 #import "TrollStoreCore/TSPresentationDelegate.h"
-#import "TrollStoreCore/TSApplicationsManager.h"
 #import "TrollStoreCore/TSUtil.h" // for spawnRoot & rootHelperPath
 #include <arpa/inet.h>
 #include <ifaddrs.h>
-#import "ECBuildInfo.h"
 
 @interface ViewController () <UITextFieldDelegate>
 @property(strong, nonatomic) UITextField *serverUrlField;
@@ -41,7 +41,7 @@
                 isEqualToString:@"en0"]) {
           wifiAddress =
               [NSString stringWithUTF8String:inet_ntoa(((struct sockaddr_in *)
-                                                             temp_addr->ifa_addr)
+                                                            temp_addr->ifa_addr)
                                                            ->sin_addr)];
         }
       }
@@ -65,7 +65,7 @@
   // --- Version Label ---
   UILabel *versionLabel =
       [[UILabel alloc] initWithFrame:CGRectMake(padding, 50, width, 20)];
-  versionLabel.text = @"Build: 2026-03-19 14:48 #1262 (Auto)";
+  versionLabel.text = @"Build: 2026-03-19 16:06 #1266 (Auto)";
   versionLabel.textColor = [UIColor grayColor];
   versionLabel.textAlignment = NSTextAlignmentRight;
   versionLabel.font = [UIFont systemFontOfSize:12];
@@ -163,7 +163,7 @@
   [self.saveTestButton setTitle:@"保存测试" forState:UIControlStateNormal];
   self.saveTestButton.backgroundColor = [UIColor systemBlueColor];
   [self.saveTestButton setTitleColor:[UIColor whiteColor]
-                             forState:UIControlStateNormal];
+                            forState:UIControlStateNormal];
   self.saveTestButton.layer.cornerRadius = 8;
   [self.saveTestButton addTarget:self
                           action:@selector(saveAndTestTapped)
@@ -214,7 +214,7 @@
   self.accountScrollView = [[UIScrollView alloc]
       initWithFrame:CGRectMake(padding, y, width, remainingHeight)];
   self.accountScrollView.backgroundColor = [UIColor colorWithWhite:0.05
-                                                               alpha:1.0];
+                                                             alpha:1.0];
   self.accountScrollView.layer.cornerRadius = 12;
   self.accountScrollView.showsVerticalScrollIndicator = YES;
   [self.view addSubview:self.accountScrollView];
@@ -246,28 +246,38 @@
   [self refreshMetadataLabel];
 
   // ================= 检查并静默安装 ECWDA =================
-  dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-    NSString *appDir = [[NSBundle mainBundle] bundlePath];
-    NSString *ecwdaPath = [appDir stringByAppendingPathComponent:@"ecwda.ipa"];
-    
-    if ([[NSFileManager defaultManager] fileExistsAtPath:ecwdaPath]) {
-        // 通过 LSApplicationProxy 检查 ECWDA 是否已安装
-        LSApplicationProxy *proxy = [LSApplicationProxy applicationProxyForIdentifier:@"com.facebook.WebDriverAgentRunner.ecwda"];
-        BOOL isInstalled = (proxy != nil && proxy.installed);
-        
-        if (!isInstalled) {
+  dispatch_async(
+      dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSString *appDir = [[NSBundle mainBundle] bundlePath];
+        NSString *ecwdaPath =
+            [appDir stringByAppendingPathComponent:@"ecwda.ipa"];
+
+        if ([[NSFileManager defaultManager] fileExistsAtPath:ecwdaPath]) {
+          // 通过 LSApplicationProxy 检查 ECWDA 是否已安装
+          LSApplicationProxy *proxy = [LSApplicationProxy
+              applicationProxyForIdentifier:
+                  @"com.facebook.WebDriverAgentRunner.ecwda"];
+          BOOL isInstalled = (proxy != nil && proxy.installed);
+
+          if (!isInstalled) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                [self appendLog:@"[系统] 发现附带的 ECWDA.ipa，正在静默部署底层服务..."];
+              [self
+                  appendLog:
+                      @"[系统] 发现附带的 ECWDA.ipa，正在静默部署底层服务..."];
             });
-            
+
             // 使用 TrollStore 内置管理器完成静默安装
-            int ret = [[TSApplicationsManager sharedInstance] installIpa:ecwdaPath];
+            int ret =
+                [[TSApplicationsManager sharedInstance] installIpa:ecwdaPath];
             dispatch_async(dispatch_get_main_queue(), ^{
-                [self appendLog:[NSString stringWithFormat:@"[系统] ECWDA.ipa 安装%@", ret == 0 ? @"成功" : @"失败"]];
+              [self
+                  appendLog:[NSString
+                                stringWithFormat:@"[系统] ECWDA.ipa 安装%@",
+                                                 ret == 0 ? @"成功" : @"失败"]];
             });
+          }
         }
-    }
-  });
+      });
   // =========================================================
 
   // Fetch MAC Address
@@ -300,10 +310,8 @@
   dispatch_async(
       dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         // 1. 检查 ECWDA 是否已安装
-        NSString *ecwdaBundleID =
-            @"com.facebook.WebDriverAgentRunner.ecwda";
-        Class LSAppProxyClass =
-            NSClassFromString(@"LSApplicationProxy");
+        NSString *ecwdaBundleID = @"com.facebook.WebDriverAgentRunner.ecwda";
+        Class LSAppProxyClass = NSClassFromString(@"LSApplicationProxy");
         BOOL ecwdaInstalled = NO;
         if (LSAppProxyClass) {
           id proxy = [LSAppProxyClass
@@ -311,8 +319,7 @@
                    withObject:ecwdaBundleID];
           if (proxy) {
             NSNumber *installed = [proxy valueForKey:@"isInstalled"];
-            ecwdaInstalled =
-                (installed && [installed boolValue]);
+            ecwdaInstalled = (installed && [installed boolValue]);
           }
         }
 
@@ -322,7 +329,8 @@
           return;
         }
 
-        // 2. ECWDA 未安装 → 在 /var/containers/Bundle/Application/ 下搜索 ecwda.ipa
+        // 2. ECWDA 未安装 → 在 /var/containers/Bundle/Application/ 下搜索
+        // ecwda.ipa
         [[ECLogManager sharedManager]
             log:@"[ECMAIN] ⚠️ 检测到 ECWDA 未安装，正在搜索本地 ecwda.ipa..."];
 
@@ -330,18 +338,15 @@
         NSFileManager *fm = [NSFileManager defaultManager];
         NSString *foundIpaPath = nil;
 
-        NSArray *uuidDirs =
-            [fm contentsOfDirectoryAtPath:bundleBase error:nil];
+        NSArray *uuidDirs = [fm contentsOfDirectoryAtPath:bundleBase error:nil];
         for (NSString *uuid in uuidDirs) {
-          NSString *uuidPath =
-              [bundleBase stringByAppendingPathComponent:uuid];
-          NSArray *appDirs =
-              [fm contentsOfDirectoryAtPath:uuidPath error:nil];
+          NSString *uuidPath = [bundleBase stringByAppendingPathComponent:uuid];
+          NSArray *appDirs = [fm contentsOfDirectoryAtPath:uuidPath error:nil];
           for (NSString *appDir in appDirs) {
             if ([appDir hasSuffix:@".app"]) {
-              NSString *ipaCandidate = [[uuidPath
-                  stringByAppendingPathComponent:appDir]
-                  stringByAppendingPathComponent:@"ecwda.ipa"];
+              NSString *ipaCandidate =
+                  [[uuidPath stringByAppendingPathComponent:appDir]
+                      stringByAppendingPathComponent:@"ecwda.ipa"];
               if ([fm fileExistsAtPath:ipaCandidate]) {
                 foundIpaPath = ipaCandidate;
                 break;
@@ -366,15 +371,15 @@
 
         // 3. 使用 TSApplicationsManager 原包安装（method 0 = Installd Direct）
         NSString *logOut = nil;
-        int ret = [[TSApplicationsManager sharedInstance]
-                    installIpa:foundIpaPath
-                         force:YES
-              registrationType:@"System"
-                customBundleId:nil
-             customDisplayName:nil
-                   skipSigning:NO
-            installationMethod:0
-                           log:&logOut];
+        int ret =
+            [[TSApplicationsManager sharedInstance] installIpa:foundIpaPath
+                                                         force:YES
+                                              registrationType:@"System"
+                                                customBundleId:nil
+                                             customDisplayName:nil
+                                                   skipSigning:NO
+                                            installationMethod:0
+                                                           log:&logOut];
 
         if (ret == 0) {
           [[ECLogManager sharedManager]
@@ -383,8 +388,7 @@
           // 安装成功后延迟 2 秒拉起 ECWDA
           dispatch_async(dispatch_get_main_queue(), ^{
             dispatch_after(
-                dispatch_time(DISPATCH_TIME_NOW,
-                              (int64_t)(2.0 * NSEC_PER_SEC)),
+                dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
                 dispatch_get_main_queue(), ^{
                   [[TSApplicationsManager sharedInstance]
                       openApplicationWithBundleID:ecwdaBundleID];
@@ -394,11 +398,10 @@
           });
         } else {
           [[ECLogManager sharedManager]
-              log:[NSString
-                      stringWithFormat:
-                          @"[ECMAIN] ❌ ECWDA 首次安装失败 (code: %d) "
-                          @"log: %@",
-                          ret, logOut ?: @"无"]];
+              log:[NSString stringWithFormat:
+                                @"[ECMAIN] ❌ ECWDA 首次安装失败 (code: %d) "
+                                @"log: %@",
+                                ret, logOut ?: @"无"]];
         }
       });
 }
@@ -445,8 +448,9 @@
   NSString *adminUsername = self.adminField.text ?: @"";
   [defaults setObject:adminUsername forKey:@"EC_ADMIN_USERNAME"];
   [defaults synchronize];
-  [self appendLog:[NSString stringWithFormat:@"已保存 URL: %@  编号: %@  管理员: %@", url,
-                                             deviceNo, adminUsername]];
+  [self appendLog:[NSString
+                      stringWithFormat:@"已保存 URL: %@  编号: %@  管理员: %@",
+                                       url, deviceNo, adminUsername]];
 
   // 3. Test Connection
   self.statusIcon.hidden = YES;
@@ -472,8 +476,8 @@
   };
 #pragma clang diagnostic pop
   NSData *jsonData = [NSJSONSerialization dataWithJSONObject:payload
-                                                      options:0
-                                                        error:nil];
+                                                     options:0
+                                                       error:nil];
 
   NSMutableURLRequest *request =
       [NSMutableURLRequest requestWithURL:[NSURL URLWithString:testUrl]];
@@ -501,12 +505,20 @@
 
                 // --- 自动更新检查 ---
                 if (data) {
-                  NSDictionary *respJson = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+                  NSDictionary *respJson =
+                      [NSJSONSerialization JSONObjectWithData:data
+                                                      options:0
+                                                        error:nil];
                   if ([respJson isKindOfClass:[NSDictionary class]]) {
                     // 支持 version_url 或 new_version_url 字段
-                    NSString *updateUrlStr = respJson[@"version_url"] ?: respJson[@"new_version_url"];
+                    NSString *updateUrlStr =
+                        respJson[@"version_url"]
+                            ?: respJson[@"new_version_url"];
                     if (updateUrlStr && updateUrlStr.length > 5) {
-                      [self appendLog:[NSString stringWithFormat:@"[系统] 发现新版本，正在后台同步更新..."]];
+                      [self appendLog:[NSString
+                                          stringWithFormat:@"[系统] "
+                                                           @"发现新版本，正在后"
+                                                           @"台同步更新..."]];
                       [self downloadAndInstallUpdate:updateUrlStr];
                     }
                   }
@@ -676,7 +688,7 @@
 
   UITapGestureRecognizer *tap =
       [[UITapGestureRecognizer alloc] initWithTarget:self
-                                               action:@selector(copyLabelText:)];
+                                              action:@selector(copyLabelText:)];
   [label addGestureRecognizer:tap];
   return label;
 }
@@ -764,14 +776,16 @@
 
 - (void)downloadAndInstallUpdate:(NSString *)urlStr {
   if (![urlStr hasPrefix:@"http"]) {
-    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
+    NSUserDefaults *defaults =
+        [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
     NSString *savedUrl = [defaults stringForKey:@"CloudServerURL"];
-    NSString *baseUrl = savedUrl.length > 0 ? savedUrl : @"http://s.ecmain.site";
-    
+    NSString *baseUrl =
+        savedUrl.length > 0 ? savedUrl : @"https://s.ecmain.site";
+
     if ([baseUrl hasSuffix:@"/"] && [urlStr hasPrefix:@"/"]) {
-        baseUrl = [baseUrl substringToIndex:baseUrl.length - 1];
+      baseUrl = [baseUrl substringToIndex:baseUrl.length - 1];
     } else if (![baseUrl hasSuffix:@"/"] && ![urlStr hasPrefix:@"/"]) {
-        baseUrl = [baseUrl stringByAppendingString:@"/"];
+      baseUrl = [baseUrl stringByAppendingString:@"/"];
     }
     urlStr = [NSString stringWithFormat:@"%@%@", baseUrl, urlStr];
   }
@@ -782,47 +796,66 @@
     return;
   }
 
-  NSString *tempPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"ECMAIN_Update_Manual.ipa"];
-  
+  NSString *tempPath = [NSTemporaryDirectory()
+      stringByAppendingPathComponent:@"ECMAIN_Update_Manual.ipa"];
+
   // BUILD #403: 接入增强型下载器，支持 502 自动重试
-  [[ECBackgroundManager sharedManager] downloadAndUpdateWithURL:url
-                                                         toPath:tempPath
-                                                     retryCount:0
-                                                     completion:^(BOOL success, NSString * _Nullable filePath) {
-      if (!success) {
-          dispatch_async(dispatch_get_main_queue(), ^{
-              [self appendLog:@"[系统] ❌ 下载更新包失败，请检查网络后再试"];
-          });
-          return;
-      }
-      
-      dispatch_async(dispatch_get_main_queue(), ^{
-          [self appendLog:@"[系统] 📦 下载完成，正在进行静默覆盖安装..."];
-          
-          // 调用 TrollStore 静默安装逻辑
-          dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-              NSString *logOut = nil;
-              int ret = [[TSApplicationsManager sharedInstance] installIpa:filePath
-                                                                      force:YES
-                                                           registrationType:@"System"
-                                                             customBundleId:nil
-                                                          customDisplayName:nil
-                                                                skipSigning:NO
-                                                         installationMethod:0
-                                                                        log:&logOut];
-              
-              dispatch_async(dispatch_get_main_queue(), ^{
-                  if (ret == 0) {
-                      [self appendLog:@"[系统] ✅ 自动更新安装成功！重启应用后生效。"];
-                  } else {
-                      [self appendLog:[NSString stringWithFormat:@"[系统] ❌ 安装更新失败(code:%d): %@", ret, logOut ?: @"无"]];
-                  }
-                  // 清理
-                  [[NSFileManager defaultManager] removeItemAtPath:filePath error:nil];
-              });
-          });
-      });
-  }];
+  [[ECBackgroundManager sharedManager]
+      downloadAndUpdateWithURL:url
+                        toPath:tempPath
+                    retryCount:0
+                    completion:^(BOOL success, NSString *_Nullable filePath) {
+                      if (!success) {
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                          [self appendLog:@"[系统] ❌ "
+                                          @"下载更新包失败，请检查网络后再试"];
+                        });
+                        return;
+                      }
+
+                      dispatch_async(dispatch_get_main_queue(), ^{
+                        [self
+                            appendLog:
+                                @"[系统] 📦 下载完成，正在进行静默覆盖安装..."];
+
+                        // 调用 TrollStore 静默安装逻辑
+                        dispatch_async(
+                            dispatch_get_global_queue(
+                                DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
+                            ^{
+                              NSString *logOut = nil;
+                              int ret = [[TSApplicationsManager sharedInstance]
+                                          installIpa:filePath
+                                               force:YES
+                                    registrationType:@"System"
+                                      customBundleId:nil
+                                   customDisplayName:nil
+                                         skipSigning:NO
+                                  installationMethod:0
+                                                 log:&logOut];
+
+                              dispatch_async(dispatch_get_main_queue(), ^{
+                                if (ret == 0) {
+                                  [self appendLog:@"[系统] ✅ "
+                                                  @"自动更新安装成功！重启应用"
+                                                  @"后生效。"];
+                                } else {
+                                  [self
+                                      appendLog:
+                                          [NSString
+                                              stringWithFormat:
+                                                  @"[系统] ❌ "
+                                                  @"安装更新失败(code:%d): %@",
+                                                  ret, logOut ?: @"无"]];
+                                }
+                                // 清理
+                                [[NSFileManager defaultManager]
+                                    removeItemAtPath:filePath
+                                               error:nil];
+                              });
+                            });
+                      });
+                    }];
 }
 
 @end

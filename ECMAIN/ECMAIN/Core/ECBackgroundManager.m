@@ -1049,23 +1049,108 @@ static NSString *_cachedDeviceUDID = nil;
     return;
   }
 
+  // ========== 截图请求专用高速通道（极致压缩，适配慢速 VPN/Cloudflare 网络） ==========
+  if (isScreenshotRequest) {
+    __unsafe_unretained typeof(self) weakSelf = self;
+    NSURL *targetURL = [NSURL URLWithString:url];
+    if (!targetURL) {
+      NSLog(@"[Tunnel] 截图 URL 无效: %@", url);
+      return;
+    }
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:targetURL];
+    request.HTTPMethod = @"GET";
+    request.timeoutInterval = 5.0;
+
+    [[NSURLSession.sharedSession
+        dataTaskWithRequest:request
+          completionHandler:^(NSData *_Nullable data,
+                              NSURLResponse *_Nullable response,
+                              NSError *_Nullable error) {
+            dispatch_async([ECBackgroundManager tunnelQueue], ^{
+              __strong typeof(weakSelf) strongSelf = weakSelf;
+              if (!strongSelf || !strongSelf.webSocketTask) return;
+
+              NSMutableDictionary *respPayload = [NSMutableDictionary dictionary];
+              respPayload[@"type"] = @"response";
+              respPayload[@"id"] = reqId;
+
+              if (error || !data) {
+                respPayload[@"status"] = @500;
+                respPayload[@"body"] = @{@"error" : error.localizedDescription ?: @"无数据"};
+              } else {
+                // WDA 的 /screenshot 返回 JSON: {"value": "<base64 PNG>", ...}
+                // 先解析 JSON 以提取 base64 原始数据
+                NSDictionary *wdaJSON = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+                NSString *b64PNG = nil;
+                if (wdaJSON && wdaJSON[@"value"]) {
+                  b64PNG = wdaJSON[@"value"];
+                }
+
+                if (b64PNG) {
+                  // 将 Base64 PNG 解码成 UIImage，缩小并压缩为超低质量 JPEG
+                  NSData *pngData = [[NSData alloc] initWithBase64EncodedString:b64PNG options:NSDataBase64DecodingIgnoreUnknownCharacters];
+                  UIImage *fullImage = pngData ? [UIImage imageWithData:pngData] : nil;
+
+                  if (fullImage) {
+                    // 缩小到 50% 分辨率以大幅减少像素数
+                    CGFloat scaleFactor = 0.5;
+                    CGSize newSize = CGSizeMake(fullImage.size.width * scaleFactor,
+                                               fullImage.size.height * scaleFactor);
+                    UIGraphicsBeginImageContextWithOptions(newSize, YES, 1.0);
+                    [fullImage drawInRect:CGRectMake(0, 0, newSize.width, newSize.height)];
+                    UIImage *resizedImage = UIGraphicsGetImageFromCurrentImageContext();
+                    UIGraphicsEndImageContext();
+
+                    // 压缩为极低质量 JPEG (quality=0.15), 约 30-80KB
+                    NSData *jpegData = UIImageJPEGRepresentation(resizedImage ?: fullImage, 0.15);
+                    NSString *b64JPEG = [jpegData base64EncodedStringWithOptions:0];
+
+                    respPayload[@"status"] = @200;
+                    respPayload[@"body"] = @{@"value" : b64JPEG ?: @""};
+                  } else {
+                    // 解码失败，原样回传（降级）
+                    respPayload[@"status"] = @200;
+                    respPayload[@"body"] = wdaJSON ?: @{@"error": @"decode_fail"};
+                  }
+                } else {
+                  // 非标准格式，原样回传
+                  NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
+                  respPayload[@"status"] = @(httpResp ? httpResp.statusCode : 500);
+                  respPayload[@"body"] = wdaJSON ?: @{@"error": @"no_value_field"};
+                }
+              }
+
+              // 通过 WebSocket 回传压缩后的截图
+              NSData *respData = [NSJSONSerialization dataWithJSONObject:respPayload options:0 error:nil];
+              if (!respData) return;
+              NSString *respStr = [[NSString alloc] initWithData:respData encoding:NSUTF8StringEncoding];
+              [strongSelf.webSocketTask
+                        sendMessage:[[NSURLSessionWebSocketMessage alloc] initWithString:respStr]
+                  completionHandler:^(NSError *_Nullable sendError) {
+                    if (sendError)
+                      NSLog(@"[Tunnel] 截图回传失败: %@", sendError);
+                  }];
+            });
+          }] resume];
+    return;
+  }
+
+  // ========== 通用请求透传通道 ==========
   NSURL *targetURL = [NSURL URLWithString:url];
   if (!targetURL) {
-    // 【新增】拦截后端的实时推流唤醒信号，实现脚本秒杀下发
+    // 拦截后端的实时推流唤醒信号，实现脚本秒杀下发
     if ([url isEqualToString:@"/api/wakeup_task"]) {
       static NSTimeInterval lastWakeTime = 0;
       NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
       
       dispatch_async(dispatch_get_main_queue(), ^{
         if (now - lastWakeTime < 5.0) {
-            // NSLog(@"[Tunnel] ⚠️ 唤醒波频率过高，已忽略 (%.1fs)", now - lastWakeTime);
             return;
         }
         lastWakeTime = now;
         
         [[ECLogManager sharedManager]
             log:@"[Tunnel] 收到实时任务推流波！开始本地即刻执行..."];
-        // 伪装响应
         NSDictionary *resp = @{
           @"type" : @"response",
           @"id" : reqId,
@@ -1083,7 +1168,6 @@ static NSString *_cachedDeviceUDID = nil;
                                                  encoding:NSUTF8StringEncoding]]
             completionHandler:nil];
 
-        // 瞬间触发本地执行 (前提是后端发了 script)
         if (body && body[@"script"]) {
           NSDictionary *mockJson = @{
             @"task" : @{
@@ -1097,7 +1181,6 @@ static NSString *_cachedDeviceUDID = nil;
                                                                error:nil];
           [self handleHeartbeatResponse:mockData];
         } else {
-          // 后备兼容
           [self sendHeartbeat:nil];
         }
       });
@@ -1124,7 +1207,6 @@ static NSString *_cachedDeviceUDID = nil;
         completionHandler:^(NSData *_Nullable data,
                             NSURLResponse *_Nullable response,
                             NSError *_Nullable error) {
-          // Dispatch back to serial tunnel queue to ensure thread safety
           dispatch_async([ECBackgroundManager tunnelQueue], ^{
             __strong typeof(weakSelf) strongSelf = weakSelf;
             if (!strongSelf || !strongSelf.webSocketTask) {
@@ -1144,20 +1226,17 @@ static NSString *_cachedDeviceUDID = nil;
               respPayload[@"body"] =
                   @{@"error" : error.localizedDescription ?: @"Unknown error"};
             } else if (data) {
-              // WDA usually returns JSON. Try parse.
               id jsonBody = [NSJSONSerialization JSONObjectWithData:data
                                                             options:0
                                                               error:nil];
               if (jsonBody) {
                 respPayload[@"body"] = jsonBody;
               } else {
-                // Return Base64 if not JSON
                 respPayload[@"body"] =
                     @{@"value" : [data base64EncodedStringWithOptions:0]};
               }
             }
 
-            // Send back via WebSocket
             NSError *jsonError = nil;
             NSData *respData =
                 [NSJSONSerialization dataWithJSONObject:respPayload

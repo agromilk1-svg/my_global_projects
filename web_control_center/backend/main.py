@@ -948,13 +948,17 @@ async def get_screen_stream(udid: str, ip: str = None, usb: str = 'true', mode: 
     
     if mode == 'ws':
         async def iter_ws_frames():
-            tunnel_ws = ACTIVE_TUNNELS.get(udid)
-            if not tunnel_ws:
-                logging.error(f"Cannot stream screen: WS tunnel for {udid} not active.")
-                yield b""
-                return
+            consecutive_errors = 0
+            max_errors = 10  # 连续失败 10 次才放弃（慢速网络友好）
+            
+            while consecutive_errors < max_errors:
+                tunnel_ws = ACTIVE_TUNNELS.get(udid)
+                if not tunnel_ws:
+                    logging.warning(f"WS tunnel for {udid} not active, waiting...")
+                    await asyncio.sleep(3.0)
+                    consecutive_errors += 1
+                    continue
 
-            while True:
                 task_id = str(uuid.uuid4())
                 loop = asyncio.get_event_loop()
                 future = loop.create_future()
@@ -965,7 +969,8 @@ async def get_screen_stream(udid: str, ip: str = None, usb: str = 'true', mode: 
                         "method": "GET",
                         "url": "http://127.0.0.1:10088/screenshot"
                     })
-                    result = await asyncio.wait_for(future, timeout=5.0)
+                    # 慢速网络给 15 秒超时（VPN + Cloudflare 穿透链路较长）
+                    result = await asyncio.wait_for(future, timeout=15.0)
                     body = result.get("body", {})
                     b64 = body.get("value")
                     if b64:
@@ -973,17 +978,26 @@ async def get_screen_stream(udid: str, ip: str = None, usb: str = 'true', mode: 
                         frame = base64.b64decode(b64)
                         yield (
                             b"--myboundary\r\n"
-                            b"Content-Type: image/png\r\n"
+                            b"Content-Type: image/jpeg\r\n"
                             b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + 
                             frame + b"\r\n"
                         )
+                        consecutive_errors = 0  # 成功一次就重置计数
+                    else:
+                        consecutive_errors += 1
+                except asyncio.TimeoutError:
+                    logging.warning(f"WS screenshot timeout for {udid} ({consecutive_errors+1}/{max_errors})")
+                    consecutive_errors += 1
                 except Exception as e:
                     logging.warning(f"WS screenshot stream error: {e}")
-                    pass
+                    consecutive_errors += 1
                 finally:
                     PENDING_TASKS.pop(task_id, None)
                     
-                await asyncio.sleep(0.5)
+                # 慢速网络下每 2 秒轮询一次（避免堆积请求导致阻塞）
+                await asyncio.sleep(2.0)
+            
+            logging.error(f"WS screenshot stream gave up after {max_errors} consecutive errors for {udid}")
 
         return StreamingResponse(
             iter_ws_frames(), 
