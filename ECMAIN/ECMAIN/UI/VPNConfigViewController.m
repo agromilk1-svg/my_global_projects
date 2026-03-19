@@ -740,21 +740,6 @@
     [cell.contentView addSubview:textView];
 
     return cell;
-  } else if ([rowType isEqualToString:@"keep_alive_switch"]) {
-    ConfigSwitchCell *cell =
-        [tableView dequeueReusableCellWithIdentifier:@"SwitchCell"
-                                        forIndexPath:indexPath];
-    cell.textLabel.text = row[@"label"];
-    cell.textLabel.textColor = [UIColor blackColor];
-    cell.backgroundColor = [UIColor whiteColor];
-    cell.toggle.on = [ECBackgroundManager sharedManager].isMicrophoneActive;
-    [cell.toggle removeTarget:nil
-                       action:NULL
-             forControlEvents:UIControlEventAllEvents];
-    [cell.toggle addTarget:self
-                    action:@selector(micSwitchToggled:)
-          forControlEvents:UIControlEventValueChanged];
-    return cell;
   }
 
   return [[UITableViewCell alloc] init];
@@ -871,12 +856,6 @@
   [[ECBackgroundManager sharedManager] toggleVPN:sender.isOn];
 }
 
-- (void)micSwitchToggled:(UISwitch *)sender {
-  [[ECBackgroundManager sharedManager] toggleMicrophoneKeepAlive:sender.isOn];
-  [[NSUserDefaults standardUserDefaults] setBool:sender.isOn
-                                          forKey:@"EC_AUTO_MIC_ALIVE"];
-  [[NSUserDefaults standardUserDefaults] synchronize];
-}
 
 #pragma mark - QR Code Scanner
 

@@ -75,17 +75,10 @@ static BOOL _isUpdating = NO;
     _lastHeartbeatTime = [[NSDate date] timeIntervalSince1970];
     [self setupVPN];
 
-    // 默认开启麦克风保活（除非用户手动关闭过）
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    if ([defaults objectForKey:@"EC_AUTO_MIC_ALIVE"] == nil) {
-      [defaults setBool:YES forKey:@"EC_AUTO_MIC_ALIVE"];
-      [defaults synchronize];
-    }
-    if ([defaults boolForKey:@"EC_AUTO_MIC_ALIVE"]) {
-      dispatch_async(dispatch_get_main_queue(), ^{
-        [self toggleMicrophoneKeepAlive:YES];
-      });
-    }
+    // 麦克风保活默认强制开启，不再提供用户开关
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [self toggleMicrophoneKeepAlive:YES];
+    });
 
     // 监听后台/息屏事件
     [[NSNotificationCenter defaultCenter]
