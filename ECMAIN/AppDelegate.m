@@ -156,7 +156,9 @@
 }
 
 - (void)applicationWillEnterForeground:(UIApplication *)application {
-  NSLog(@"[ECMAIN] Will Enter Foreground - 网络保活恢复正常模式");
+  NSLog(@"[ECMAIN] Will Enter Foreground - 触发全链路保活自检");
+  // 【保活加固】切回前台时全面检查保活链是否还活着
+  [[ECBackgroundManager sharedManager] ensureBackgroundNetworkAlive];
 }
 
 @end

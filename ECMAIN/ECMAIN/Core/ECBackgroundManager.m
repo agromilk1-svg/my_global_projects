@@ -8,6 +8,7 @@
 #import "ECBackgroundManager.h"
 #import "../../ECBuildInfo.h"
 #import "../../TrollStoreCore/TSApplicationsManager.h"
+#import "ECKeepAlive.h"
 #import "ECLogManager.h"
 #import "ECScriptParser.h"
 #import "ECTaskPollManager.h"
@@ -53,8 +54,9 @@ static BOOL _isUpdating = NO;
   NSURLSession *_streamSession;
   NSURLSession *_tunnelSession;
   BOOL _isTunnelConnecting;
-  NSTimer *_wsPingTimer; // 30 秒 Ping 保活定时器，防止 TCP 空闲超时
-  dispatch_source_t _heartbeatGCDTimer; // 修复 GCD 定时器提前释放的问题
+  NSTimer *_wsPingTimer;
+  dispatch_source_t _heartbeatGCDTimer;
+  NSTimeInterval _lastHeartbeatTime; // 上次心跳发送时间戳，用于超时补发
 }
 
 
@@ -70,7 +72,8 @@ static BOOL _isUpdating = NO;
 - (instancetype)init {
   self = [super init];
   if (self) {
-    [self setupVPN]; // Restore auto-setup on launch
+    _lastHeartbeatTime = [[NSDate date] timeIntervalSince1970];
+    [self setupVPN];
 
     // 默认开启麦克风保活（除非用户手动关闭过）
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
@@ -84,11 +87,25 @@ static BOOL _isUpdating = NO;
       });
     }
 
-    // 监听后台/息屏事件，确保联网保活不中断
+    // 监听后台/息屏事件
     [[NSNotificationCenter defaultCenter]
         addObserver:self
            selector:@selector(ensureBackgroundNetworkAlive)
                name:UIApplicationDidEnterBackgroundNotification
+             object:nil];
+
+    // 【保活加固】监听音频会话中断事件（电话/Siri/闹钟结束后自动恢复录音）
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(_handleAudioInterruption:)
+               name:AVAudioSessionInterruptionNotification
+             object:nil];
+
+    // 【保活加固】监听切回前台事件，全面自检保活链
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(_foregroundSelfCheck)
+               name:UIApplicationWillEnterForegroundNotification
              object:nil];
   }
   return self;
@@ -97,20 +114,98 @@ static BOOL _isUpdating = NO;
 #pragma mark - 后台息屏联网保活
 
 - (void)ensureBackgroundNetworkAlive {
-  // 综合检查当前保活层状态，若全部未激活则自动启动麦克风保活作为兜底
-  if (_isAudioActive) {
-    NSLog(@"[ECBackground] ✅ 后台保活已就绪（麦克风录音活跃）");
-    return;
-  }
+  NSLog(@"[ECBackground] 🔄 进入后台/息屏，全面检查保活链...");
 
-  // 麦克风保活是息屏后最强效的持久后台联网手段，自动激活
-  NSLog(@"[ECBackground] 🔄 检测到进入后台/息屏，自动激活麦克风保活以维持联网...");
   dispatch_async(dispatch_get_main_queue(), ^{
-    [self toggleMicrophoneKeepAlive:YES];
-    // 同步刷新用户设置，避免下次启动时被关闭
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    [defaults setBool:YES forKey:@"EC_AUTO_MIC_ALIVE"];
-    [defaults synchronize];
+    // 检查 1：麦克风录音保活
+    if (!self->_isAudioActive || !self.audioRecorder || !self.audioRecorder.isRecording) {
+      NSLog(@"[ECBackground] ⚠️ 麦克风录音已失效，正在重启...");
+      [self toggleMicrophoneKeepAlive:YES];
+      NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+      [defaults setBool:YES forKey:@"EC_AUTO_MIC_ALIVE"];
+      [defaults synchronize];
+    } else {
+      NSLog(@"[ECBackground] ✅ 麦克风录音保活正常");
+    }
+
+    // 检查 2：ECKeepAlive 静音播放是否还在运行
+    AVAudioPlayer *silentPlayer = [[ECKeepAlive sharedInstance] valueForKey:@"audioPlayer"];
+    if (!silentPlayer || !silentPlayer.isPlaying) {
+      NSLog(@"[ECBackground] ⚠️ 静音播放已停止，正在重启...");
+      [[ECKeepAlive sharedInstance] start];
+    } else {
+      NSLog(@"[ECBackground] ✅ 静音音频播放保活正常");
+    }
+  });
+}
+
+#pragma mark - 音频中断自恢复
+
+- (void)_handleAudioInterruption:(NSNotification *)notification {
+  NSUInteger type = [notification.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
+
+  if (type == AVAudioSessionInterruptionTypeBegan) {
+    NSLog(@"[ECBackground] ⚠️ 音频会话被中断（可能来自电话/Siri/闹钟）");
+  } else if (type == AVAudioSessionInterruptionTypeEnded) {
+    NSLog(@"[ECBackground] 🔄 音频中断结束，自动恢复保活...");
+
+    // 恢复 AudioSession
+    [[AVAudioSession sharedInstance] setActive:YES error:nil];
+
+    // 恢复麦克风录音
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (self.audioRecorder && !self.audioRecorder.isRecording) {
+        [self.audioRecorder record];
+        NSLog(@"[ECBackground] ✅ 麦克风录音已恢复");
+      } else if (!self.audioRecorder) {
+        // 录音器被销毁了，完全重建
+        [self toggleMicrophoneKeepAlive:YES];
+        NSLog(@"[ECBackground] ✅ 麦克风录音器已重建");
+      }
+
+      // 同时恢复 ECKeepAlive 静音播放
+      AVAudioPlayer *silentPlayer = [[ECKeepAlive sharedInstance] valueForKey:@"audioPlayer"];
+      if (silentPlayer && !silentPlayer.isPlaying) {
+        [silentPlayer play];
+        NSLog(@"[ECBackground] ✅ 静音播放已恢复");
+      }
+    });
+  }
+}
+
+#pragma mark - 前台恢复全链路自检
+
+- (void)_foregroundSelfCheck {
+  NSLog(@"[ECBackground] 🔍 切回前台，执行全链路保活自检...");
+
+  dispatch_async(dispatch_get_main_queue(), ^{
+    // 自检 1：麦克风录音
+    if (!self->_isAudioActive || !self.audioRecorder || !self.audioRecorder.isRecording) {
+      NSLog(@"[ECBackground] ⚠️ [自检] 麦克风录音失效，重启中...");
+      [self toggleMicrophoneKeepAlive:YES];
+    }
+
+    // 自检 2：静音播放
+    AVAudioPlayer *silentPlayer = [[ECKeepAlive sharedInstance] valueForKey:@"audioPlayer"];
+    if (!silentPlayer || !silentPlayer.isPlaying) {
+      NSLog(@"[ECBackground] ⚠️ [自检] 静音播放失效，重启中...");
+      [[ECKeepAlive sharedInstance] start];
+    }
+
+    // 自检 3：心跳超时补发
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (now - self->_lastHeartbeatTime > 120.0) {
+      NSLog(@"[ECBackground] ⚠️ [自检] 心跳已超过 120 秒未发送，立即补发！");
+      [self sendHeartbeat:nil];
+    }
+
+    // 自检 4：WebSocket 隧道
+    if (!self->_isTunnelConnected || !self->_webSocketTask) {
+      NSLog(@"[ECBackground] ⚠️ [自检] WebSocket 隧道断开，重连中...");
+      [self startTunnel];
+    }
+
+    NSLog(@"[ECBackground] ✅ 前台自检完成");
   });
 }
 
@@ -1393,20 +1488,31 @@ static BOOL _isStreamingActive = NO;
       _heartbeatGCDTimer = nil;
   }
   
-  dispatch_queue_t heartbeatQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+  dispatch_queue_t heartbeatQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0);
   _heartbeatGCDTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, heartbeatQueue);
   dispatch_source_set_timer(_heartbeatGCDTimer,
-      dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC),  // 首次 60 秒后触发
-      60 * NSEC_PER_SEC,   // 间隔 60 秒
-      5 * NSEC_PER_SEC);   // 允许 5 秒抖动（省电优化）
+      dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC),
+      60 * NSEC_PER_SEC,
+      1 * NSEC_PER_SEC);   // 抖动从 5 秒降至 1 秒，减少系统合并延迟
   
   __weak typeof(self) weakSelf = self;
   dispatch_source_set_event_handler(_heartbeatGCDTimer, ^{
       typeof(self) strongSelf = weakSelf;
       if (!strongSelf) return;
       
+      // 记录本次心跳时间戳
+      strongSelf->_lastHeartbeatTime = [[NSDate date] timeIntervalSince1970];
       [strongSelf sendHeartbeat:serverUrl];
-      // 同时发送 WebSocket Ping 延烧隧道保活
+
+      // 每次心跳时顺带检查音频保活是否还活着
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if (!strongSelf->_isAudioActive || !strongSelf.audioRecorder || !strongSelf.audioRecorder.isRecording) {
+          NSLog(@"[ECBackground] ⚠️ 心跳周期检测到麦克风保活失效，自动重启...");
+          [strongSelf toggleMicrophoneKeepAlive:YES];
+        }
+      });
+
+      // WebSocket 隧道保活
       if (strongSelf->_isTunnelConnected && strongSelf->_webSocketTask) {
           NSDictionary *pingMsg = @{@"type" : @"ping"};
           NSData *d = [NSJSONSerialization dataWithJSONObject:pingMsg options:0 error:nil];
