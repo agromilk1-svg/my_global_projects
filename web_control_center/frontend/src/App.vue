@@ -808,7 +808,6 @@ const fetchOneshotTasks = async () => {
 };
 
 const deleteOneshotTask = async (id: number) => {
-  if (!confirm('确定删除这个一次性任务？')) return;
   try {
     const res = await authFetch(`${apiBase}/oneshot_tasks/${id}`, { method: 'DELETE' });
     const d = await res.json();
