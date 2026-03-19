@@ -1386,14 +1386,26 @@ static BOOL _isStreamingActive = NO;
       savedUrl.length > 0 ? savedUrl : EC_DEFAULT_CLOUD_SERVER_URL;
 
   NSString *downloadPath = updateInfo[@"download_url"];
-  NSString *fullURL =
-      [NSString stringWithFormat:@"%@%@", baseUrl, downloadPath];
+  NSString *fullURL = downloadPath;
+  if (![downloadPath hasPrefix:@"http"]) {
+      if ([baseUrl hasSuffix:@"/"] && [downloadPath hasPrefix:@"/"]) {
+          baseUrl = [baseUrl substringToIndex:baseUrl.length - 1];
+      } else if (![baseUrl hasSuffix:@"/"] && ![downloadPath hasPrefix:@"/"]) {
+          baseUrl = [baseUrl stringByAppendingString:@"/"];
+      }
+      fullURL = [NSString stringWithFormat:@"%@%@", baseUrl, downloadPath];
+  }
 
   [[ECLogManager sharedManager]
       log:[NSString
               stringWithFormat:@"[ECBackground] 开始下载更新包: %@", fullURL]];
 
   NSURL *url = [NSURL URLWithString:fullURL];
+  if (!url || !url.scheme) {
+      [[ECLogManager sharedManager] log:@"[ECBackground] ❌ 无效的下载链接"];
+      _isUpdating = NO;
+      return;
+  }
   NSString *tmpDir = NSTemporaryDirectory();
   NSString *tarPath = [tmpDir stringByAppendingPathComponent:@"ecmain_update.tar"];
 

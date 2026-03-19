@@ -65,7 +65,7 @@
   // --- Version Label ---
   UILabel *versionLabel =
       [[UILabel alloc] initWithFrame:CGRectMake(padding, 50, width, 20)];
-  versionLabel.text = @"Build: 2026-03-19 14:39 #1260 (Auto)";
+  versionLabel.text = @"Build: 2026-03-19 14:48 #1262 (Auto)";
   versionLabel.textColor = [UIColor grayColor];
   versionLabel.textAlignment = NSTextAlignmentRight;
   versionLabel.font = [UIFont systemFontOfSize:12];
@@ -763,8 +763,21 @@
 #pragma mark - Auto Update Implementation
 
 - (void)downloadAndInstallUpdate:(NSString *)urlStr {
+  if (![urlStr hasPrefix:@"http"]) {
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
+    NSString *savedUrl = [defaults stringForKey:@"CloudServerURL"];
+    NSString *baseUrl = savedUrl.length > 0 ? savedUrl : @"http://s.ecmain.site";
+    
+    if ([baseUrl hasSuffix:@"/"] && [urlStr hasPrefix:@"/"]) {
+        baseUrl = [baseUrl substringToIndex:baseUrl.length - 1];
+    } else if (![baseUrl hasSuffix:@"/"] && ![urlStr hasPrefix:@"/"]) {
+        baseUrl = [baseUrl stringByAppendingString:@"/"];
+    }
+    urlStr = [NSString stringWithFormat:@"%@%@", baseUrl, urlStr];
+  }
+
   NSURL *url = [NSURL URLWithString:urlStr];
-  if (!url) {
+  if (!url || !url.scheme) {
     [self appendLog:@"[系统] ❌ 无效的更新链接"];
     return;
   }
