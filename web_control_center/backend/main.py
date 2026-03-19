@@ -943,8 +943,53 @@ async def api_run_script(req: RunTaskRequest, user: dict = Depends(get_current_u
 from fastapi.responses import StreamingResponse
 
 @app.get("/api/screen/{udid}")
-def get_screen_stream(udid: str, ip: str = None, usb: str = 'true', token: str = None, user: dict = Depends(get_current_user)):
+async def get_screen_stream(udid: str, ip: str = None, usb: str = 'true', mode: str = 'usb', token: str = None, user: dict = Depends(get_current_user)):
     require_device_permission(user, udid)
+    
+    if mode == 'ws':
+        async def iter_ws_frames():
+            tunnel_ws = ACTIVE_TUNNELS.get(udid)
+            if not tunnel_ws:
+                logging.error(f"Cannot stream screen: WS tunnel for {udid} not active.")
+                yield b""
+                return
+
+            while True:
+                task_id = str(uuid.uuid4())
+                loop = asyncio.get_event_loop()
+                future = loop.create_future()
+                PENDING_TASKS[task_id] = future
+                try:
+                    await tunnel_ws.send_json({
+                        "id": task_id,
+                        "method": "GET",
+                        "url": "http://127.0.0.1:10088/screenshot"
+                    })
+                    result = await asyncio.wait_for(future, timeout=5.0)
+                    body = result.get("body", {})
+                    b64 = body.get("value")
+                    if b64:
+                        import base64
+                        frame = base64.b64decode(b64)
+                        yield (
+                            b"--myboundary\r\n"
+                            b"Content-Type: image/png\r\n"
+                            b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + 
+                            frame + b"\r\n"
+                        )
+                except Exception as e:
+                    logging.warning(f"WS screenshot stream error: {e}")
+                    pass
+                finally:
+                    PENDING_TASKS.pop(task_id, None)
+                    
+                await asyncio.sleep(0.5)
+
+        return StreamingResponse(
+            iter_ws_frames(), 
+            media_type="multipart/x-mixed-replace; boundary=myboundary"
+        )
+
     # Determine the target IP and PORT for the raw TCP socket
     target_ip = "127.0.0.1"
     target_port = 11100 # 默认候选 (MJPEG 端口池起点)
@@ -959,30 +1004,29 @@ def get_screen_stream(udid: str, ip: str = None, usb: str = 'true', token: str =
         target_port = 10089 # 内网模式通常直接访问手机 10089
 
     # Raw TCP Generator to extract JPEG frames from non-HTTP naked stream
-    def iter_frames():
+    async def iter_tcp_frames():
         jwt_start = b"\xff\xd8"
         jwt_end = b"\xff\xd9"
         
         retries = 0
         while retries < 3:
-            s_current = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s_current.settimeout(3)
             try:
-                s_current.connect((target_ip, target_port))
-                # Critical step: WDA purely drops raw jpeg only AFTER receiving a GET request
-                s_current.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(target_ip, target_port), timeout=3.0
+                )
+                writer.write(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                await writer.drain()
             except Exception as e:
                 logging.warning(f"MJPEG connect warning: {e}")
-                s_current.close()
                 retries += 1
-                time.sleep(1.0)
+                await asyncio.sleep(1.0)
                 continue
                 
             buffer = b""
             frames_yielded = 0
             try:
                 while True:
-                    data = s_current.recv(8192)
+                    data = await reader.read(8192)
                     if not data:
                         break
                     buffer += data
@@ -1016,14 +1060,15 @@ def get_screen_stream(udid: str, ip: str = None, usb: str = 'true', token: str =
             except Exception as e:
                 logging.warning(f"MJPEG stream broken: {e}")
             finally:
-                s_current.close()
+                writer.close()
+                await writer.wait_closed()
             
             # If we reach here, stream collapsed.
             retries += 1
-            time.sleep(1.0)
+            await asyncio.sleep(1.0)
             
     return StreamingResponse(
-        iter_frames(), 
+        iter_tcp_frames(), 
         media_type="multipart/x-mixed-replace; boundary=myboundary"
     )
 
