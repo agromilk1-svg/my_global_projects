@@ -1577,11 +1577,7 @@ static BOOL _isStreamingActive = NO;
                       retryCount:(NSInteger)retryCount
                       completion:(void (^)(BOOL success, NSString *_Nullable filePath))completion {
     
-    NSURLSessionConfiguration *config = [NSURLSessionConfiguration defaultSessionConfiguration];
-    config.waitsForConnectivity = YES; // 网络波动时自动等待
-    config.timeoutIntervalForResource = 300; // 5 分钟超时
-    
-    NSURLSession *session = [NSURLSession sessionWithConfiguration:config];
+    NSURLSession *session = [NSURLSession sharedSession];
     NSURLSessionDownloadTask *task = [session downloadTaskWithURL:url
                                               completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
         NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
