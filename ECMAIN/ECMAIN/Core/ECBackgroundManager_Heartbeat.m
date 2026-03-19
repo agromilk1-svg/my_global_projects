@@ -327,117 +327,138 @@ static NSTimeInterval _lastHeartbeatTime = 0;
 
     [defaults synchronize];
 
+    // --- 缓存检验对比 ---
+    NSString *cachedIpJson = [defaults stringForKey:@"EC_CONFIG_IP_CACHED"];
+    NSString *cachedVpnStr = [defaults stringForKey:@"EC_CONFIG_VPN_CACHED"];
+
     // 1. IP 配置
     if (newIpJson.length > 0) {
-      NSError *err;
-      NSDictionary *ipDict = [NSJSONSerialization
-          JSONObjectWithData:[newIpJson dataUsingEncoding:NSUTF8StringEncoding]
-                     options:0
-                       error:&err];
-      if (!err && ipDict) {
-        NSString *ip = ipDict[@"ip"] ?: @"";
-        NSString *subnet = ipDict[@"subnet"] ?: @"";
-        NSString *gateway = ipDict[@"gateway"] ?: @"";
-        NSString *dns = ipDict[@"dns"] ?: @"";
+      if ([newIpJson isEqualToString:(cachedIpJson ?: @"")]) {
+        [[ECLogManager sharedManager] log:@"[ECBackground] ⏭️ 静态 IP 配置无实质变化，已跳过本地重置"];
+      } else {
+        NSError *err;
+        NSDictionary *ipDict = [NSJSONSerialization
+            JSONObjectWithData:[newIpJson dataUsingEncoding:NSUTF8StringEncoding]
+                       options:0
+                         error:&err];
+        if (!err && ipDict) {
+          NSString *ip = ipDict[@"ip"] ?: @"";
+          NSString *subnet = ipDict[@"subnet"] ?: @"";
+          NSString *gateway = ipDict[@"gateway"] ?: @"";
+          NSString *dns = ipDict[@"dns"] ?: @"";
 
-        if (ip.length > 0 && subnet.length > 0 && gateway.length > 0) {
-          extern int spawnRoot(NSString * path, NSArray * args,
-                               NSString * *stdOut, NSString * *stdErr);
-          extern NSString *rootHelperPath(void);
+          if (ip.length > 0 && subnet.length > 0 && gateway.length > 0) {
+            extern int spawnRoot(NSString * path, NSArray * args,
+                                 NSString * *stdOut, NSString * *stdErr);
+            extern NSString *rootHelperPath(void);
 
-          NSMutableArray *args = [NSMutableArray
-              arrayWithObjects:@"set-static-ip", ip, subnet, gateway, nil];
-          if (dns.length > 0) {
-            [args addObject:dns];
+            NSMutableArray *args = [NSMutableArray
+                arrayWithObjects:@"set-static-ip", ip, subnet, gateway, nil];
+            if (dns.length > 0) {
+              [args addObject:dns];
+            }
+
+            // 这里交由 RootHelper 注入 SystemConfiguration 重组网络
+            spawnRoot(rootHelperPath(), args, nil, nil);
+            [[ECLogManager sharedManager]
+                log:[NSString stringWithFormat:@"[ECBackground] ✅ 静态 IP 下发底层完毕: IP=%@ GW=%@", ip, gateway]];
+
+            [defaults setObject:newIpJson forKey:@"EC_CONFIG_IP_CACHED"];
+            [defaults synchronize];
           }
-
-          // 这里交由 RootHelper 注入 SystemConfiguration 重组网络
-          spawnRoot(rootHelperPath(), args, nil, nil);
-          [[ECLogManager sharedManager]
-              log:[NSString stringWithFormat:@"[ECBackground] ✅ 静态 IP "
-                                             @"下发底层完毕: IP=%@ GW=%@",
-                                             ip, gateway]];
         }
       }
     }
 
     // 2. VPN 节点配置
-    if (newVpnStr.length > 0 && [newVpnStr hasPrefix:@"ecnode://"]) {
-      NSString *b64 = [newVpnStr substringFromIndex:9]; // 去除 ecnode://
-      NSData *decodedData = [[NSData alloc] initWithBase64EncodedString:b64
-                                                                 options:0];
-      if (decodedData) {
-        NSString *decodedStr =
-            [[NSString alloc] initWithData:decodedData
-                                  encoding:NSUTF8StringEncoding];
-        if (decodedStr) {
-          // Vue URL decode component
-          NSString *jsonStr = [decodedStr stringByRemovingPercentEncoding];
-          if (jsonStr) {
-            NSError *err;
-            NSArray *nodes = [NSJSONSerialization
-                JSONObjectWithData:[jsonStr
-                                       dataUsingEncoding:NSUTF8StringEncoding]
-                           options:0
-                             error:&err];
-            if (!err && [nodes isKindOfClass:[NSArray class]] &&
-                nodes.count > 0) {
-              // 记住当前用户选中的节点（用 name + server 组合匹配，不用 UUID）
-              NSDictionary *prevActiveNode =
-                  [[ECVPNConfigManager sharedManager] activeNode];
-              NSString *prevName = prevActiveNode[@"name"] ?: @"";
-              NSString *prevServer = prevActiveNode[@"server"] ?: @"";
+    if ([newVpnStr isEqualToString:(cachedVpnStr ?: @"")]) {
+      if (newVpnStr.length > 0) {
+        [[ECLogManager sharedManager] log:@"[ECBackground] ⏭️ VPN 代理配置无实质变化，已跳过挂载重连"];
+      }
+    } else {
+      if (newVpnStr.length > 0 && [newVpnStr hasPrefix:@"ecnode://"]) {
+        NSString *b64 = [newVpnStr substringFromIndex:9]; // 去除 ecnode://
+        NSData *decodedData = [[NSData alloc] initWithBase64EncodedString:b64
+                                                                   options:0];
+        if (decodedData) {
+          NSString *decodedStr =
+              [[NSString alloc] initWithData:decodedData
+                                    encoding:NSUTF8StringEncoding];
+          if (decodedStr) {
+            // Vue URL decode component
+            NSString *jsonStr = [decodedStr stringByRemovingPercentEncoding];
+            if (jsonStr) {
+              NSError *err;
+              NSArray *nodes = [NSJSONSerialization
+                  JSONObjectWithData:[jsonStr
+                                         dataUsingEncoding:NSUTF8StringEncoding]
+                             options:0
+                               error:&err];
+              if (!err && [nodes isKindOfClass:[NSArray class]] &&
+                  nodes.count > 0) {
+                // 记住当前用户选中的节点（用 name + server 组合匹配，不用 UUID）
+                NSDictionary *prevActiveNode =
+                    [[ECVPNConfigManager sharedManager] activeNode];
+                NSString *prevName = prevActiveNode[@"name"] ?: @"";
+                NSString *prevServer = prevActiveNode[@"server"] ?: @"";
 
-              // 先清空旧节点列表，与服务器配置完全同步
-              [[ECVPNConfigManager sharedManager] saveNodes:@[]];
+                // 先清空旧节点列表，与服务器配置完全同步
+                [[ECVPNConfigManager sharedManager] saveNodes:@[]];
 
-              // 逐个添加所有下发节点到 ECVPNConfigManager
-              for (NSDictionary *node in nodes) {
-                [[ECVPNConfigManager sharedManager] addNode:node];
-              }
+                // 逐个添加所有下发节点到 ECVPNConfigManager
+                for (NSDictionary *node in nodes) {
+                  [[ECVPNConfigManager sharedManager] addNode:node];
+                }
 
-              // 恢复上次选中的节点：优先根据 name+server 匹配
-              NSArray *newNodes = [[ECVPNConfigManager sharedManager] allNodes];
-              NSDictionary *matchedNode = nil;
-              if (prevName.length > 0 || prevServer.length > 0) {
-                for (NSDictionary *n in newNodes) {
-                  NSString *nName = n[@"name"] ?: @"";
-                  NSString *nServer = n[@"server"] ?: @"";
-                  if ([nName isEqualToString:prevName] &&
-                      [nServer isEqualToString:prevServer]) {
-                    matchedNode = n;
-                    break;
+                // 恢复上次选中的节点：优先根据 name+server 匹配
+                NSArray *newNodes = [[ECVPNConfigManager sharedManager] allNodes];
+                NSDictionary *matchedNode = nil;
+                if (prevName.length > 0 || prevServer.length > 0) {
+                  for (NSDictionary *n in newNodes) {
+                    NSString *nName = n[@"name"] ?: @"";
+                    NSString *nServer = n[@"server"] ?: @"";
+                    if ([nName isEqualToString:prevName] &&
+                        [nServer isEqualToString:prevServer]) {
+                      matchedNode = n;
+                      break;
+                    }
                   }
                 }
-              }
 
-              // 如果匹配不到旧节点，回退到首节点
-              NSDictionary *activeNode = matchedNode ?: newNodes.firstObject;
-              if (activeNode) {
-                [[ECVPNConfigManager sharedManager]
-                    setActiveNodeID:activeNode[@"id"]];
+                // 如果匹配不到旧节点，回退到首节点
+                NSDictionary *activeNode = matchedNode ?: newNodes.firstObject;
+                if (activeNode) {
+                  [[ECVPNConfigManager sharedManager]
+                      setActiveNodeID:activeNode[@"id"]];
 
-                [[ECLogManager sharedManager]
-                    log:[NSString stringWithFormat:
-                                      @"[ECBackground] ✅ "
-                                      @"已导入 %lu 个代理节点，激活节点: "
-                                      @"%@%@，正在挂载...",
-                                      (unsigned long)nodes.count,
-                                      activeNode[@"name"] ?: @"Unnamed",
-                                      matchedNode ? @" (已恢复上次选择)"
-                                                  : @" (首节点)"]];
-                dispatch_async(dispatch_get_main_queue(), ^{
-                  [self connectVPNWithConfig:activeNode];
-                });
+                  [[ECLogManager sharedManager]
+                      log:[NSString stringWithFormat:
+                                        @"[ECBackground] ✅ "
+                                        @"已导入 %lu 个代理节点，激活节点: "
+                                        @"%@%@，正在挂载...",
+                                        (unsigned long)nodes.count,
+                                        activeNode[@"name"] ?: @"Unnamed",
+                                        matchedNode ? @" (已恢复上次选择)"
+                                                    : @" (首节点)"]];
+                  dispatch_async(dispatch_get_main_queue(), ^{
+                    [self connectVPNWithConfig:activeNode];
+                  });
+                  
+                  // 同步防抖缓存
+                  [defaults setObject:newVpnStr forKey:@"EC_CONFIG_VPN_CACHED"];
+                  [defaults synchronize];
+                }
               }
             }
           }
         }
-      }
-    } else if (newVpnStr.length == 0) {
-      // 下发为空时，如果原本在线，就强制关闭它
-      if ([self isVPNActive]) {
-        [self stopVPN];
+      } else if (newVpnStr.length == 0) {
+        // 下发为空时，如果原本在线，就强制关闭它
+        if ([self isVPNActive]) {
+          [self stopVPN];
+        }
+        [defaults setObject:newVpnStr forKey:@"EC_CONFIG_VPN_CACHED"];
+        [defaults synchronize];
       }
     }
   }
