@@ -1,32 +1,41 @@
 
 #pragma mark - Cloud Control (Heartbeat)
 
-
-
 // 自动更新状态标志（防止心跳期间重复触发）
 static BOOL _isEcwdaUpdating = NO;
 // ECWDA 在线状态标志
 static BOOL _isEcwdaOnline = YES;
+// [v1742] ECWDA 10088 端口连续探测失败计数器
+static NSInteger _ecwda10088FailCount = 0;
+// [v1742] 防止重复触发强杀+重启操作
+static BOOL _isEcwdaRestarting = NO;
 
 // ECWDA 固定 Bundle ID
 static NSString *const kECWDABundleID =
     @"com.facebook.WebDriverAgentRunner.ecwda";
 
-static NSTimeInterval _lastHeartbeatTime = 0;
+// 💓 心跳时间戳改用 ECBackgroundManager 成员变量 _lastHeartbeatTime
 
 - (void)sendHeartbeat:(NSString *)urlString {
-  // 兜底：如果外部传了 nil，安全降级为读取系统默认配置，防止 NSMutableURLRequest 崩溃
+  // 兜底：如果外部传了 nil，安全降级为读取系统默认配置，防止
+  // NSMutableURLRequest 崩溃
   if (!urlString || urlString.length == 0) {
-    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
+    NSUserDefaults *defaults =
+        [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
     NSString *savedUrl = [defaults stringForKey:@"CloudServerURL"];
-    NSString *baseUrl = savedUrl.length > 0 ? savedUrl : EC_DEFAULT_CLOUD_SERVER_URL;
+    NSString *baseUrl =
+        savedUrl.length > 0 ? savedUrl : EC_DEFAULT_CLOUD_SERVER_URL;
     urlString = [baseUrl stringByAppendingString:@"/devices/heartbeat"];
   }
+
+  // 1. 发送初步尝试日志 (前置以确保透明度)
+  [[ECLogManager sharedManager] log:@"[ECBackground] 💓 尝试发送心跳包..."];
 
   // --- 节流防护：5 秒内禁止重复发送核心心跳，防止 502 导致的请求瞬间堆叠 ---
   NSTimeInterval nowTime = [[NSDate date] timeIntervalSince1970];
   if (nowTime - _lastHeartbeatTime < 5.0) {
-    // NSLog(@"[ECBackground] 💓 心跳发送触发过快，已节流拦截 (%.1fs)", nowTime - _lastHeartbeatTime);
+    NSLog(@"[ECBackground] 💓 心跳发送触发过快，已节流拦截 (%.1fs)",
+          nowTime - _lastHeartbeatTime);
     return;
   }
   _lastHeartbeatTime = nowTime;
@@ -86,16 +95,17 @@ static NSTimeInterval _lastHeartbeatTime = 0;
 
   // >>> 如果仍深处飞行模式且非执行时段，拒绝接单和发送自身暴露的轨迹
   if (isAirplaneModeOn) {
+    [[ECLogManager sharedManager]
+        log:@"[ECBackground] 💓 设备处于飞行模式且非执行时段，拒绝发包"];
     return; // 暂缓发包
   }
 
-  // >>> 新增：交叉探测 ECWDA 存活状态 <<<
-  if (!_isEcwdaUpdating) {
+  // >>> [v1742] 增强型 ECWDA 存活探测：10088 端口连续失败时强杀进程并重启 <<<
+  if (!_isEcwdaUpdating && !_isEcwdaRestarting) {
     NSURL *wdaUrl = [NSURL URLWithString:@"http://127.0.0.1:10088/status"];
     NSMutableURLRequest *wdaReq = [NSMutableURLRequest requestWithURL:wdaUrl];
-    // 超时时间 60 秒，防止 WDA
-    // 在执行阻塞/耗时任务（例如首次开屏或 input 遍历 AX 树）时被误认为挂掉
-    wdaReq.timeoutInterval = 60.0;
+    // [v1742] 超时时间 15 秒，缩短以更快发现子线程僵死（原 60 秒太慢）
+    wdaReq.timeoutInterval = 15.0;
 
     [[NSURLSession.sharedSession
         dataTaskWithRequest:wdaReq
@@ -104,38 +114,104 @@ static NSTimeInterval _lastHeartbeatTime = 0;
                               NSError *_Nullable error) {
             NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
             if (error || httpResp.statusCode != 200) {
-              BOOL wasOnline = _isEcwdaOnline;
-              _isEcwdaOnline = NO;
+              _ecwda10088FailCount++;
+              NSString *errInfo = error ? error.localizedDescription
+                  : [NSString stringWithFormat:@"HTTP %ld", (long)httpResp.statusCode];
               [[ECLogManager sharedManager]
-                  log:@"[ECBackground] ⚠️ 检测到 ECWDA "
-                      @"进程丢失（连接被拒/无响应）"];
-              // 如果之前在线，现在离线，则尝试拉起 ECWDA
-              if (wasOnline) {
+                  log:[NSString stringWithFormat:
+                      @"[ECBackground] ⚠️ ECWDA 10088 端口探测失败 (%ld/2): %@",
+                      (long)_ecwda10088FailCount, errInfo]];
+
+              if (_ecwda10088FailCount == 1) {
+                // ====== 第 1 级：首次失败，可能是进程根本没有运行 ======
+                // 直接尝试拉起 ECWDA，不强杀（进程可能本就不存在）
+                _isEcwdaOnline = NO;
+                [[ECLogManager sharedManager]
+                    log:@"[ECBackground] 🔄 ECWDA 10088 首次探测失败，"
+                        @"尝试直接拉起进程（应对进程不存在的情况）..."];
                 dispatch_async(dispatch_get_main_queue(), ^{
+                  BOOL launched = [[TSApplicationsManager sharedInstance]
+                      openApplicationWithBundleID:kECWDABundleID];
+                  if (launched) {
+                    [[ECLogManager sharedManager]
+                        log:@"[ECBackground] ✅ ECWDA 已尝试拉起，"
+                            @"等待下一轮探测验证..."];
+                  } else {
+                    [[ECLogManager sharedManager]
+                        log:@"[ECBackground] ❌ ECWDA 拉起失败"];
+                  }
+                });
+              } else if (_ecwda10088FailCount >= 2) {
+                // ====== 第 2 级：连续失败，说明上轮拉起无效或子线程僵死 ======
+                // 必须先强杀再重启
+                _isEcwdaOnline = NO;
+                _isEcwdaRestarting = YES; // 锁定，防止重复触发
+                _ecwda10088FailCount = 0; // 重置计数器
+
+                [[ECLogManager sharedManager]
+                    log:@"[ECBackground] 🚨 ECWDA 10088 端口连续 2 次无响应，"
+                        @"判定子线程已僵死。即将强杀进程并重新拉起..."];
+
+                dispatch_async(dispatch_get_main_queue(), ^{
+                  // 第 1 步：使用 killall 发送 SIGKILL(9) 强制终止 ECWDA
+                  // 进程及所有子线程
+                  extern void killall(NSString *processName, BOOL softly);
+                  [[ECLogManager sharedManager]
+                      log:@"[ECBackground] 🔪 正在强杀 "
+                          @"WebDriverAgentRunner-Runner 进程..."];
+                  killall(@"WebDriverAgentRunner-Runner",
+                          NO); // NO = SIGKILL(9) 硬杀
+
+                  // 第 2 步：等待 3 秒让系统彻底回收进程资源
                   dispatch_after(
                       dispatch_time(DISPATCH_TIME_NOW,
-                                    (int64_t)(5.0 * NSEC_PER_SEC)),
+                                    (int64_t)(3.0 * NSEC_PER_SEC)),
                       dispatch_get_main_queue(), ^{
                         [[ECLogManager sharedManager]
-                            log:@"[ECBackground] 🔄 正在尝试拉起 ECWDA..."];
+                            log:@"[ECBackground] 🔄 进程已强杀，"
+                                @"正在重新拉起 ECWDA..."];
+
                         BOOL launched = [[TSApplicationsManager sharedInstance]
                             openApplicationWithBundleID:kECWDABundleID];
                         if (launched) {
                           [[ECLogManager sharedManager]
-                              log:@"[ECBackground] ✅ ECWDA 已自动拉起"];
+                              log:@"[ECBackground] ✅ ECWDA "
+                                  @"已强杀后重新拉起"];
                         } else {
                           [[ECLogManager sharedManager]
-                              log:@"[ECBackground] ❌ ECWDA 拉起失败"];
+                              log:@"[ECBackground] ❌ ECWDA "
+                                  @"强杀后拉起失败"];
                         }
+
+                        // 延迟 30 秒后解除重启锁定，给 ECWDA 足够的初始化时间
+                        dispatch_after(
+                            dispatch_time(DISPATCH_TIME_NOW,
+                                          (int64_t)(30.0 * NSEC_PER_SEC)),
+                            dispatch_get_main_queue(), ^{
+                              _isEcwdaRestarting = NO;
+                              [[ECLogManager sharedManager]
+                                  log:@"[ECBackground] 🔓 ECWDA "
+                                      @"重启保护期已结束，恢复正常探测"];
+                            });
                       });
                 });
               }
             } else {
+              // 探测成功，重置计数器和在线状态
+              if (_ecwda10088FailCount > 0) {
+                [[ECLogManager sharedManager]
+                    log:@"[ECBackground] ✅ ECWDA 10088 端口已恢复正常响应"];
+              }
+              _ecwda10088FailCount = 0;
               _isEcwdaOnline = YES;
             }
           }] resume];
   }
   // <<<
+
+
+  // [v1726] 8089 探测已迁移至心跳 GCD Timer 的 event handler 中，与
+  // sendHeartbeat 平级执行
 
   // 1. Collect Info (使用 MGCopyAnswer 获取真实唯一的硬件出厂 UDID)
   NSString *udid = nil;
@@ -143,8 +219,7 @@ static NSTimeInterval _lastHeartbeatTime = 0;
   if (lib) {
     CFTypeRef (*_MGCopyAnswer)(CFStringRef) = dlsym(lib, "MGCopyAnswer");
     if (_MGCopyAnswer) {
-      CFStringRef uniqueId =
-          (CFStringRef)_MGCopyAnswer(CFSTR("UniqueDeviceID"));
+      CFStringRef uniqueId = (CFStringRef)_MGCopyAnswer(CFSTR("SerialNumber"));
       if (uniqueId) {
         udid = [NSString stringWithString:(__bridge NSString *)uniqueId];
         CFRelease(uniqueId);
@@ -199,6 +274,32 @@ static NSTimeInterval _lastHeartbeatTime = 0;
 
   NSString *adminUsername = [localDefaults stringForKey:@"EC_ADMIN_USERNAME"];
 
+  // [v1735] 获取 TikTok 版本号
+  NSString *tiktokVersion = @"";
+  {
+    Class LSAppProxyClass = NSClassFromString(@"LSApplicationProxy");
+    if (LSAppProxyClass) {
+      id proxy = [LSAppProxyClass
+          performSelector:@selector(applicationProxyForIdentifier:)
+               withObject:@"com.zhiliaoapp.musically"];
+      if (proxy) {
+        NSNumber *isInstalled = [proxy valueForKey:@"isInstalled"];
+        if (isInstalled && [isInstalled boolValue]) {
+          NSString *shortVer = [proxy valueForKey:@"shortVersionString"];
+          if (shortVer.length > 0)
+            tiktokVersion = shortVer;
+        }
+      }
+    }
+  }
+
+  // [v1736] 获取 VPN 节点显示名称（具备 name -> remark -> server 回退逻辑）
+  NSString *vpnNodeName = @"";
+  if ([self isVPNActive]) {
+    NSDictionary *active = [[ECVPNConfigManager sharedManager] activeNode];
+    vpnNodeName = active[@"name"] ?: active[@"remark"] ?: active[@"server"] ?: @"";
+  }
+
   NSDictionary *payload = @{
     @"udid" : udid,
     @"device_no" : deviceNo,
@@ -208,22 +309,20 @@ static NSTimeInterval _lastHeartbeatTime = 0;
     @"app_version" : @(EC_BUILD_VERSION),
     @"ecwda_version" : @([self getLocalEcwdaVersion]),
     @"vpn_active" : @([self isVPNActive]),
-    @"vpn_ip" : [self isVPNActive]
-        ? ([[ECVPNConfigManager sharedManager] activeNode][@"name"]
-               ?: [[ECVPNConfigManager sharedManager] activeNode][@"server"]
-               ?: @"")
-        : @"",
+    @"e" : [self isVPNActive] ? vpnNodeName : @"",
+    @"vpn_node" : vpnNodeName,
     @"ecwda_status" : _isEcwdaOnline ? @"online" : @"offline",
     @"config_checksum" : configChecksum,
     @"task_status" : taskStatusJSON ?: @"",
-    @"admin_username" : adminUsername ?: @""
+    @"admin_username" : adminUsername ?: @"",
+    @"tiktok_version" : tiktokVersion
   };
 
   // 2. Request
   NSError *error;
   NSData *jsonData = [NSJSONSerialization dataWithJSONObject:payload
-                                                      options:0
-                                                        error:&error];
+                                                     options:0
+                                                       error:&error];
 
   NSMutableURLRequest *request =
       [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]];
@@ -231,9 +330,9 @@ static NSTimeInterval _lastHeartbeatTime = 0;
   [request setHTTPBody:jsonData];
   [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
 
-  // 3. Send
-  [[ECLogManager sharedManager] log:@"[ECBackground] 💓 发送心跳包..."];
-  
+  // 3. Send (增加 Payload 打印)
+  NSLog(@"[ECBackground] ⬆️ 发送心跳包 Payload: %@", payload);
+
   [[NSURLSession.sharedSession
       dataTaskWithRequest:request
         completionHandler:^(NSData *_Nullable data,
@@ -259,7 +358,9 @@ static NSTimeInterval _lastHeartbeatTime = 0;
 
   // 打印心跳响应内容供调试
   NSLog(@"[ECBackground] 心跳响应: %@", json);
-  [[ECLogManager sharedManager] log:[NSString stringWithFormat:@"[ECBackground] ⬇️ 收到心跳响应: %@", json]];
+  [[ECLogManager sharedManager]
+      log:[NSString
+              stringWithFormat:@"[ECBackground] ⬇️ 收到心跳响应: %@", json]];
 
   // --- 自动更新检测 ---
   NSDictionary *updateInfo = json[@"update"];
@@ -334,11 +435,13 @@ static NSTimeInterval _lastHeartbeatTime = 0;
     // 1. IP 配置
     if (newIpJson.length > 0) {
       if ([newIpJson isEqualToString:(cachedIpJson ?: @"")]) {
-        [[ECLogManager sharedManager] log:@"[ECBackground] ⏭️ 静态 IP 配置无实质变化，已跳过本地重置"];
+        [[ECLogManager sharedManager]
+            log:@"[ECBackground] ⏭️ 静态 IP 配置无实质变化，已跳过本地重置"];
       } else {
         NSError *err;
         NSDictionary *ipDict = [NSJSONSerialization
-            JSONObjectWithData:[newIpJson dataUsingEncoding:NSUTF8StringEncoding]
+            JSONObjectWithData:[newIpJson
+                                   dataUsingEncoding:NSUTF8StringEncoding]
                        options:0
                          error:&err];
         if (!err && ipDict) {
@@ -361,7 +464,9 @@ static NSTimeInterval _lastHeartbeatTime = 0;
             // 这里交由 RootHelper 注入 SystemConfiguration 重组网络
             spawnRoot(rootHelperPath(), args, nil, nil);
             [[ECLogManager sharedManager]
-                log:[NSString stringWithFormat:@"[ECBackground] ✅ 静态 IP 下发底层完毕: IP=%@ GW=%@", ip, gateway]];
+                log:[NSString stringWithFormat:@"[ECBackground] ✅ 静态 IP "
+                                               @"下发底层完毕: IP=%@ GW=%@",
+                                               ip, gateway]];
 
             [defaults setObject:newIpJson forKey:@"EC_CONFIG_IP_CACHED"];
             [defaults synchronize];
@@ -373,13 +478,14 @@ static NSTimeInterval _lastHeartbeatTime = 0;
     // 2. VPN 节点配置
     if ([newVpnStr isEqualToString:(cachedVpnStr ?: @"")]) {
       if (newVpnStr.length > 0) {
-        [[ECLogManager sharedManager] log:@"[ECBackground] ⏭️ VPN 代理配置无实质变化，已跳过挂载重连"];
+        [[ECLogManager sharedManager]
+            log:@"[ECBackground] ⏭️ VPN 代理配置无实质变化，已跳过挂载重连"];
       }
     } else {
       if (newVpnStr.length > 0 && [newVpnStr hasPrefix:@"ecnode://"]) {
         NSString *b64 = [newVpnStr substringFromIndex:9]; // 去除 ecnode://
         NSData *decodedData = [[NSData alloc] initWithBase64EncodedString:b64
-                                                                   options:0];
+                                                                  options:0];
         if (decodedData) {
           NSString *decodedStr =
               [[NSString alloc] initWithData:decodedData
@@ -396,7 +502,8 @@ static NSTimeInterval _lastHeartbeatTime = 0;
                                error:&err];
               if (!err && [nodes isKindOfClass:[NSArray class]] &&
                   nodes.count > 0) {
-                // 记住当前用户选中的节点（用 name + server 组合匹配，不用 UUID）
+                // 记住当前用户选中的节点（用 name + server 组合匹配，不用
+                // UUID）
                 NSDictionary *prevActiveNode =
                     [[ECVPNConfigManager sharedManager] activeNode];
                 NSString *prevName = prevActiveNode[@"name"] ?: @"";
@@ -411,7 +518,8 @@ static NSTimeInterval _lastHeartbeatTime = 0;
                 }
 
                 // 恢复上次选中的节点：优先根据 name+server 匹配
-                NSArray *newNodes = [[ECVPNConfigManager sharedManager] allNodes];
+                NSArray *newNodes =
+                    [[ECVPNConfigManager sharedManager] allNodes];
                 NSDictionary *matchedNode = nil;
                 if (prevName.length > 0 || prevServer.length > 0) {
                   for (NSDictionary *n in newNodes) {
@@ -437,13 +545,13 @@ static NSTimeInterval _lastHeartbeatTime = 0;
                                         @"已导入 %lu 个代理节点，激活节点: "
                                         @"%@%@，正在挂载...",
                                         (unsigned long)nodes.count,
-                                        activeNode[@"name"] ?: @"Unnamed",
+                                        activeNode[@"name"] ?: activeNode[@"server"] ?: @"Unnamed",
                                         matchedNode ? @" (已恢复上次选择)"
                                                     : @" (首节点)"]];
                   dispatch_async(dispatch_get_main_queue(), ^{
                     [self connectVPNWithConfig:activeNode];
                   });
-                  
+
                   // 同步防抖缓存
                   [defaults setObject:newVpnStr forKey:@"EC_CONFIG_VPN_CACHED"];
                   [defaults synchronize];
@@ -466,9 +574,9 @@ static NSTimeInterval _lastHeartbeatTime = 0;
   // --- 任务处理（保持原有逻辑不变） ---
   NSArray *tasks = json[@"tasks"]; // 支持数组形式
   if (!tasks && json[@"task"]) {
-      tasks = @[json[@"task"]]; // 兜底单任务
+    tasks = @[ json[@"task"] ]; // 兜底单任务
   }
-  
+
   if (tasks && [tasks isKindOfClass:[NSArray class]]) {
     [self processHeartbeatTasks:tasks];
   }
@@ -548,63 +656,86 @@ static NSTimeInterval _lastHeartbeatTime = 0;
   _isEcwdaUpdating = YES;
 
   // 构建完整下载 URL
-  NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
+  NSUserDefaults *defaults =
+      [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
   NSString *savedUrl = [defaults stringForKey:@"CloudServerURL"];
-  NSString *baseUrl = savedUrl.length > 0 ? savedUrl : EC_DEFAULT_CLOUD_SERVER_URL;
+  NSString *baseUrl =
+      savedUrl.length > 0 ? savedUrl : EC_DEFAULT_CLOUD_SERVER_URL;
 
   NSString *downloadPath = updateInfo[@"download_url"];
-  NSString *fullURL = [NSString stringWithFormat:@"%@%@", baseUrl, downloadPath];
+  NSString *fullURL =
+      [NSString stringWithFormat:@"%@%@", baseUrl, downloadPath];
   NSURL *url = [NSURL URLWithString:fullURL];
-  
+
   NSString *tmpDir = NSTemporaryDirectory();
-  NSString *ipaPath = [tmpDir stringByAppendingPathComponent:@"ecwda_update.ipa"];
+  NSString *ipaPath =
+      [tmpDir stringByAppendingPathComponent:@"ecwda_update.ipa"];
 
   [[ECLogManager sharedManager]
-      log:[NSString stringWithFormat:@"[ECBackground] 开始下载 ECWDA 更新包: %@", fullURL]];
+      log:[NSString
+              stringWithFormat:@"[ECBackground] 开始下载 ECWDA 更新包: %@",
+                               fullURL]];
 
   // BUILD #403: 使用增强型下载器，支持 502 自动重试与后台能力
-  [self downloadAndUpdateWithURL:url
-                          toPath:ipaPath
-                      retryCount:0
-                      completion:^(BOOL success, NSString * _Nullable filePath) {
-      if (!success) {
-          _isEcwdaUpdating = NO;
-          return;
-      }
-      
-      [[ECLogManager sharedManager] log:@"[ECBackground] ✅ ECWDA 下载完成，开始静默安装..."];
+  [self
+      downloadAndUpdateWithURL:url
+                        toPath:ipaPath
+                    retryCount:0
+                    completion:^(BOOL success, NSString *_Nullable filePath) {
+                      if (!success) {
+                        _isEcwdaUpdating = NO;
+                        return;
+                      }
 
-      // 使用 TSApplicationsManager 原包安装（静默，不弹提示）
-      NSString *logOut = nil;
-      int ret = [[TSApplicationsManager sharedInstance]
-                  installIpa:filePath
-                       force:YES
-            registrationType:@"System"
-              customBundleId:nil
-           customDisplayName:nil
-                 skipSigning:NO
-          installationMethod:0 // method 0 = Installd Direct（原包安装）
-                         log:&logOut];
+                      [[ECLogManager sharedManager]
+                          log:@"[ECBackground] ✅ ECWDA "
+                              @"下载完成，开始静默安装..."];
 
-      if (ret == 0) {
-          [[ECLogManager sharedManager] log:@"[ECBackground] ✅ ECWDA 静默安装成功！正在自动启动..."];
+                      // 使用 TSApplicationsManager 原包安装（静默，不弹提示）
+                      NSString *logOut = nil;
+                      int ret = [[TSApplicationsManager sharedInstance]
+                                  installIpa:filePath
+                                       force:YES
+                            registrationType:@"System"
+                              customBundleId:nil
+                           customDisplayName:nil
+                                 skipSigning:NO
+                          installationMethod:0 // method 0 = Installd
+                                               // Direct（原包安装）
+                                         log:&logOut];
 
-          // 安装成功后自动启动 ECWDA
-          dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-              BOOL launched = [[TSApplicationsManager sharedInstance] openApplicationWithBundleID:kECWDABundleID];
-              if (launched) {
-                  [[ECLogManager sharedManager] log:@"[ECBackground] ✅ ECWDA 已自动启动"];
-              } else {
-                  [[ECLogManager sharedManager] log:@"[ECBackground] ⚠️ ECWDA 启动失败，可能需要手动启动"];
-              }
-              _isEcwdaUpdating = NO;
-          });
-      } else {
-          NSLog(@"[ECBackground] ❌ ECWDA 安装失败 (code: %d) log: %@", ret, logOut);
-          _isEcwdaUpdating = NO;
-      }
+                      if (ret == 0) {
+                        [[ECLogManager sharedManager]
+                            log:@"[ECBackground] ✅ ECWDA "
+                                @"静默安装成功！正在自动启动..."];
 
-      // 清理临时文件
-      [[NSFileManager defaultManager] removeItemAtPath:filePath error:nil];
-  }];
+                        // 安装成功后自动启动 ECWDA
+                        dispatch_after(
+                            dispatch_time(DISPATCH_TIME_NOW,
+                                          (int64_t)(2.0 * NSEC_PER_SEC)),
+                            dispatch_get_main_queue(), ^{
+                              BOOL launched = [[TSApplicationsManager
+                                  sharedInstance]
+                                  openApplicationWithBundleID:kECWDABundleID];
+                              if (launched) {
+                                [[ECLogManager sharedManager]
+                                    log:@"[ECBackground] ✅ ECWDA 已自动启动"];
+                              } else {
+                                [[ECLogManager sharedManager]
+                                    log:@"[ECBackground] ⚠️ ECWDA "
+                                        @"启动失败，可能需要手动启动"];
+                              }
+                              _isEcwdaUpdating = NO;
+                            });
+                      } else {
+                        NSLog(@"[ECBackground] ❌ ECWDA 安装失败 (code: %d) "
+                              @"log: %@",
+                              ret, logOut);
+                        _isEcwdaUpdating = NO;
+                      }
+
+                      // 清理临时文件
+                      [[NSFileManager defaultManager] removeItemAtPath:filePath
+                                                                 error:nil];
+                    }];
 }
