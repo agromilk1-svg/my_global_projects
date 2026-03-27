@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted, computed, watch, nextTick } from 'vue';
 
 const hostname = window.location.hostname;
 // 智能识别 API 地址：如果是公网域名访问，则指向 s.ecmain.site；否则维持本地端口。
 const apiBase = hostname.includes('ecmain.site') 
-  ? `https://s.ecmain.site/api` 
+  ? `http://s.ecmain.site:8088/api` 
   : `http://${hostname}:8088/api`;
 
 // ================= 认证系统 =================
@@ -97,7 +97,7 @@ const restoreSession = async () => {
 
 // 动态标签页列表（根据角色过滤）
 const visibleTabs = computed(() => {
-  const all = ['📱 手机列表', '⚡️ 控制台', '📋 任务列表', '⚡ 一次性任务', '⚙️ 配置中心', '💬 评论管理', '🎵 TikTok 账号', '👤 用户管理'];
+  const all = ['📱 手机列表', '⚡️ 控制台', '📋 任务列表', '⚡ 一次性任务', '⚙️ 配置中心', '💬 评论管理', '🎵 TikTok 账号', '📁 文件管理', '👤 用户管理'];
   if (isSuperAdmin.value) return all;
   // 普通管理员隐藏配置中心、评论管理、用户管理
   return all.filter(t => !['⚙️ 配置中心', '💬 评论管理', '👤 用户管理'].includes(t));
@@ -203,7 +203,6 @@ const removeDevice = async (adminId: number, udid: string) => {
   } catch (err) { console.error('取消分配失败', err); }
 };
 
-// 初始化所有数据的统一函数
 const initAllData = () => {
   fetchDevices();
   fetchScripts();
@@ -212,10 +211,87 @@ const initAllData = () => {
   fetchExecTimes();
   fetchTiktokAccounts();
   fetchOneshotTasks();
+  fetchSharedFiles();
   if (isSuperAdmin.value) fetchAdmins();
 };
 
+// ================= 文件管理 =================
+const sharedFiles = ref<any[]>([]);
+const fileUploading = ref(false);
+
+const fetchSharedFiles = async () => {
+  try {
+    const res = await authFetch(`${apiBase}/files`);
+    if (res.ok) {
+      const data = await res.json();
+      sharedFiles.value = data.files || [];
+    }
+  } catch (e) { /* 忽略 */ }
+};
+
+const uploadSharedFile = async (event: Event) => {
+  const input = event.target as HTMLInputElement;
+  if (!input.files || input.files.length === 0) return;
+  fileUploading.value = true;
+  try {
+    const formData = new FormData();
+    const file = input.files[0];
+    if (file) {
+      formData.append('file', file);
+    }
+    const res = await authFetch(`${apiBase}/files/upload`, {
+      method: 'POST',
+      body: formData
+    });
+    if (res.ok) {
+      await fetchSharedFiles();
+    } else {
+      const err = await res.json();
+      alert(err.detail || '上传失败');
+    }
+  } catch (e) {
+    alert('上传失败: 网络异常');
+  } finally {
+    fileUploading.value = false;
+    input.value = ''; // 重置 input
+  }
+};
+
+const deleteSharedFile = async (filename: string) => {
+  if (!confirm(`确定要删除文件 "${filename}" 吗？`)) return;
+  try {
+    const res = await authFetch(`${apiBase}/files/${encodeURIComponent(filename)}`, {
+      method: 'DELETE'
+    });
+    if (res.ok) {
+      await fetchSharedFiles();
+    }
+  } catch (e) { /* 忽略 */ }
+};
+
+const copyFileDownloadLink = (filename: string) => {
+  const link = `${apiBase}/files/download/${encodeURIComponent(filename)}`;
+  navigator.clipboard.writeText(link).then(() => {
+    alert('✅ 下载链接已复制到剪切板');
+  }).catch(() => {
+    prompt('复制下载链接:', link);
+  });
+};
+
+const formatFileSize = (bytes: number) => {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+};
+
+const showTaskError = (t: any) => {
+  if (!t) return;
+  alert(`【${t.task_name}】执行失败\n\n最后指令:\n${t.last_command}\n\n错误信息:\n${t.error}`);
+};
+
 const devices = ref<any[]>([]);
+const isDevicesLoading = ref(false); // [v1739] 矩阵刷新加载状态
 const selectedDevice = ref('');
 const deviceIp = ref('');
 const connectionMode = ref<'usb' | 'lan' | 'ws'>('usb');
@@ -224,12 +300,29 @@ const logs = ref<string[]>(['[系统] ECWDA Web控制台已就绪。']);
 const streamUrl = ref('');
 const actionQueue = ref<any[]>([]);
 const generatedJs = ref(''); 
-const activeTab = ref('📱 手机列表'); // "📱 手机列表" | "📝 任务清单" | "💬 评论管理" | "🎵 TikTok 账号"
+const activeTab = ref('📱 手机列表'); // "📱 手机列表" | "⚡️ 控制台" | "🎮 批量控制" | ...
+const batchStreams = ref<Record<string, string>>({}); // { [udid]: streamUrl }
+const batchImageData = ref<Record<string, string>>({}); // { [udid]: base64_image }
+const batchSockets = ref<Record<string, WebSocket>>({}); // { [udid]: WebSocket }
+const batchConnectionModes = ref<Record<string, string>>({}); // { [udid]: 'usb'|'lan'|'ws' }
+const slaveQuality = ref('low'); // 从机画质：low(模糊) / medium(普通) / high(高清)
+// const batchLatencies = ref<Record<string, string>>({}); // { [udid]: latency_ms }
+// const batchCanvasRefs = ref<Record<string, HTMLCanvasElement>>({}); // { [udid]: canvas_el }
 
 // ==================== TikTok 账号管理 ====================
 const tiktokAccounts = ref<any[]>([]);
 const isTkModalOpen = ref(false);
 const editingTkAccount = ref<any>({});
+const tkFilterForm = ref({
+  country: '',
+  device_no: '',
+  account: '',
+  fans_min: null as number | null,
+  fans_max: null as number | null,
+  is_window_opened: 'all' as 'all' | 'yes' | 'no',
+  is_for_sale: 'all' as 'all' | 'yes' | 'no',
+  admin: ''
+});
 
 const fetchTiktokAccounts = async () => {
   try {
@@ -246,22 +339,59 @@ const openTkModal = (tk: any) => {
   isTkModalOpen.value = true;
 };
 
+const openAddTkModal = (grp: any) => {
+  editingTkAccount.value = {
+    device_udid: grp.device_udid,
+    device_no: grp.device_no,
+    account: '',
+    password: '',
+    email: '',
+    country: grp.country || '',
+    fans_count: 0,
+    is_window_opened: 0,
+    is_for_sale: 0
+  };
+  isTkModalOpen.value = true;
+};
+
 const saveTkAccount = async () => {
   try {
     const body = {
-      country: editingTkAccount.value.country || '',
+      country: editingTkAccount.value.device_country || '',
       fans_count: parseInt(editingTkAccount.value.fans_count) || 0,
       is_window_opened: editingTkAccount.value.is_window_opened ? 1 : 0,
       is_for_sale: editingTkAccount.value.is_for_sale ? 1 : 0,
       add_time: editingTkAccount.value.add_time || '',
       window_open_time: editingTkAccount.value.window_open_time || '',
-      sale_time: editingTkAccount.value.sale_time || ''
+      sale_time: editingTkAccount.value.sale_time || '',
+      password: editingTkAccount.value.password || '',
+      email: editingTkAccount.value.email || ''
     };
-    const res = await authFetch(`${apiBase}/tiktok_accounts/${editingTkAccount.value.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
+    
+    let res;
+    if (editingTkAccount.value.id) {
+      // 存在 ID -> 更新
+      res = await authFetch(`${apiBase}/tiktok_accounts/${editingTkAccount.value.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+    } else {
+      // 不存在 ID -> 新建
+      const postBody = {
+        ...body,
+        device_udid: editingTkAccount.value.device_udid,
+        account: editingTkAccount.value.account,
+        password: editingTkAccount.value.password || '',
+        email: editingTkAccount.value.email || ''
+      };
+      res = await authFetch(`${apiBase}/tiktok_accounts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(postBody)
+      });
+    }
+
     if (res.ok) {
       isTkModalOpen.value = false;
       fetchTiktokAccounts();
@@ -281,16 +411,87 @@ const deleteTkAccount = async (id: number) => {
   }
 };
 
-// 按设备分组的计算属性
+const setPrimaryTkAccount = async (tk: any) => {
+  if (tk.is_primary) return; 
+  try {
+    // 乐观更新：立即在本地置顶该账号
+    const udid = tk.device_udid;
+    tiktokAccounts.value.forEach(a => {
+        if (a.device_udid === udid) {
+            a.is_primary = (a.id === tk.id ? 1 : 0);
+        }
+    });
+
+    const res = await authFetch(`${apiBase}/tiktok_accounts/${tk.id}/primary`, {
+      method: 'PUT'
+    });
+    if (res.ok) {
+      fetchTiktokAccounts();
+    }
+  } catch (err) {
+    console.error('设置主号失败', err);
+    fetchTiktokAccounts();
+  }
+};
+
+// 按设备分组且带多维度筛选的计算属性
 const groupedTiktokAccounts = computed(() => {
-  const map = new Map<string, { device_udid: string; device_no: string; accounts: any[] }>();
-  for (const tk of tiktokAccounts.value) {
+  // 1. 预处理数据：将设备所属管理员及国家信息注入到账号数据中，方便后续统一过滤
+  const deviceAdminMap = new Map<string, string>();
+  const deviceCountryMap = new Map<string, string>();
+  for (const d of devices.value) {
+    deviceAdminMap.set(d.udid, d.admin_username || '');
+    deviceCountryMap.set(d.udid, d.country || '');
+  }
+
+  // 2. 执行多维度过滤
+  const filtered = tiktokAccounts.value.filter(tk => {
+    // 归属国家筛选 (基于关联设备的归属国家)
+    const deviceCountry = deviceCountryMap.get(tk.device_udid) || '';
+    if (tkFilterForm.value.country && deviceCountry !== tkFilterForm.value.country) return false;
+    
+    // 设备名筛选 (不区分大小写包含)
+    if (tkFilterForm.value.device_no && !tk.device_no?.toLowerCase().includes(tkFilterForm.value.device_no.toLowerCase())) return false;
+    
+    // 账号名筛选 (不区分大小写包含)
+    if (tkFilterForm.value.account && !tk.account?.toLowerCase().includes(tkFilterForm.value.account.toLowerCase())) return false;
+    
+    // 粉丝区间筛选
+    const fans = tk.fans_count || 0;
+    if (tkFilterForm.value.fans_min !== null && fans < tkFilterForm.value.fans_min) return false;
+    if (tkFilterForm.value.fans_max !== null && fans > tkFilterForm.value.fans_max) return false;
+    
+    // 是否开窗
+    if (tkFilterForm.value.is_window_opened === 'yes' && !tk.is_window_opened) return false;
+    if (tkFilterForm.value.is_window_opened === 'no' && tk.is_window_opened) return false;
+    
+    // 是否出售
+    if (tkFilterForm.value.is_for_sale === 'yes' && !tk.is_for_sale) return false;
+    if (tkFilterForm.value.is_for_sale === 'no' && tk.is_for_sale) return false;
+    
+    // 所属管理员
+    const owner = deviceAdminMap.get(tk.device_udid) || '';
+    if (tkFilterForm.value.admin && owner !== tkFilterForm.value.admin) return false;
+    
+    return true;
+  });
+
+  // 3. 执行分组
+  const map = new Map<string, { device_udid: string; device_no: string; country: string; accounts: any[] }>();
+  for (const tk of filtered) {
     const udid = tk.device_udid || 'unknown';
     if (!map.has(udid)) {
-      map.set(udid, { device_udid: udid, device_no: tk.device_no || '未知失联设备', accounts: [] });
+      const dCountry = deviceCountryMap.get(udid) || '';
+      map.set(udid, { device_udid: udid, device_no: tk.device_no || '未知/已删除设备', country: dCountry, accounts: [] });
     }
     map.get(udid)!.accounts.push(tk);
   }
+  
+  // 对每个分组内的账号按主号标识排序 (主号置顶)
+  for (const group of map.values()) {
+    group.accounts.sort((a, b) => (b.is_primary ? 1 : 0) - (a.is_primary ? 1 : 0));
+  }
+  
   return Array.from(map.values());
 });
 
@@ -473,11 +674,179 @@ onMounted(async () => {
   await restoreSession();
   if (isLoggedIn.value) {
     initAllData();
-    setInterval(fetchDevices, 2000); // 恢复轮询
+    setInterval(fetchDevices, 5000); // 统一 5s 轮询
   }
 });
 
 const activeRightTab = ref('code'); // 顶部导航状态
+
+// ========== 伪装信息生成器 ==========
+// 设备型号预设数据（machineModel → 屏幕参数 + 系统版本建议）
+const devicePresets: Record<string, {name: string, screenWidth: string, screenHeight: string, screenScale: string, nativeBounds: string, maxFPS: string, deviceModel: string}> = {
+  'iPhone9,1':  {name: 'iPhone 7',         screenWidth: '375', screenHeight: '667', screenScale: '2.0', nativeBounds: '750x1334',   maxFPS: '60',  deviceModel: 'iPhone'},
+  'iPhone9,3':  {name: 'iPhone 7',         screenWidth: '375', screenHeight: '667', screenScale: '2.0', nativeBounds: '750x1334',   maxFPS: '60',  deviceModel: 'iPhone'},
+  'iPhone10,1': {name: 'iPhone 8',         screenWidth: '375', screenHeight: '667', screenScale: '2.0', nativeBounds: '750x1334',   maxFPS: '60',  deviceModel: 'iPhone'},
+  'iPhone10,4': {name: 'iPhone 8',         screenWidth: '375', screenHeight: '667', screenScale: '2.0', nativeBounds: '750x1334',   maxFPS: '60',  deviceModel: 'iPhone'},
+  'iPhone10,2': {name: 'iPhone 8 Plus',    screenWidth: '414', screenHeight: '736', screenScale: '3.0', nativeBounds: '1242x2208',  maxFPS: '60',  deviceModel: 'iPhone'},
+  'iPhone10,5': {name: 'iPhone 8 Plus',    screenWidth: '414', screenHeight: '736', screenScale: '3.0', nativeBounds: '1242x2208',  maxFPS: '60',  deviceModel: 'iPhone'},
+  'iPhone12,1': {name: 'iPhone 11',        screenWidth: '414', screenHeight: '896', screenScale: '2.0', nativeBounds: '828x1792',   maxFPS: '60',  deviceModel: 'iPhone'},
+  'iPhone13,2': {name: 'iPhone 12',        screenWidth: '390', screenHeight: '844', screenScale: '3.0', nativeBounds: '1170x2532',  maxFPS: '60',  deviceModel: 'iPhone'},
+  'iPhone14,5': {name: 'iPhone 13',        screenWidth: '390', screenHeight: '844', screenScale: '3.0', nativeBounds: '1170x2532',  maxFPS: '60',  deviceModel: 'iPhone'},
+  'iPhone14,2': {name: 'iPhone 13 Pro',    screenWidth: '390', screenHeight: '844', screenScale: '3.0', nativeBounds: '1170x2532',  maxFPS: '120', deviceModel: 'iPhone'},
+  'iPhone14,3': {name: 'iPhone 13 Pro Max',screenWidth: '428', screenHeight: '926', screenScale: '3.0', nativeBounds: '1284x2778',  maxFPS: '120', deviceModel: 'iPhone'},
+  'iPhone14,4': {name: 'iPhone 13 mini',   screenWidth: '375', screenHeight: '812', screenScale: '3.0', nativeBounds: '1125x2436',  maxFPS: '60',  deviceModel: 'iPhone'},
+  'iPhone15,2': {name: 'iPhone 14 Pro',    screenWidth: '393', screenHeight: '852', screenScale: '3.0', nativeBounds: '1179x2556',  maxFPS: '120', deviceModel: 'iPhone'},
+  'iPhone15,3': {name: 'iPhone 14 Pro Max',screenWidth: '430', screenHeight: '932', screenScale: '3.0', nativeBounds: '1290x2796',  maxFPS: '120', deviceModel: 'iPhone'},
+  'iPhone15,4': {name: 'iPhone 15',        screenWidth: '393', screenHeight: '852', screenScale: '3.0', nativeBounds: '1179x2556',  maxFPS: '60',  deviceModel: 'iPhone'},
+  'iPhone15,5': {name: 'iPhone 15 Plus',   screenWidth: '430', screenHeight: '932', screenScale: '3.0', nativeBounds: '1290x2796',  maxFPS: '60',  deviceModel: 'iPhone'},
+  'iPhone16,1': {name: 'iPhone 15 Pro',    screenWidth: '393', screenHeight: '852', screenScale: '3.0', nativeBounds: '1179x2556',  maxFPS: '120', deviceModel: 'iPhone'},
+  'iPhone16,2': {name: 'iPhone 15 Pro Max',screenWidth: '430', screenHeight: '932', screenScale: '3.0', nativeBounds: '1290x2796',  maxFPS: '120', deviceModel: 'iPhone'},
+  'iPhone17,1': {name: 'iPhone 16 Pro',    screenWidth: '402', screenHeight: '874', screenScale: '3.0', nativeBounds: '1206x2622',  maxFPS: '120', deviceModel: 'iPhone'},
+  'iPhone17,2': {name: 'iPhone 16 Pro Max',screenWidth: '440', screenHeight: '956', screenScale: '3.0', nativeBounds: '1320x2868',  maxFPS: '120', deviceModel: 'iPhone'},
+  'iPhone17,3': {name: 'iPhone 16',        screenWidth: '393', screenHeight: '852', screenScale: '3.0', nativeBounds: '1179x2556',  maxFPS: '60',  deviceModel: 'iPhone'},
+  'iPhone17,4': {name: 'iPhone 16 Plus',   screenWidth: '430', screenHeight: '932', screenScale: '3.0', nativeBounds: '1290x2796',  maxFPS: '60',  deviceModel: 'iPhone'},
+};
+
+// 国家预设数据（与 ECDeviceInfoManager.countryPresets 一致）
+const countryPresets: Record<string, {name: string, language: string, timezone: string, currency: string, mcc: string, mnc: string, carrier: string}> = {
+  'JP': {name: '日本',      language: 'ja-JP',       timezone: 'Asia/Tokyo',         currency: 'JPY', mcc: '440', mnc: '10',  carrier: 'NTT DoCoMo'},
+  'US': {name: '美国',      language: 'en-US',       timezone: 'America/New_York',   currency: 'USD', mcc: '310', mnc: '260', carrier: 'T-Mobile'},
+  'KR': {name: '韩国',      language: 'ko-KR',       timezone: 'Asia/Seoul',         currency: 'KRW', mcc: '450', mnc: '05',  carrier: 'SK Telecom'},
+  'BR': {name: '巴西',      language: 'pt-BR',       timezone: 'America/Sao_Paulo',  currency: 'BRL', mcc: '724', mnc: '11',  carrier: 'Vivo'},
+  'GB': {name: '英国',      language: 'en-GB',       timezone: 'Europe/London',      currency: 'GBP', mcc: '234', mnc: '10',  carrier: 'O2'},
+  'DE': {name: '德国',      language: 'de-DE',       timezone: 'Europe/Berlin',      currency: 'EUR', mcc: '262', mnc: '01',  carrier: 'Telekom'},
+  'FR': {name: '法国',      language: 'fr-FR',       timezone: 'Europe/Paris',       currency: 'EUR', mcc: '208', mnc: '01',  carrier: 'Orange'},
+  'RU': {name: '俄罗斯',    language: 'ru-RU',       timezone: 'Europe/Moscow',      currency: 'RUB', mcc: '250', mnc: '01',  carrier: 'MTS'},
+  'IN': {name: '印度',      language: 'hi-IN',       timezone: 'Asia/Kolkata',       currency: 'INR', mcc: '404', mnc: '10',  carrier: 'AirTel'},
+  'ID': {name: '印度尼西亚', language: 'id-ID',       timezone: 'Asia/Jakarta',       currency: 'IDR', mcc: '510', mnc: '10',  carrier: 'Telkomsel'},
+  'TH': {name: '泰国',      language: 'th-TH',       timezone: 'Asia/Bangkok',       currency: 'THB', mcc: '520', mnc: '01',  carrier: 'AIS'},
+  'VN': {name: '越南',      language: 'vi-VN',       timezone: 'Asia/Ho_Chi_Minh',   currency: 'VND', mcc: '452', mnc: '01',  carrier: 'Mobifone'},
+  'PH': {name: '菲律宾',    language: 'fil-PH',      timezone: 'Asia/Manila',        currency: 'PHP', mcc: '515', mnc: '02',  carrier: 'Globe'},
+  'MY': {name: '马来西亚',  language: 'ms-MY',       timezone: 'Asia/Kuala_Lumpur',  currency: 'MYR', mcc: '502', mnc: '12',  carrier: 'Maxis'},
+  'SG': {name: '新加坡',    language: 'en-SG',       timezone: 'Asia/Singapore',     currency: 'SGD', mcc: '525', mnc: '01',  carrier: 'SingTel'},
+  'TW': {name: '台湾',      language: 'zh-Hant',     timezone: 'Asia/Taipei',        currency: 'TWD', mcc: '466', mnc: '92',  carrier: 'Chunghwa Telecom'},
+  'HK': {name: '香港',      language: 'zh-Hant-HK',  timezone: 'Asia/Hong_Kong',     currency: 'HKD', mcc: '454', mnc: '00',  carrier: 'CSL'},
+  'AU': {name: '澳大利亚',  language: 'en-AU',       timezone: 'Australia/Sydney',   currency: 'AUD', mcc: '505', mnc: '01',  carrier: 'Telstra'},
+  'MX': {name: '墨西哥',    language: 'es-MX',       timezone: 'America/Mexico_City',currency: 'MXN', mcc: '334', mnc: '020', carrier: 'Telcel'},
+  'AR': {name: '阿根廷',    language: 'es-AR',       timezone: 'America/Buenos_Aires',currency:'ARS', mcc: '722', mnc: '310', carrier: 'Claro'},
+  'CN': {name: '中国',      language: 'zh-Hans',     timezone: 'Asia/Shanghai',      currency: 'CNY', mcc: '460', mnc: '00',  carrier: '中国移动'},
+};
+
+// 系统版本预设数据
+const systemVersionPresets: Record<string, {buildVersion: string, kernelVersion: string}> = {
+  '15.8.6': {buildVersion: '19H402',  kernelVersion: 'Darwin Kernel Version 21.6.0: Sun Oct 15 00:18:06 PDT 2023; root:xnu-8020.242.18.707.3~1/RELEASE_ARM64_T8010'},
+  '16.0':   {buildVersion: '20A362',  kernelVersion: 'Darwin Kernel Version 22.0.0'},
+  '16.5':   {buildVersion: '20F66',   kernelVersion: 'Darwin Kernel Version 22.5.0'},
+  '16.6':   {buildVersion: '20G75',   kernelVersion: 'Darwin Kernel Version 22.6.0'},
+  '16.7':   {buildVersion: '20H19',   kernelVersion: 'Darwin Kernel Version 22.6.0'},
+  '17.0':   {buildVersion: '21A329',  kernelVersion: 'Darwin Kernel Version 23.0.0'},
+  '17.5':   {buildVersion: '21F79',   kernelVersion: 'Darwin Kernel Version 23.5.0'},
+  '18.0':   {buildVersion: '22A3354', kernelVersion: 'Darwin Kernel Version 24.0.0'},
+  '18.3':   {buildVersion: '22D63',   kernelVersion: 'Darwin Kernel Version 24.3.0'},
+};
+
+// 表单响应式数据
+const spoofForm = ref({
+  filename: '',
+  cloneNumber: '1',
+  selectedDevice: 'iPhone9,1',
+  selectedCountry: 'JP',
+  selectedSystemVersion: '15.8.6',
+  deviceName: 'iPhone',
+  enableNetworkInterception: true,
+  disableQUIC: true,
+});
+
+// 根据国家预设派生语言参数
+const derivedLangParams = computed(() => {
+  const c = countryPresets[spoofForm.value.selectedCountry];
+  if (!c) return {languageCode: 'en', preferredLanguage: 'en', localeIdentifier: 'en_US', systemLanguage: 'en', btdCurrentLanguage: 'en'};
+  const fullLang = c.language;
+  const parts = fullLang.split('-');
+  let pureCode: string;
+  if (parts.length >= 2 && parts[1]!.length === 4 && parts[1]![0] === parts[1]![0]!.toUpperCase()) {
+    pureCode = parts[0] + '-' + parts[1]; // zh-Hans, zh-Hant
+  } else {
+    pureCode = parts[0]!;
+  }
+  const cc = spoofForm.value.selectedCountry;
+  const localeId = pureCode.includes('-') ? pureCode.replace('-', '_') + '_' + cc : pureCode + '_' + cc;
+  return {
+    languageCode: pureCode,
+    preferredLanguage: fullLang,
+    localeIdentifier: localeId,
+    systemLanguage: pureCode,
+    btdCurrentLanguage: fullLang,
+  };
+});
+
+// 生成完整安装脚本并写入代码框
+const generateSpoofCode = (cloneOnly = false) => {
+  const f = spoofForm.value;
+  const dev = devicePresets[f.selectedDevice];
+  const ctry = countryPresets[f.selectedCountry];
+  const sys = systemVersionPresets[f.selectedSystemVersion];
+  const lang = derivedLangParams.value;
+  if (!dev || !ctry || !sys) return;
+
+  let code = "";
+  if (cloneOnly) {
+    code = `// 📦 仅克隆安装 (自动生成)
+var result = wda.installIPA({
+    filename: "${f.filename || 'TikTok'}",
+    clone_number: "${f.cloneNumber}"
+});
+wda.log("安装结果: " + JSON.stringify(result));`;
+  } else {
+    code = `// 📦 自动化注入安装 (自动生成)
+var result = wda.installIPA({
+    filename: "${f.filename || 'TikTok'}",
+    clone_number: "${f.cloneNumber}",
+    spoof_config: {
+        // 1. 设备伪装
+        machineModel: "${f.selectedDevice}",
+        deviceModel: "${dev.deviceModel}",
+        deviceName: "${f.deviceName}",
+        productName: "${f.selectedDevice}",
+        screenWidth: "${dev.screenWidth}",
+        screenHeight: "${dev.screenHeight}",
+        screenScale: "${dev.screenScale}",
+        nativeBounds: "${dev.nativeBounds}",
+        maxFPS: "${dev.maxFPS}",
+        // 2. 系统版本
+        systemVersion: "${f.selectedSystemVersion}",
+        systemBuildVersion: "${sys.buildVersion}",
+        kernelVersion: "${sys.kernelVersion}",
+        systemName: "iOS",
+        // 3. 运营商
+        carrierName: "${ctry.carrier}",
+        mobileCountryCode: "${ctry.mcc}",
+        mobileNetworkCode: "${ctry.mnc}",
+        carrierCountry: "${f.selectedCountry}",
+        // 4. 区域
+        localeIdentifier: "${lang.localeIdentifier}",
+        timezone: "${ctry.timezone}",
+        currencyCode: "${ctry.currency}",
+        storeRegion: "${f.selectedCountry}",
+        priorityRegion: "${f.selectedCountry}",
+        // 5. 语言
+        languageCode: "${lang.languageCode}",
+        preferredLanguage: "${lang.preferredLanguage}",
+        systemLanguage: "${lang.systemLanguage}",
+        btdCurrentLanguage: "${lang.btdCurrentLanguage}",
+        // 6. 网络拦截
+        enableNetworkInterception: ${f.enableNetworkInterception},
+        disableQUIC: ${f.disableQUIC},
+        networkType: "N/A"
+    }
+});
+wda.log("安装结果: " + JSON.stringify(result));`;
+  }
+
+  generatedJs.value = code;
+  activeRightTab.value = 'code'; // 切换到代码框查看
+};
+// ========== 伪装信息生成器 END ==========
 
 const copyText = (text: string) => {
   if (navigator?.clipboard) navigator.clipboard.writeText(text);
@@ -577,13 +946,15 @@ const configForm = ref({
    exec_time: '',
    apple_account: '',
    apple_password: '',
-   tiktok_accounts: [] as {email: string, account: string, password: string}[]
+   tiktok_accounts: [] as {email: string, account: string, password: string}[],
+   wifi_ssid: '',
+   wifi_password: ''
 });
 
 const openConfigModal = async (dev: any) => {
     configEditingUdid.value = dev.udid;
     configEditingAdmin.value = dev.admin_username || '';
-    configForm.value = { ip: '', subnet: '', gateway: '', dns: '', vpnJson: '', device_no: '', country: '', group_name: '', exec_time: '', apple_account: '', apple_password: '', tiktok_accounts: [] };
+    configForm.value = { ip: '', subnet: '', gateway: '', dns: '', vpnJson: '', device_no: '', country: '', group_name: '', exec_time: '', apple_account: '', apple_password: '', tiktok_accounts: [], wifi_ssid: '', wifi_password: '' };
     showConfigModal.value = true;
     try {
         const res = await authFetch(`${apiBase}/devices/${dev.udid}/config`);
@@ -618,6 +989,8 @@ const openConfigModal = async (dev: any) => {
             } catch(e) {
                 configForm.value.tiktok_accounts = [];
             }
+            configForm.value.wifi_ssid = data.config.wifi_ssid || '';
+            configForm.value.wifi_password = data.config.wifi_password || '';
         }
     } catch (e) {
         console.error("加载配置失败", e);
@@ -660,7 +1033,9 @@ const saveConfig = async () => {
                 exec_time: configForm.value.exec_time,
                 apple_account: configForm.value.apple_account,
                 apple_password: configForm.value.apple_password,
-                tiktok_accounts: JSON.stringify(configForm.value.tiktok_accounts)
+                tiktok_accounts: JSON.stringify(configForm.value.tiktok_accounts),
+                wifi_ssid: configForm.value.wifi_ssid,
+                wifi_password: configForm.value.wifi_password
             })
         });
         const ret = await res.json();
@@ -703,10 +1078,10 @@ const isAllSelected = computed({
 
 
 const showBatchConfigModal = ref(false);
-const batchConfigForm = ref({ country: '', group_name: '', exec_time: '', vpnJson: '' });
+const batchConfigForm = ref({ country: '', group_name: '', exec_time: '', vpnJson: '', wifi_ssid: '', wifi_password: '', enableWifi: false });
 
 const openBatchConfigModal = () => {
-  batchConfigForm.value = { country: '', group_name: '', exec_time: '', vpnJson: '' };
+  batchConfigForm.value = { country: '', group_name: '', exec_time: '', vpnJson: '', wifi_ssid: '', wifi_password: '', enableWifi: false };
   showBatchConfigModal.value = true;
 };
 
@@ -717,6 +1092,11 @@ const saveBatchConfig = async () => {
     if (batchConfigForm.value.country.trim() !== '') payload.country = batchConfigForm.value.country;
     if (batchConfigForm.value.group_name.trim() !== '') payload.group_name = batchConfigForm.value.group_name;
     if (batchConfigForm.value.exec_time.trim() !== '') payload.exec_time = batchConfigForm.value.exec_time;
+    
+    if (batchConfigForm.value.enableWifi && batchConfigForm.value.wifi_ssid.trim() !== '') {
+        payload.wifi_ssid = batchConfigForm.value.wifi_ssid.trim();
+        payload.wifi_password = batchConfigForm.value.wifi_password || '';
+    }
     
     if (batchConfigForm.value.vpnJson.trim() !== '') {
         try {
@@ -880,13 +1260,21 @@ const log = (msg: string) => {
 };
 
 const fetchDevices = async () => {
+  if (isDevicesLoading.value) return;
+  isDevicesLoading.value = true;
   try {
     const res = await authFetch(`${apiBase}/cloud/devices`);
+    if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+    }
     const data = await res.json();
     devices.value = data.devices || [];
-    // 彻底移除 !selectedDevice.value 时的自动重选逻辑，防止轮询导致断开连接后发生设备漂移/串台
   } catch (e: any) {
-    if(logs.value.length < 50) log(`获取外置设备失败: ${(e as Error).message}`);
+    const errMsg = (e as Error).message;
+    if(logs.value.length < 50) log(`获取外置设备失败: ${errMsg}`);
+    alert(`刷新矩阵失败: ${errMsg}\n请检查网络连接或尝试重新登录。`);
+  } finally {
+    isDevicesLoading.value = false;
   }
 };
 
@@ -991,7 +1379,7 @@ const connectSmart = async () => {
   // 智能路径选择：
   // 保护机制：如果用户已手动选定了任何模式（USB/LAN/WS），保持不变
   // 只有在首次连接（默认值）时才自动推断最优路径
-  if (lockedMode === connectionMode.value) {
+  if (!lockedMode) {
       // 仅当模式未被外部（如 selectDeviceAndConnect）预设时，才进行自动推断
       if (dev.can_usb || dev.wda_ready) {
           connectionMode.value = 'usb';
@@ -1007,22 +1395,65 @@ const connectSmart = async () => {
       log(`✓ 保持预设的 [${connectionMode.value.toUpperCase()}] 链路，防串台机制生效。`);
   }
 
+  // [v1672.18] 优先级重构：必须先拿回逻辑分辨率，再渲染推流画面，确保坐标系从第一帧起就是对齐的
+  if (selectedDevice.value) {
+      log('📡 正在同步物理比例尺...');
+      await sendDeviceAction('probe_size').catch(() => {});
+  }
+
   updateStreamUrl();
 };
 
-const selectDeviceAndConnect = (dev: any) => {
+const enterBatchControl = () => {
+    if (selectedDevices.value.length === 0) return;
+    
+    // 如果当前没选主控，或者主控不在已选列表里，自动选第一个作为主控
+    if (!selectedDevice.value || !selectedDevices.value.includes(selectedDevice.value)) {
+        const firstUdid = selectedDevices.value[0];
+        const dev = devices.value.find(d => d.udid === firstUdid);
+        if (dev) {
+            selectDeviceAndConnect(dev);
+        }
+    } else {
+        activeTab.value = '⚡️ 控制台';
+    }
+};
+
+const selectDeviceAndConnect = (dev: any, resetPool = false) => {
     selectedDevice.value = dev.udid;
-    deviceIp.value = dev.ip || dev.local_ip || '';
+    
+    // [v1741] 交互逻辑升级：如果明确要求重置，或者当前勾选了多台设备且该设备本就在池中（意味着用户想从多选切回单选控制），则重置勾选池
+    // 强制重置是为了解决用户反馈的“点击控制按钮后仍显示旧勾选状态”的问题
+    if (resetPool || !selectedDevices.value.includes(dev.udid) || (selectedDevices.value.length > 1 && selectedDevices.value.includes(dev.udid))) {
+        selectedDevices.value = [dev.udid];
+        
+        // 如果是分组设备，顺便把同组的心跳机也带上（保持群控联动特性）
+        // 只有在不是强制单选重置的情况下才自动拉取同组（或者用户可能希望即使单选也带上组，这里保持原有逻辑但增加 resetPool 判断）
+        if (dev.group_name) {
+            sortedDevices.value.filter(d => d.group_name === dev.group_name && d.status !== 'offline').forEach(d => {
+                if (!selectedDevices.value.includes(d.udid)) {
+                    selectedDevices.value.push(d.udid);
+                }
+            });
+        }
+    }
+
     activeTab.value = '⚡️ 控制台';
     
     // 根据设备属性预判连接模式，在 connectSmart 之前就锁定
-    // 防止 connectSmart 内部的智能推断覆盖用户的 USB 连接
     if (dev.can_usb || dev.wda_ready) {
         connectionMode.value = 'usb';
         log(`✓ 设备 [${dev.device_no || dev.udid.substring(0,8)}] 检测到 USB 连接，自动切换高速通路`);
     }
     
     connectSmart();
+};
+
+const handleMasterChange = () => {
+    const dev = devices.value.find(d => d.udid === selectedDevice.value);
+    if (dev) {
+        selectDeviceAndConnect(dev);
+    }
 };
 
 const deleteDevice = async (dev: any) => {
@@ -1040,13 +1471,111 @@ const deleteDevice = async (dev: any) => {
     }
 };
 
+// [v1720] 自动资源回收：监听选择列表，当设备取消选中时关闭其长连接流
+watch(selectedDevices, (newVal) => {
+    Object.keys(batchSockets.value).forEach(udid => {
+        if (!newVal.includes(udid)) {
+            const ws = batchSockets.value[udid];
+            if (ws) {
+                try { ws.close(); } catch(e) {}
+            }
+            delete batchSockets.value[udid];
+            delete batchImageData.value[udid];
+        }
+    });
+}, { deep: true });
+
+const batchConnect = (dev: any) => {
+  const udid = dev.udid;
+  
+  // 如果已存在连接，先关闭
+  if (batchSockets.value[udid]) {
+    try { batchSockets.value[udid].close(); } catch(e) {}
+  }
+
+  // [v1720.1] 修正：从 apiBase 推导 WS 地址，确保端口跟随后端（8088）而非前端（5173）
+  const wsBase = apiBase.replace(/^http/, 'ws');
+  const wsUrl = `${wsBase}/ws_stream/${udid}?slave=1&quality=${slaveQuality.value}&token=${authToken.value}`;
+  
+  const socket = new WebSocket(wsUrl);
+  socket.onmessage = (event) => {
+    // 收到后端推送的纯 base64 字符串，存入内存
+    batchImageData.value[udid] = event.data;
+  };
+  
+  socket.onclose = () => {
+    // 自动重连逻辑可以后续加，这里简单置空
+    delete batchSockets.value[udid];
+  };
+  
+  socket.onerror = (err) => {
+    console.error(`[WS Stream] 连接异常 (${udid}):`, err);
+  };
+
+  batchSockets.value[udid] = socket;
+  log(`📡 已建立从机 WebSocket 监控链路: ${dev.device_no || udid}`);
+};
+
+// 恢复被误杀的批量群控核心队列与连接动作
+const batchConnectAll = () => {
+    // [v1672.9] 优化：只要是在已选中列表中的设备，均允许尝试唤醒串流，不再被死板的 online 状态位阻塞
+    sortedDevices.value.filter(d => selectedDevices.value.includes(d.udid)).forEach(d => {
+        batchConnect(d);
+    });
+};
+
+const batchDisconnectAll = () => {
+    Object.values(batchSockets.value).forEach(ws => {
+      try { ws.close(); } catch(e) {}
+    });
+    batchSockets.value = {};
+    batchImageData.value = {};
+    batchStreams.value = {};
+    // [v1740] 响应用户需求：断流后自动切换至日志模式，隐藏空镜像，显示执行详情
+    isLogsOnlyMode.value = true;
+};
+
+const batchDevices = computed(() => {
+    return sortedDevices.value.filter(d => selectedDevices.value.includes(d.udid));
+});
+
 const updateStreamUrl = () => {
-  if (selectedDevice.value || deviceIp.value) {
-    const udid = selectedDevice.value || 'lan-device';
+  if (selectedDevice.value) { // deviceIp.value is no longer directly used for stream URL construction, it's derived from selectedDevice
+    const udid = selectedDevice.value;
+    const dev = devices.value.find(d => d.udid === udid);
+    const ip = dev?.ip || dev?.local_ip || ''; // Get IP from the selected device
     // 将现有的 usb=true/false 扩展为 mode 参数供后续演进，同时保持原有 usb bool 兼容
     const isUsb = connectionMode.value === 'usb';
     // 关键：<img src> 无法附带 Authorization 头，必须通过 query 参数传递 token
-    streamUrl.value = `${apiBase}/screen/${udid}?t=${Date.now()}&ip=${deviceIp.value}&usb=${isUsb}&mode=${connectionMode.value}&token=${authToken.value}`;
+    streamUrl.value = `${apiBase}/screen/${udid}?t=${Date.now()}&ip=${ip}&usb=${isUsb}&mode=${connectionMode.value}&token=${authToken.value}`;
+    
+    // [v1682.1] 极速校准：选择设备后立即尝试并异步获取逻辑分辨率
+    const probe = async (retryCount = 0) => {
+        if (!selectedDevice.value) return;
+        const currentUdid = selectedDevice.value;
+        const currentIp = devices.value.find(d => d.udid === currentUdid)?.local_ip || '';
+        try {
+            const res = await authFetch(`${apiBase}/action_proxy`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    udid: currentUdid,
+                    ecmain_url: currentIp ? `http://${currentIp}:8089` : '',
+                    action_type: 'WDA_WINDOW_SIZE',
+                    connection_mode: connectionMode.value
+                })
+            });
+            const data = await res.json();
+            if (data.window_size && data.window_size.width > 0) {
+                deviceSizeMap.value[currentUdid] = data.window_size;
+                log(`✅ [${currentUdid}] 逻辑分辨率同步成功: ${data.window_size.width}x${data.window_size.height}`);
+            } else if (retryCount < 3) {
+                setTimeout(() => probe(retryCount + 1), 2000);
+            }
+        } catch (e) {
+            if (retryCount < 3) setTimeout(() => probe(retryCount + 1), 2000);
+        }
+    };
+    setTimeout(() => probe(0), 200);
   } else {
     streamUrl.value = '';
   }
@@ -1066,10 +1595,115 @@ const currentMousePos = ref<{x: number, y: number} | null>(null);
 const freeDrawPoints = ref<{x: number, y: number}[]>([]);
 const pendingCrop = ref<{b64: string, w: number, h: number} | null>(null);
 
+// ==================== 橡皮擦功能状态 ====================
+const isEraserMode = ref(false);
+const eraserBrushSize = ref(12); // 橡皮擦默认粗细
+const isErasing = ref(false);
+const eraserCanvasRef = ref<HTMLCanvasElement | null>(null);
+
+// ==================== 橡皮擦撤销历史与光标 ====================
+const eraserHistory = ref<ImageData[]>([]);
+const maxHistory = 15;
+
+const saveEraserState = () => {
+    if (!eraserCanvasRef.value) return;
+    const ctx = eraserCanvasRef.value.getContext('2d');
+    if (!ctx) return;
+    const imgData = ctx.getImageData(0, 0, eraserCanvasRef.value.width, eraserCanvasRef.value.height);
+    eraserHistory.value.push(imgData);
+    if (eraserHistory.value.length > maxHistory) {
+         eraserHistory.value.shift();
+    }
+};
+
+const undoEraser = () => {
+    if (eraserHistory.value.length === 0 || !eraserCanvasRef.value) return;
+    const ctx = eraserCanvasRef.value.getContext('2d');
+    if (!ctx) return;
+    
+    // 弹出上一个状态覆盖
+    const lastState = eraserHistory.value.pop();
+    if (lastState) {
+         ctx.clearRect(0, 0, eraserCanvasRef.value.width, eraserCanvasRef.value.height);
+         ctx.putImageData(lastState, 0, 0);
+         // 同步回 pendingCrop.b64
+         const b64 = eraserCanvasRef.value.toDataURL('image/png').split(',')[1] || '';
+         if (pendingCrop.value) pendingCrop.value.b64 = b64;
+    }
+};
+
+const eraserCursor = computed(() => {
+    const size = eraserBrushSize.value;
+    const r = size / 2;
+    // 渲染圆形 SVG 光标
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><circle cx="${r}" cy="${r}" r="${r - 1}" stroke="#818cf8" stroke-width="1.5" fill="none"/></svg>`;
+    const encoded = encodeURIComponent(svg);
+    return `url("data:image/svg+xml;utf8,${encoded}") ${r} ${r}, crosshair`;
+});
+
+const startErase = (e: MouseEvent) => {
+    saveEraserState(); // 启动前保存状态
+    isErasing.value = true;
+    handleErase(e);
+};
+
+const handleErase = (e: MouseEvent) => {
+    if (!isErasing.value || !eraserCanvasRef.value) return;
+    const ctx = eraserCanvasRef.value.getContext('2d');
+    if (!ctx) return;
+
+    const rect = eraserCanvasRef.value.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.beginPath();
+    ctx.arc(x, y, eraserBrushSize.value / 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+};
+
+const endErase = () => {
+    if (!isErasing.value || !eraserCanvasRef.value || !pendingCrop.value) return;
+    isErasing.value = false;
+
+    // 同步回 pendingCrop.value.b64
+    const b64 = eraserCanvasRef.value.toDataURL('image/png').split(',')[1] || '';
+    pendingCrop.value.b64 = b64;
+};
+
+const initEraserCanvas = () => {
+    if (!eraserCanvasRef.value || !pendingCrop.value) return;
+    const ctx = eraserCanvasRef.value.getContext('2d');
+    if (!ctx) return;
+
+    const img = new Image();
+    img.onload = () => {
+        if (eraserCanvasRef.value && pendingCrop.value) {
+            eraserCanvasRef.value.width = pendingCrop.value.w;
+            eraserCanvasRef.value.height = pendingCrop.value.h;
+            ctx.clearRect(0, 0, eraserCanvasRef.value.width, eraserCanvasRef.value.height);
+            ctx.drawImage(img, 0, 0);
+        }
+    };
+    img.src = 'data:image/png;base64,' + pendingCrop.value.b64;
+};
+
+watch(isEraserMode, (newVal) => {
+    if (newVal) {
+        nextTick(() => {
+            initEraserCanvas();
+        });
+    }
+});
+
 const confirmCrop = () => {
    if (pendingCrop.value) {
        pickedImages.value.push(pendingCrop.value);
        pendingCrop.value = null;
+       isEraserMode.value = false; 
+       eraserHistory.value = []; // 清空历史
        magicWandMask.value = null; // 清空累积掩膜
        log('✅ 裁切已成功载入收纳仓');
    }
@@ -1077,6 +1711,8 @@ const confirmCrop = () => {
 
 const cancelCrop = () => {
    pendingCrop.value = null;
+   isEraserMode.value = false;
+   eraserHistory.value = []; // 清空历史
    magicWandMask.value = null; // 清空累积掩膜
    lassoPoints.value = [];
    currentMousePos.value = null;
@@ -1266,7 +1902,70 @@ const performMagicWand = (startX: number, startY: number) => {
     }
 };
 
+const isGroupControl = ref(false);
+const isLogsOnlyMode = ref(false);
+const batchLogs = ref<Record<string, string[]>>({});
+
 const sendDeviceAction = async (type: string, payload: any = {}) => {
+  const _t0 = performance.now(); // [v1668.23] 精准延迟计时起点
+  
+  // [v1672.21] 统一下发显示逻辑：将 0-1000 的归一化坐标换算回人可读的逻辑 Points (如 180, 300)
+  const sz = selectedDevice.value ? deviceSizeMap.value[selectedDevice.value] : null;
+  const toPnt = (val: any, dim: 'w' | 'h') => {
+      if (val === undefined || val === null || val === '--') return '--';
+      if (!sz) return val;
+      const base = dim === 'w' ? sz.width : sz.height;
+      return Math.round(val * base / 1000);
+  };
+
+  const logX = toPnt(payload.x, 'w');
+  const logY = toPnt(payload.y, 'h');
+  const logX1 = toPnt(payload.x1, 'w');
+  const logY1 = toPnt(payload.y1, 'h');
+  const logX2 = toPnt(payload.x2, 'w');
+  const logY2 = toPnt(payload.y2, 'h');
+
+  // [v1668.27] C1: 乐观 UI 反馈——立即显示操作日志，不等待后端返回
+  if (type === 'click') log(`📡 下发单击: (${logX}, ${logY})`);
+  if (type === 'longPress') log(`⏳ 下发长按: (${logX}, ${logY})`);
+  if (type === 'swipe') log(`📡 下发滑动: (${logX1}, ${logY1}) → (${logX2}, ${logY2})`);
+
+  // [v1672.25] 坐标逻辑转换核心：移除 0-1000 归一化，拥抱原生 WDA Points 体系
+  // 此时 payload 传入的 x, y 已经是基于 deviceSizeMap 计算出的逻辑点坐标
+  const normPayload = {
+    ...payload,
+    is_normalized: true // [v1682.1] 指示后端使用 0-1000 归一化协议，消除 Points fallback 带来的偏移
+  };
+
+  // [v1672] 矩阵群控：如果开启了群控引擎，即刻无阻塞镜像动作到所有被选从属设备
+  if (isGroupControl.value) {
+     const slaves = batchDevices.value.filter(d => d.udid !== selectedDevice.value);
+     slaves.forEach(dev => {
+         // [v1672.10] 救火：如果该设备是本地串联的物理机，严禁将其动作流导向不一定可用的 WS 隧道
+         // 恢复原始策略，有 USB 必定走 USB 寻址 WDA Port
+         const mode = batchConnectionModes.value[dev.udid] || (dev.can_usb || dev.wda_ready ? 'usb' : 'ws');
+         const ip = dev.ip || dev.local_ip || '';
+         const ecUrl = ip ? `http://${ip}:8089` : '';
+         authFetch(`${apiBase}/action_proxy`, {
+            method: 'POST',
+            body: JSON.stringify({
+               udid: dev.udid,
+               ecmain_url: ecUrl,
+               action_type: type,
+               connection_mode: mode,
+               ...normPayload // 使用归一化后的数据
+            })
+         }).then(res => res.json()).then(data => {
+             if (data.logs && Array.isArray(data.logs)) {
+                 if(!batchLogs.value[dev.udid]) batchLogs.value[dev.udid] = [];
+                 data.logs.forEach((logItem: any) => {
+                     batchLogs.value[dev.udid]?.push(`🤖 [同步] ${logItem.log || logItem.message || logItem}`);
+                 });
+             }
+         }).catch(e => console.error(`从机动作异常 (${dev.udid}):`, e));
+     });
+  }
+
   try {
     const res = await authFetch(`${apiBase}/action_proxy`, {
       method: 'POST',
@@ -1274,20 +1973,11 @@ const sendDeviceAction = async (type: string, payload: any = {}) => {
         udid: selectedDevice.value,
         ecmain_url: ecmainUrl.value,
         action_type: type,
-        x: payload.x || 0,
-        y: payload.y || 0,
-        x1: payload.x1 || 0,
-        y1: payload.y1 || 0,
-        x2: payload.x2 || 0,
-        y2: payload.y2 || 0,
-        img_w: payload.img_w || 0,
-        img_h: payload.img_h || 0,
-        connection_mode: connectionMode.value
+        connection_mode: connectionMode.value,
+        ...normPayload // 使用归一化后的数据
       })
     });
     
-    // 立即显示动作触发日志，即便后续报错也能看到
-    log(`[DEBUG] 准备向底核投递动作: [${type}] (链路: ${connectionMode.value.toUpperCase()})`);
 
     const rawResponse = await res.text();
     let data: any;
@@ -1297,9 +1987,11 @@ const sendDeviceAction = async (type: string, payload: any = {}) => {
         log(`✗ [DEBUG] 原始回执非法 (非JSON): ${rawResponse.substring(0, 100)}`);
         return false;
     }
-    
-    // [DEBUG LOG] 增加详细链路日志
-    log(`[DEBUG] 链路: ${connectionMode.value.toUpperCase()} | 动作: ${type} | 状态: ${data.status}`);
+
+    // 成功下发动作后，顺便更新当前设备的逻辑分辨率缓存
+    if (data.window_size && data.window_size.width > 0) {
+        deviceSizeMap.value[selectedDevice.value] = data.window_size;
+    }
     
     // 透传日志流
     if (data.logs && Array.isArray(data.logs)) {
@@ -1312,9 +2004,9 @@ const sendDeviceAction = async (type: string, payload: any = {}) => {
        log(`✗ 指令下发失败: ${data.detail || data.msg}`);
        return false;
     }
-    if (type === 'click') log(`📡 下发单击: (${Math.floor(payload.x)}, ${Math.floor(payload.y)})`);
-    if (type === 'longPress') log(`⏳ 下发长按: (${Math.floor(payload.x)}, ${Math.floor(payload.y)})`);
-    if (type === 'swipe') log(`📡 下发滑动: (${Math.floor(payload.x1)}, ${payload.y1}) -> (${Math.floor(payload.x2)}, ${payload.y2})`);
+    // [v1668.27] 延迟静默更新到底栏指示器，不再重复打日志
+    const _latency = Math.round(performance.now() - _t0);
+    wsLatency.value = `${_latency}ms`;
     return true;
   } catch (e: any) {
     log(`✗ 通信异常: ${(e as Error).message}`);
@@ -1394,11 +2086,47 @@ const runActions = async () => {
     }
     js_code += generatedJs.value;
 
-    const res = await authFetch(`${apiBase}/run`, {
+    // [v1672] 矩阵群控脚本广播引擎：剥离主控逻辑，并发投递
+    if (isGroupControl.value) {
+       const slaves = batchDevices.value.filter(d => d.udid !== selectedDevice.value);
+       slaves.forEach(dev => {
+           if(!batchLogs.value[dev.udid]) batchLogs.value[dev.udid] = [];
+           batchLogs.value[dev.udid]?.push('----------------------------------------');
+           batchLogs.value[dev.udid]?.push('⚡️ 接收并开始执行主控广播分发的同步群控脚本...');
+           
+           const mode = batchConnectionModes.value[dev.udid] || (dev.can_usb || dev.wda_ready ? 'usb' : 'ws');
+           const ip = dev.ip || dev.local_ip || '';
+           const ecUrl = ip ? `http://${ip}:8089` : '';
+
+           authFetch(`${apiBase}/action_proxy`, {
+               method: 'POST',
+               body: JSON.stringify({
+                   udid: dev.udid,
+                   ecmain_url: ecUrl,
+                   action_type: 'SCRIPT',
+                   connection_mode: mode,
+                   script_code: js_code
+               }),
+           }).then(res => res.json()).then(data => {
+               if (data.status === 'success' || data.status === 'ok') {
+                   batchLogs.value[dev.udid]?.push('✅ 脚本镜像同步成功。');
+               } else {
+                   batchLogs.value[dev.udid]?.push(`❌ 分发失败: ${data.detail || data.msg}`);
+               }
+           }).catch(e => {
+               batchLogs.value[dev.udid]?.push(`💥 强行中断或网络溶断: ${(e as Error).message}`);
+           });
+       });
+    }
+
+    const res = await authFetch(`${apiBase}/action_proxy`, {
       method: 'POST',
       body: JSON.stringify({
-        udid: selectedDevice.value || 'lan-device',
-        raw_script: js_code,
+        udid: selectedDevice.value,
+        ecmain_url: ecmainUrl.value,
+        action_type: 'SCRIPT',
+        connection_mode: connectionMode.value,
+        script_code: js_code
       }),
     });
     const data = await res.json();
@@ -1427,7 +2155,7 @@ const runActions = async () => {
 const deviceWin = ref({
   x: 16,
   y: 16,
-  w: 520,
+  w: 420,
   h: window.innerHeight - 171,
   isDragging: false,
   dragStartX: 0,
@@ -1548,6 +2276,7 @@ const addVpnNodeToScript = (node: any) => {
    activeRightTab.value = 'code';
 };
 
+/*
 const copyVpnNode = (node: any) => {
    if (node.raw_uri) {
        navigator.clipboard.writeText(node.raw_uri).then(() => {
@@ -1559,6 +2288,7 @@ const copyVpnNode = (node: any) => {
        log(`⚠️ 此节点尚未生成原始溯源 URL，无法导出脱壳独立分享。`);
    }
 };
+*/
 
 const addAllVpnNodesToScript = () => {
     if (parsedVpnNodes.value.length === 0) return;
@@ -1600,7 +2330,13 @@ const actionLibrary = [
   { label: '[获取VPN状态] Get VPN Status', type: 'IS_VPN_CONNECTED', desc: '调用底层接口获取当前设备的VPN连接状态', usage: '根据当前网络状态决定下一步宏分支', params: '无', example: 'if(wda.isVPNConnected()) wda.log("OK");' },
   { label: '[弹窗手动交互] Alert Manual', type: 'ALERT_MANUAL', desc: '开放底层的原生 Alert 操作接口，供你自由读取弹窗并点击指定按钮', usage: '适合在明确知道即将出现什么特定弹窗（如某APP内的专属提示）的独立场景下使用', params: 'getAlertText(): 抓取文字\ngetAlertButtons(): 抓取按钮数组\nclickAlertButton(name): 按名字点击\nacceptAlert(): 点击确定/允许\ndismissAlert(): 点击取消/拒绝', example: '// ==========================================\n// 🚨 系统弹窗 (Alert) 手动控制核心 API\n// ==========================================\n\n// 1. 获取当前屏幕最顶层弹窗的【正文内容】\n// 返回值: 字符串(如果存在弹窗)，或 null/未定义(当前无弹窗)\nlet text = wda.getAlertText();\nif (!text) {\n    wda.log("没发现风吹草动，当前没有弹窗。");\n    return true; // 退出脚本或继续执行接下来的代码\n}\nwda.log("抓去了弹窗原文: " + text);\n\n// 2. 获取该弹窗底部的【所有按钮选项】\n// 返回值: 包含各按钮文字的数组，如 ["不允许", "好", "稍后"]\nlet btns = wda.getAlertButtons() || [];\nwda.log("该弹窗提供了这些选项: " + JSON.stringify(btns));\n\n// 3. 【推荐】按标签名精准狙击并点击某个按键（指哪打哪）\n// 参数: 目标按钮的特定文字（建议配合 includes 做个安全判断）\nif (btns.includes("允许完全访问")) {\n    wda.clickAlertButton("允许完全访问");\n    wda.log("已一击命中目标按钮: 允许完全访问");\n    return true;\n}\n\n// 4. 【系统兜底操作】（仅当上面的精准点击失效时才用）\n// wda.acceptAlert();  // ✅ 强制点击自带“肯定/接受/允许”属性的默认确认键\n// wda.dismissAlert(); // ❌ 强制点击自带“否定/拒绝/取消”属性的默认取消键\n\nwda.log("找不到我要的按键，闭着眼点【确认】算了！");\nwda.acceptAlert();\nreturn true;\n' },
   { label: '[系统弹窗自动扫雷] Auto Alert Handling', type: 'CHECK_ALERT', desc: '封装好的多语言系统弹窗自动放行函数（中/英/日/德/法/意/西/葡）', usage: '将其置于脚本顶端，遇到任何点击前调用 autoHandleAlert()', params: '无', example: 'function autoHandleAlert() {\n    let msg = wda.getAlertText();\n    if (!msg) return false;\n    let rawMsg = msg;\n    msg = msg.toLowerCase();\n    let btns = wda.getAlertButtons() || [];\n    wda.log("⚠️ 探测到系统提示: " + rawMsg + " | 按钮: " + JSON.stringify(btns));\n\n    // 全语言否定词集合（用于排除"不允许"类按钮）\n    var deny = ["不允许", "不", "don\\\'t", "nicht", "しない", "ne ", "non ", "no ", "não", "refuser"];\n\n    // 精准点击器（带排除词过滤）\n    function clickBtn(keywords, excludeWords) {\n        if (!excludeWords) excludeWords = [];\n        for (var i = 0; i < btns.length; i++) {\n            var b = btns[i].toLowerCase();\n            var skip = false;\n            for (var e = 0; e < excludeWords.length; e++) {\n                if (b.indexOf(excludeWords[e].toLowerCase()) >= 0) { skip = true; break; }\n            }\n            if (skip) continue;\n            for (var j = 0; j < keywords.length; j++) {\n                if (b.indexOf(keywords[j].toLowerCase()) >= 0) {\n                    wda.clickAlertButton(btns[i]);\n                    wda.log("🎯 已点击: [" + btns[i] + "]");\n                    return true;\n                }\n            }\n        }\n        return false;\n    }\n\n    function has(keywords) {\n        for (var i = 0; i < keywords.length; i++) {\n            if (msg.indexOf(keywords[i].toLowerCase()) >= 0) return true;\n        }\n        return false;\n    }\n\n    // ═══════════ 1. 照片/相册 → 允许完全访问 ═══════════\n    if (has(["photo","照片","相片","相册","写真","foto","フォト"])) {\n        if (clickBtn(["完全","所有","full","すべて","vollen zugriff","accès complet","accesso completo","acceso total","acesso a todas"])) return true;\n        if (clickBtn(["允许","allow","許可","erlauben","autoriser","consenti","permitir","zulassen"], deny)) return true;\n    }\n    // ═══════════ 2. 位置/定位 → 不允许 ═══════════\n    else if (has(["location","位置","定位","standort","localização","ubicación","posizione","position","位置情報"])) {\n        if (clickBtn(["不允许","don\\\'t allow","許可しない","nicht erlauben","nicht zulassen","ne pas autoriser","non consentire","no permitir","não permitir"])) return true;\n    }\n    // ═══════════ 3. 网络/蜂窝数据 → 蜂窝数据 ═══════════\n    else if (has(["wlan","cellular","wi-fi","network","网络","局域网","蜂窝","ネット","netzwerk","rede","red","rete","réseau","モバイルデータ"])) {\n        if (clickBtn(["蜂窝","cellular","モバイルデータ","wlan &","celular","cellulare","cellulaires","mobilfunk"])) return true;\n        if (clickBtn(["允许","allow","ok","好","許可","erlauben","autoriser","consenti","permitir","zulassen"], deny)) return true;\n    }\n    // ═══════════ 4. 日历/备忘录 → 允许完全访问 ═══════════\n    else if (has(["calendar","reminder","日历","备忘录","カレンダー","kalender","erinnerungen","calendário","calendario","promemoria","calendrier","リマインダー"])) {\n        if (clickBtn(["完全","full","フル","vollen","complet","completo","total"])) return true;\n        if (clickBtn(["允许","allow","ok","好","許可","erlauben","autoriser","consenti","permitir","zulassen"], deny)) return true;\n    }\n    // ═══════════ 5. 应用跟踪透明度 (ATT) → 不跟踪 ═══════════\n    else if (has(["track","跟踪","追踪","トラッキング","rastrear","rastreo","tracciamento","suivi","tracking"])) {\n        if (clickBtn(["不跟踪","not to track","トラッキングしないよう","ablehnen","ne pas suivre","non consentire","no permitir","não rastrear","nicht erlauben"])) return true;\n    }\n    // ═══════════ 6. 通讯录 → 不允许 ═══════════\n    else if (has(["contact","通讯录","联系人","連絡先","kontakte","contato","contacto","contatti","contacts"])) {\n        if (clickBtn(["不允许","don\\\'t allow","許可しない","nicht erlauben","nicht zulassen","ne pas autoriser","non consentire","no permitir","não permitir","refuser"])) return true;\n    }\n    // ═══════════ 7. 粘贴板/本地网络/蓝牙/相机/麦克风/通知/VPN → 允许 ═══════════\n    else if (has(["paste","粘贴","剪贴板","local network","本地","ローカル","bluetooth","camera","microphone","蓝牙","相机","摄像头","麦克风","マイク","カメラ","notification","通知","vpn","profile","描述文件","benachrichtigung","notifica"])) {\n        if (clickBtn(["允许","allow","許可","好","ok","erlauben","autoriser","consenti","permitir","zulassen","aceptar"], deny)) return true;\n    }\n\n    // ═══════════ 兜底命中 ═══════════\n    if (clickBtn(["好","ok","是","yes","はい","允许","allow","erlauben","autoriser","consenti","permitir","zulassen","accept","同意","aceptar","ja","sì","oui"], deny)) {\n        return true;\n    }\n\n    wda.acceptAlert();\n    wda.log("⚠️ 触发兜底的 acceptAlert() 点击");\n    return true;\n}\n\n// 在你需要判断的时候可以直接呼叫它\n// autoHandleAlert();' },
-  { label: '[💬 抽取双擎评论]', type: 'RANDOM_COMMENT', desc: '首选机内高速抽取。如果本地无储备，将自动从云端（可通过共享配置设定 EC_CLOUD_SERVER_URL）拉取全量备库兜底。', usage: '弹幕或长文输入首选。', params: '★ 常用代号大全:\nes-MX (墨西哥) | pt-BR (巴西)\nde-DE (德国) | en-SG (新加坡)\nja-JP (日本) | en-US (美国)\nes-ES (西班牙) | en-GB (英国)\nfr-FR (法国) | zh-CN (中文)\n(如本地失联，将自动访问 http://web.ecmain.site:8088)', example: 'var cmt = wda.getRandomComment("en-US");\nwda.input(cmt);' }
+  { label: '[💬 抽取双擎评论]', type: 'RANDOM_COMMENT', desc: '首选机内高速抽取。如果本地无储备，将自动从云端（可通过共享配置设定 EC_CLOUD_SERVER_URL）拉取全量备库兜底。', usage: '弹幕或长文输入首选。', params: '★ 常用代号大全:\nes-MX (墨西哥) | pt-BR (巴西)\nde-DE (德国) | en-SG (新加坡)\nja-JP (日本) | en-US (美国)\nes-ES (西班牙) | en-GB (英国)\nfr-FR (法国) | zh-CN (中文)\n(如本地失联，将自动访问 http://web.ecmain.site:8088)', example: 'var cmt = wda.getRandomComment("en-US");\nwda.input(cmt);' },
+  { label: '[TK主账号] 输入用户名', type: 'TK_MASTER_ACCOUNT', desc: '从设备配置中读取 TikTok 主账号用户名，自动写入剪切板并通过 WDA 输入到当前焦点文本框', usage: '登录 TikTok 时自动填充用户名', params: '无需手动传参（自动从配置中心已绑定的主账号读取）', example: 'var acc = wda.getMasterTkAccount();\nif(acc && acc.length > 0) {\n    wda.input(acc);\n    wda.log("已输入TK主账号: " + acc);\n} else {\n    wda.log("未找到主账号，请先在配置中心绑定");\n}' },
+  { label: '[TK主账号] 输入密码', type: 'TK_MASTER_PASSWORD', desc: '从设备配置中读取 TikTok 主账号密码，自动写入剪切板并通过 WDA 输入到当前焦点文本框', usage: '登录 TikTok 时自动填充密码', params: '无需手动传参（自动从配置中心已绑定的主账号读取）', example: 'var pwd = wda.getMasterTkPassword();\nif(pwd && pwd.length > 0) {\n    wda.input(pwd);\n    wda.log("已输入TK主账号密码");\n} else {\n    wda.log("未找到主账号密码，请先在配置中心设置");\n}' },
+  { label: '[TK主账号] 输入邮箱', type: 'TK_MASTER_EMAIL', desc: '从设备配置中读取 TikTok 主账号绑定邮箱，自动写入剪切板并通过 WDA 输入到当前焦点文本框', usage: '登录 TikTok 或验证邮箱时自动填充邮箱地址', params: '无需手动传参（自动从配置中心已绑定的主账号读取）', example: 'var email = wda.getMasterTkEmail();\nif(email && email.length > 0) {\n    wda.input(email);\n    wda.log("已输入TK主账号邮箱: " + email);\n} else {\n    wda.log("未找到主账号邮箱，请先在配置中心设置");\n}' },
+  { label: '[🔄 立即更新配置] Sync Config', type: 'SYNC_CONFIG', desc: '立即触发心跳向服务器获取最新的设备配置（包括 TikTok 账号、国家、分组等），无需等待下一次心跳周期', usage: '在修改了配置中心的信息后，脚本中需要立即使用最新数据时调用', params: '无', example: 'wda.syncConfig();\nwda.log("配置已同步到最新");' },
+  { label: '[📥 下载IPA文件] Download IPA', type: 'DOWNLOAD_IPA', desc: '通过远程 URL 下载 IPA 文件到 ECMAIN 应用管理的"已下载"目录（Documents/ImportedIPAs/）', usage: '远程部署应用时，先下载 IPA 到设备，再通过应用管理安装', params: 'url: IPA 文件的完整下载链接', example: 'var ok = wda.downloadIPA("https://example.com/app.ipa");\nif(ok) {\n    wda.log("IPA 下载成功，请在应用管理中安装");\n} else {\n    wda.log("IPA 下载失败");\n}' },
+  { label: '[📦 注入安装] Inject Install', type: 'INSTALL_IPA', desc: '自动化执行：搜索 IPA → 解压注入 Dylib → 克隆分身 → 设备伪装 → 系统安装（逻辑与 ECMAIN UI 一致）', usage: '实现 IPA 的全自动静默克隆与伪装安装', params: 'filename: IPA文件名(支持模糊匹配)\\nclone_number: 分身编号(1/2/8等,0=原包)\\nspoof_config: 伪装字典(键值同ECDeviceInfoManager)', example: '// 📦 自动化注入安装示例\\nvar result = wda.installIPA({\\n    filename: \"TikTok\",         // IPA文件名\\n    clone_number: \"1\",          // 分身编号(自动处理隔离)\\n    spoof_config: {              // ★ 设备伪装参数\\n        // -- 设备信息 --\\n        machineModel: \"iPhone9,1\",\\n        deviceName: \"iPhone\",\\n        screenWidth: \"375\",\\n        screenHeight: \"667\",\\n        nativeBounds: \"750x1334\",\\n\\n        // -- 系统/区域 --\\n        systemVersion: \"15.8.6\",\\n        timezone: \"Asia/Tokyo\",\\n        localeIdentifier: \"en_JP\",\\n        languageCode: \"en\",\\n        currencyCode: \"JPY\",\\n\\n        // -- 运营商 --\\n        carrierCountry: \"JP\",\\n        mobileCountryCode: \"440\",\\n        mobileNetworkCode: \"10\"\\n    }\\n});\\nwda.log(\"安装结果: \" + JSON.stringify(result));' }
 ];
 
 const handleActionClick = (act: any) => {
@@ -1665,13 +2401,21 @@ const mouseX = ref('--');
 const mouseY = ref('--');
 const pntX = ref('--');
 const pntY = ref('--');
+const pntLabel = ref('(--, --)'); // [v1668.23] 坐标实时回显标签
+const wsLatency = ref('--'); // [v1668.23] WS 指令延迟实测 (ms)
+const deviceSizeMap = ref<Record<string, {width: number, height: number}>>({}); // [v1672.9] 按 UDID 记录的逻辑点分辨率 Map
 
 const getRealMouseCoord = (e: MouseEvent) => {
   if (!canvasRef.value || !imageRef.value) return null;
   const rect = canvasRef.value.getBoundingClientRect();
   
-  const nw = imageRef.value.naturalWidth;
-  const nh = imageRef.value.naturalHeight;
+  // 图像尺寸：优先 naturalWidth，兜底 clientWidth
+  let nw = imageRef.value.naturalWidth;
+  let nh = imageRef.value.naturalHeight;
+  if (!nw || !nh) {
+      nw = imageRef.value.clientWidth;
+      nh = imageRef.value.clientHeight;
+  }
   if (!nw || !nh) return null;
 
   const cw = rect.width;
@@ -1700,6 +2444,7 @@ const getRealMouseCoord = (e: MouseEvent) => {
     return null; 
   }
 
+  // 返回图像像素坐标（与备份版一致）
   const realScale = nw / renderW;
   return {
     x: Math.floor(x * realScale),
@@ -1792,15 +2537,21 @@ const handleMouseMove = (e: MouseEvent) => {
 
   const coord = getRealMouseCoord(e);
   if (coord) {
-     mouseX.value = coord.x.toString();
-     mouseY.value = coord.y.toString();
-     pntX.value = Math.floor(coord.x / config.value.scale).toString();
-     pntY.value = Math.floor(coord.y / config.value.scale).toString();
+       mouseX.value = coord.x.toString();
+       mouseY.value = coord.y.toString();
+       // coord.x/y 现在是图像像素坐标，除以 scale 得到逻辑 Points
+       const curSize = deviceSizeMap.value[selectedDevice.value];
+       const nw_img = imageRef.value?.naturalWidth || imageRef.value?.clientWidth || 1;
+       const scale = curSize ? (nw_img / curSize.width) : (config.value?.scale || 2);
+       pntX.value = Math.floor(coord.x / scale).toString();
+       pntY.value = Math.floor(coord.y / scale).toString();
+       pntLabel.value = `(${pntX.value}, ${pntY.value})`;
   } else {
      mouseX.value = '--';
      mouseY.value = '--';
      pntX.value = '--';
      pntY.value = '--';
+     pntLabel.value = '(--, --)';
   }
 
   if (isLassoMode.value) {
@@ -1862,7 +2613,7 @@ const handleMouseMove = (e: MouseEvent) => {
   }
 };
 
-const endDraw = (e: MouseEvent) => {
+const endDraw = async (e: MouseEvent) => {
   if (isLassoMode.value || isMagicWandMode.value) return;
 
   if (!isDrawing.value || !canvasRef.value || !imageRef.value) return;
@@ -1882,14 +2633,20 @@ const endDraw = (e: MouseEvent) => {
       return;
   }
 
-  const nw = imageRef.value.naturalWidth || 0;
-  const nh = imageRef.value.naturalHeight || 0;
+  // coord.x / coord.y 现在是图像像素坐标（与备份版一致）
+  let nw = imageRef.value.naturalWidth || imageRef.value.clientWidth;
+  let nh = imageRef.value.naturalHeight || imageRef.value.clientHeight;
+  if (!nw || !nh) {
+      log("⚠️ 图像引擎尚未初始化");
+      return;
+  }
+
   const cw = rect.width;
   const ch = rect.height;
   const imageAspect = nw / nh;
   const containerAspect = cw / ch;
 
-  let renderW, renderH;
+  let renderW: number, renderH: number;
   if (imageAspect > containerAspect) {
     renderW = cw;
     renderH = cw / imageAspect;
@@ -1899,46 +2656,115 @@ const endDraw = (e: MouseEvent) => {
   }
   const realScale = nw / renderW;
 
+  // 用于触控动作的归一化 (0-1000)：像素坐标 / 图像尺寸 * 1000
+  const finalX = coord.x;  // 像素坐标
+  const finalY = coord.y;  // 像素坐标
   const startCoord = {
       x: Math.floor(((startX.value - (rect.width - renderW)/2) * realScale)),
       y: Math.floor(((startY.value - (rect.height - renderH)/2) * realScale))
   };
 
-  const finalX = coord.x;
-  const finalY = coord.y;
   const duration = Date.now() - pressStartTime.value;
 
+  // 分支 1: 画笔裁切跳过点击判定
   if (isFreeDrawMode.value && isPickMode.value && freeDrawPoints.value.length > 5) {
-      // Free draw cutoff
+      // 落入下方的画笔裁切逻辑
   } else if (w < 10 && h < 10) {
+      // 分支 2: 颜色拾取
       if (isColorPickerMode.value) {
-          const tempCanvas = document.createElement('canvas');
-          tempCanvas.width = nw; tempCanvas.height = nh;
-          const tCtx = tempCanvas.getContext('2d', { willReadFrequently: true });
-          if (tCtx) {
-              tCtx.drawImage(imageRef.value, 0, 0, nw, nh);
-              const pixel = tCtx.getImageData(finalX, finalY, 1, 1).data;
-              const r = pixel[0] || 0, g = pixel[1] || 0, b = pixel[2] || 0;
-              const hex = '#' + ('000000' + ((r << 16) | (g << 8) | b).toString(16)).slice(-6).toUpperCase();
-              pickedColors.value.push({ x: finalX, y: finalY, hex });
+          try {
+              const tempCanvas = document.createElement('canvas');
+              tempCanvas.width = nw; tempCanvas.height = nh;
+              const tCtx = tempCanvas.getContext('2d', { willReadFrequently: true });
+              if (tCtx) {
+                  tCtx.drawImage(imageRef.value, 0, 0, nw, nh);
+                  const pixel = tCtx.getImageData(finalX, finalY, 1, 1).data;
+                  const r = pixel[0] || 0, g = pixel[1] || 0, b = pixel[2] || 0;
+                  const hex = '#' + ('000000' + ((r << 16) | (g << 8) | b).toString(16)).slice(-6).toUpperCase();
+                  pickedColors.value.push({ x: finalX, y: finalY, hex });
+              }
+          } catch (e) {
+              log('⚠️ 颜色拾取被安全策略阻止（跨域流），请切换 USB 模式后重试');
           }
           return;
       }
+      // 分支 3: 点击/长按 → 归一化下发
       if (duration > 600) {
-          sendDeviceAction('longPress', { x: finalX, y: finalY, img_w: nw, img_h: nh });
+          sendDeviceAction('longPress', { x: Math.round(finalX / nw * 1000), y: Math.round(finalY / nh * 1000) });
       } else {
-          sendDeviceAction('click', { x: finalX, y: finalY, img_w: nw, img_h: nh });
+          sendDeviceAction('click', { x: Math.round(finalX / nw * 1000), y: Math.round(finalY / nh * 1000) });
       }
       return;
   }
   
+  // 分支 4: 滑动 → 归一化下发
   if (!isPickMode.value) {
       if(startCoord?.x > 0 && startCoord?.y > 0) {
-          sendDeviceAction('swipe', { x1: startCoord.x, y1: startCoord.y, x2: finalX, y2: finalY, img_w: nw, img_h: nh });
+          sendDeviceAction('swipe', { 
+              x1: Math.round(startCoord.x / nw * 1000), 
+              y1: Math.round(startCoord.y / nh * 1000), 
+              x2: Math.round(finalX / nw * 1000), 
+              y2: Math.round(finalY / nh * 1000)
+          });
       }
       return;
   }
+
+  // ==================== 以下为裁切模式（isPickMode = true） ====================
+  const offsetX = (cw - renderW) / 2;
+  const offsetY = (ch - renderH) / 2;
   
+  // 获取干净的图像源（处理 tainted canvas）
+  let cleanImgSource: HTMLImageElement | HTMLCanvasElement = imageRef.value;
+  let isTainted = false;
+  try {
+      const probe = document.createElement('canvas');
+      probe.width = 1; probe.height = 1;
+      const pCtx = probe.getContext('2d');
+      if (pCtx) {
+          pCtx.drawImage(imageRef.value, 0, 0, 1, 1);
+          probe.toDataURL();
+      }
+  } catch {
+      isTainted = true;
+  }
+
+  if (isTainted) {
+      log('📡 检测到安全沙箱限制，正通过后端获取截图数据...');
+      try {
+          const res = await authFetch(`${apiBase}/action_proxy`, {
+              method: 'POST',
+              body: JSON.stringify({
+                  udid: selectedDevice.value,
+                  ecmain_url: ecmainUrl.value,
+                  action_type: 'WDA_SCREENSHOT',
+                  connection_mode: connectionMode.value
+              })
+          });
+          const data = await res.json();
+          if (data.screenshot_b64) {
+              const tmpImg = new Image();
+              await new Promise<void>((resolve, reject) => {
+                  tmpImg.onload = () => resolve();
+                  tmpImg.onerror = () => reject();
+                  tmpImg.src = 'data:image/jpeg;base64,' + data.screenshot_b64;
+              });
+              cleanImgSource = tmpImg;
+              nw = tmpImg.naturalWidth;
+              nh = tmpImg.naturalHeight;
+          } else {
+              log('✗ 后端截图失败，裁切取消');
+              freeDrawPoints.value = [];
+              return;
+          }
+      } catch (e) {
+          log('✗ 后端截图请求异常，裁切取消');
+          freeDrawPoints.value = [];
+          return;
+      }
+  }
+  
+  // ===== 分支 5: 画笔裁切 (备份版像素坐标逻辑) =====
   if (isFreeDrawMode.value && freeDrawPoints.value.length > 5) {
       const pts = freeDrawPoints.value;
       let minCX = Infinity, minCY = Infinity, maxCX = -Infinity, maxCY = -Infinity;
@@ -1948,8 +2774,7 @@ const endDraw = (e: MouseEvent) => {
           if (p.x > maxCX) maxCX = p.x;
           if (p.y > maxCY) maxCY = p.y;
       }
-      const offsetX = (cw - renderW) / 2;
-      const offsetY = (ch - renderH) / 2;
+      // pts 存储的是 canvas 物理坐标 (来自 e.clientX - rect.left)
       const rx = (minCX - offsetX) * realScale;
       const ry = (minCY - offsetY) * realScale;
       const realW = (maxCX - minCX) * realScale;
@@ -1964,17 +2789,20 @@ const endDraw = (e: MouseEvent) => {
       tempCanvas.width = realW; tempCanvas.height = realH;
       const tCtx = tempCanvas.getContext('2d');
       if (tCtx) {
-          tCtx.drawImage(imageRef.value, rx, ry, realW, realH, 0, 0, realW, realH);
-          const b64 = tempCanvas.toDataURL('image/png').split(',')[1] || '';
-          pendingCrop.value = { b64: b64, w: realW|0, h: realH|0 };
-          log(`✓ 画笔裁切：${realW|0}x${realH|0}，精粹已落入暂存仓等待确认。`);
+          tCtx.drawImage(cleanImgSource, rx, ry, realW, realH, 0, 0, realW, realH);
+          try {
+              const b64 = tempCanvas.toDataURL('image/png').split(',')[1] || '';
+              pendingCrop.value = { b64: b64, w: realW|0, h: realH|0 };
+              log(`✓ 画笔裁切：${realW|0}x${realH|0}，精粹已落入暂存仓等待确认。`);
+          } catch (e) {
+              log('✗ 裁切导出失败（Canvas 安全限制）');
+          }
       }
       freeDrawPoints.value = [];
       return;
   }
   
-  const offsetX = (cw - renderW) / 2;
-  const offsetY = (ch - renderH) / 2;
+  // ===== 分支 6: 矩形裁切 (备份版像素坐标逻辑) =====
   const realStartX = (startX.value - offsetX) * realScale;
   const realStartY = (startY.value - offsetY) * realScale;
   const realCurrX = (currX.value - offsetX) * realScale;
@@ -1991,10 +2819,14 @@ const endDraw = (e: MouseEvent) => {
   tempCanvas.width = realW; tempCanvas.height = realH;
   const tCtx = tempCanvas.getContext('2d');
   if(tCtx) {
-    tCtx.drawImage(imageRef.value, rx, ry, realW, realH, 0, 0, realW, realH);
-    const b64 = tempCanvas.toDataURL('image/png').split(',')[1] || '';
-    pendingCrop.value = { b64: b64, w: realW|0, h: realH|0 };
-    log(`✓ 矩形截切： ${realW|0}x${realH|0}，已截断，请点击完成归入收纳匣。`);
+    tCtx.drawImage(cleanImgSource, rx, ry, realW, realH, 0, 0, realW, realH);
+    try {
+        const b64 = tempCanvas.toDataURL('image/png').split(',')[1] || '';
+        pendingCrop.value = { b64: b64, w: realW|0, h: realH|0 };
+        log(`✓ 矩形截切： ${realW|0}x${realH|0}，已截断，请点击完成归入收纳匣。`);
+    } catch (e) {
+        log('✗ 裁切导出失败（Canvas 安全限制）');
+    }
   }
 };
 
@@ -2089,8 +2921,17 @@ const completeLasso = () => {
 
 const syncCanvasSize = () => {
   if(imageRef.value && canvasRef.value) {
-     canvasRef.value.width = imageRef.value.clientWidth;
-     canvasRef.value.height = imageRef.value.clientHeight;
+      // [v1682.17] 强制同步 Canvas 物理尺寸与 Image 显示尺寸一致
+      // 解决 object-fit: contain 导致的点击点偏移问题
+      const w = imageRef.value.clientWidth;
+      const h = imageRef.value.clientHeight;
+      if (w > 0 && h > 0) {
+          canvasRef.value.width = w;
+          canvasRef.value.height = h;
+          // [v1682.18] 物理像素对齐：确保 Canvas 占据整个可视区，避免 sub-pixel 导致的出界判定
+          canvasRef.value.style.width = w + 'px';
+          canvasRef.value.style.height = h + 'px';
+      }
   }
 }
 
@@ -2143,12 +2984,6 @@ const handleImageUpload = (event: Event) => {
     reader.readAsDataURL(file);
 };
 
-onMounted(async () => {
-  if (!isLoggedIn.value) return;
-  fetchDevices();
-  fetchScripts();
-  setInterval(fetchDevices, 5000);
-});
 </script>
 
 <template>
@@ -2219,7 +3054,7 @@ onMounted(async () => {
         {{ tab }}
       </div>
     </div>
-
+ 
     <!-- 筛选栏 (仅在特定页面显示) -->
     <div v-show="['📱 手机列表', '⚡️ 控制台'].includes(activeTab)" class="flex items-center flex-wrap bg-gray-900 border-b border-gray-800 px-6 py-2 text-[11px] gap-4 shadow-sm z-30 relative shrink-0">
        <div class="text-gray-400 font-bold mr-2 flex items-center"><span class="mr-1 text-sm">🔍</span> 筛选</div>
@@ -2275,9 +3110,11 @@ onMounted(async () => {
        <!-- 以前有应用按钮，现在由于双向计算属性绑定，可不删且无需绑定事件，也可去除。这里留存 -->
        <button class="ml-auto bg-blue-600 opacity-0 pointer-events-none hover:bg-blue-500 text-white px-4 py-1.5 rounded shadow-md transition-colors font-bold tracking-wider active:scale-[0.98]">应用</button>
     </div>
-
-    <!-- 任务列表渲染 -->
-    <div v-show="activeTab === '📋 任务列表'" class="flex flex-1 flex-col overflow-auto p-6 bg-[#0B0F19]">
+    
+    <!-- 核心内容切换区 -->
+    <main class="flex-1 overflow-hidden flex flex-col relative bg-[#0B0F19]">
+        <!-- =============== 📋 任务列表 =============== -->
+        <div v-if="activeTab === '📋 任务列表'" class="flex flex-1 flex-col overflow-auto p-6">
         <div class="max-w-7xl mx-auto w-full">
             <div class="flex justify-between items-center mb-6">
                 <h2 class="text-2xl font-semibold text-gray-100 flex items-center">
@@ -2402,20 +3239,25 @@ onMounted(async () => {
     </div>
 
     <!-- 手机列表真实渲染 -->
-    <div v-show="activeTab === '📱 手机列表'" class="flex flex-1 flex-col overflow-hidden p-6 gap-4 bg-gray-950">
+        <!-- =============== 📱 手机列表 =============== -->
+        <div v-if="activeTab === '📱 手机列表'" class="flex flex-1 flex-col overflow-hidden p-6 gap-4 bg-gray-950">
       <div class="flex items-center justify-between mb-2">
          <div class="flex items-center gap-4">
             <h2 class="text-gray-200 text-lg font-bold tracking-wide flex items-center gap-2">📱 在线雷达设备矩阵</h2>
             <div v-if="selectedDevices.length > 0" class="flex items-center gap-2 bg-indigo-900/40 border border-indigo-500/50 px-3 py-1.5 rounded-lg animate-in fade-in slide-in-from-left-4 duration-300">
                <span class="text-indigo-200 text-xs font-bold">已选 {{ selectedDevices.length }} 台</span>
                <div class="h-4 w-px bg-indigo-500/30 mx-1"></div>
-               <button @click="openBatchConfigModal" class="text-indigo-300 hover:text-white text-xs font-bold transition-colors">📝 批量修改</button>
-               <button @click="openOneshotModal" class="text-emerald-300 hover:text-white text-xs font-bold transition-colors ml-2">⚡ 下发一次性任务</button>
-               <button @click="deleteBatchDevices" class="text-red-400 hover:text-red-300 text-xs font-bold transition-colors ml-2">🗑 批量删除</button>
+                <button @click="openBatchConfigModal" class="text-indigo-300 hover:text-white text-xs font-bold transition-colors">📝 批量修改</button>
+                <button @click="openOneshotModal" class="text-emerald-300 hover:text-white text-xs font-bold transition-colors ml-2">⚡ 下发一次性任务</button>
+                <button @click="enterBatchControl" class="text-amber-400 hover:text-white text-xs font-bold transition-colors ml-2">🎛 批量控制</button>
+                <button @click="deleteBatchDevices" class="text-red-400 hover:text-red-300 text-xs font-bold transition-colors ml-2">🗑 批量删除</button>
                <button @click="selectedDevices = []" class="text-gray-400 hover:text-white text-xs ml-2">取消</button>
             </div>
          </div>
-         <button @click="fetchDevices" class="bg-gray-800 hover:bg-gray-700 text-gray-300 px-4 py-1.5 rounded shadow border border-gray-700 font-bold transition-colors">🔄 刷新矩阵</button>
+         <button @click="fetchDevices" :disabled="isDevicesLoading" :class="[isDevicesLoading ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-700', 'bg-gray-800 text-gray-300 px-4 py-1.5 rounded shadow border border-gray-700 font-bold transition-all flex items-center gap-2']">
+            <span :class="{'animate-spin inline-block': isDevicesLoading}">🔄</span> 
+            {{ isDevicesLoading ? '刷新中...' : '刷新矩阵' }}
+         </button>
       </div>
       
       <div class="flex-1 overflow-y-auto custom-scrollbar">
@@ -2431,9 +3273,9 @@ onMounted(async () => {
                  <th @click="sortBy('battery')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">电量 <span v-if="sortKey==='battery'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th @click="sortBy('app_version')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">ECMAIN <span v-if="sortKey==='app_version'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th @click="sortBy('ecwda_version')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">ECWDA <span v-if="sortKey==='ecwda_version'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
+                 <th @click="sortBy('tiktok_version')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">TikTok <span v-if="sortKey==='tiktok_version'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th @click="sortBy('vpn_active')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">VPN <span v-if="sortKey==='vpn_active'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
-                 <th @click="sortBy('vpn_ip')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">VPN 节点 <span v-if="sortKey==='vpn_ip'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
-                 <th @click="sortBy('exec_time')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">启动时间 <span v-if="sortKey==='exec_time'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
+                 <th @click="sortBy('vpn_node')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">VPN 节点 <span v-if="sortKey==='vpn_node'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th @click="sortBy('admin_username')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">管理员 <span v-if="sortKey==='admin_username'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-default">任务状态</th>
                  <th @click="sortBy('last_heartbeat')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-right cursor-pointer hover:bg-gray-800 transition-colors">最后上线 <span v-if="sortKey==='last_heartbeat'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
@@ -2442,7 +3284,7 @@ onMounted(async () => {
            </thead>
            <tbody class="divide-y divide-gray-800 select-text">
               <tr v-if="sortedDevices.length === 0">
-                 <td colspan="14" class="p-8 text-center text-gray-500 font-medium tracking-wide pointer-events-none">
+                 <td colspan="13" class="p-8 text-center text-gray-500 font-medium tracking-wide pointer-events-none">
                    暂无高并发设备从底核发送微波跳变信号...
                  </td>
               </tr>
@@ -2488,28 +3330,55 @@ onMounted(async () => {
                     <span v-else class="text-gray-600 text-[10px] font-mono">未安装</span>
                  </td>
                  <td class="p-3 text-center">
+                    <span v-if="dev.tiktok_version" class="bg-pink-900/30 text-pink-300 border border-pink-800 px-1.5 py-0.5 rounded text-[10px] font-mono whitespace-nowrap">
+                      v{{ dev.tiktok_version }}
+                    </span>
+                    <span v-else class="text-gray-600 text-[10px] font-mono">未安装</span>
+                 </td>
+                 <td class="p-3 text-center">
                     <span v-if="dev.vpn_active" class="bg-green-900/30 text-green-400 border border-green-800 px-1.5 py-0.5 rounded-full text-[10px] font-bold">✅ 已连接</span>
                     <span v-else class="text-gray-600 text-[10px] font-mono">未连接</span>
                  </td>
                  <td class="p-3 text-center">
-                    <span v-if="dev.vpn_active && dev.vpn_ip" class="bg-indigo-900/30 text-indigo-300 border border-indigo-800 px-1.5 py-0.5 rounded text-[10px] whitespace-nowrap overflow-hidden text-ellipsis max-w-[150px] inline-block font-mono" :title="dev.vpn_ip">{{ dev.vpn_ip }}</span>
-                 </td>
-                 <td class="p-3 text-center">
-                    <span v-if="dev.exec_time" class="bg-amber-900/30 text-amber-500 border border-amber-800 px-2 py-0.5 rounded text-[10px] font-bold font-mono">{{ dev.exec_time }}点</span>
-                    <span v-else class="text-gray-600 text-[10px] font-mono">--</span>
+                    <span v-if="dev.vpn_node" class="bg-indigo-900/30 text-indigo-300 border border-indigo-800 px-1.5 py-0.5 rounded text-[10px] whitespace-nowrap overflow-hidden text-ellipsis max-w-[150px] inline-block font-mono" :title="dev.vpn_node">{{ dev.vpn_node }}</span>
                  </td>
                  <td class="p-3 text-center">
                     <span v-if="dev.admin_username" class="bg-purple-900/30 text-purple-400 border border-purple-800 px-2 py-0.5 rounded text-[10px] font-bold">{{ dev.admin_username }}</span>
                     <span v-else class="text-gray-600 text-[10px]">--</span>
                  </td>
                  <td class="p-3 text-center">
-                    <div v-if="dev.task_status" class="flex flex-col gap-0.5">
-                      <div v-for="(t, i) in ((() => { try { return JSON.parse(dev.task_status) } catch(e) { return [] } })())" :key="i" class="flex items-center gap-1 justify-center">
-                        <span class="text-[10px] text-gray-300 truncate max-w-[80px]" :title="t.name">{{ t.name }}</span>
-                        <span :class="[t.time === '等待执行' ? 'bg-yellow-900/30 text-yellow-400 border-yellow-800' : 'bg-green-900/30 text-green-400 border-green-800', 'border px-1 py-0 rounded text-[9px] font-mono whitespace-nowrap']">{{ t.time }}</span>
-                      </div>
+                    <!-- 脚本执行状态：优先展示执行线程上报的 task_report -->
+                    <div class="flex flex-col gap-1 items-center">
+                       <!-- 执行线程上报的实时状态 -->
+                       <template v-if="dev.task_report">
+                          <template v-for="(rpt, ri) in [(() => { try { return JSON.parse(dev.task_report) } catch(e) { return null } })()]" :key="'rpt'+ri">
+                             <template v-if="rpt">
+                                <div class="flex items-center gap-1 justify-center w-full max-w-[160px]">
+                                   <span class="text-[10px] text-gray-200 truncate font-bold" :title="rpt.task_name">{{ rpt.task_name }}</span>
+                                </div>
+                                <!-- 正在执行：蓝色脉冲 -->
+                                <span v-if="rpt.status === '正在执行'" class="text-[9px] bg-blue-900/40 text-blue-400 border border-blue-700 px-1.5 py-0.5 rounded-full animate-pulse font-bold">🔄 正在执行</span>
+                                <!-- 执行完成 + 成功 -->
+                                <span v-else-if="rpt.status === '执行完成' && rpt.success" class="text-[9px] text-green-400 font-bold">✅ 执行成功</span>
+                                <!-- 执行完成 + 失败：可点击查看日志 -->
+                                <span v-else-if="rpt.status === '执行完成' && !rpt.success" 
+                                      class="text-[9px] bg-red-900/40 text-red-400 border border-red-800 px-1.5 py-0.5 rounded-full cursor-pointer hover:bg-red-700 hover:text-white transition-colors font-bold"
+                                      @click="showTaskError(rpt)">❌ 查看错误日志</span>
+                                <div class="text-[8px] text-gray-600 font-mono">{{ rpt.time }}</div>
+                             </template>
+                          </template>
+                       </template>
+                       <!-- 心跳上报的任务列表（辅助信息） -->
+                       <template v-else-if="dev.task_status">
+                          <template v-for="(ts, si) in [(() => { try { return JSON.parse(dev.task_status) } catch(e) { return [] } })()]" :key="'ts'+si">
+                             <div v-for="(item, idx) in ts" :key="idx" class="flex items-center gap-1 justify-center">
+                                <span class="text-[10px] text-gray-400 truncate max-w-[100px]" :title="item.name">{{ item.name }}</span>
+                                <span :class="['px-1 py-0 rounded text-[9px] font-mono whitespace-nowrap border', item.time === '等待执行' ? 'bg-blue-900/20 text-blue-400 border-blue-800/50' : 'bg-gray-800 text-gray-500 border-gray-700']">{{ item.time }}</span>
+                             </div>
+                          </template>
+                       </template>
+                       <span v-if="!dev.task_report && !dev.task_status" class="text-gray-600 text-[10px]">无任务</span>
                     </div>
-                    <span v-else class="text-gray-600 text-[10px]">无任务</span>
                  </td>
                  <td class="p-3 text-gray-400 font-mono text-right text-[10px]">
                     {{ dev.last_heartbeat ? new Date(dev.last_heartbeat * 1000).toLocaleTimeString() : '---' }}
@@ -2517,7 +3386,7 @@ onMounted(async () => {
                  <td class="p-3 text-center">
                     <div class="flex items-center justify-center gap-2">
                        <button @click="openConfigModal(dev)" class="bg-teal-700 hover:bg-teal-600 text-white px-3 py-1 rounded shadow transition-colors font-bold text-[10px]">配置</button>
-                       <button @click="selectDeviceAndConnect(dev)" class="bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1 rounded shadow transition-colors font-bold text-[10px]">控制</button>
+                       <button @click="selectDeviceAndConnect(dev, true)" class="bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1 rounded shadow transition-colors font-bold text-[10px]">控制</button>
                        <button @click="deleteDevice(dev)" class="bg-red-900/40 hover:bg-red-700 hover:text-white text-red-300 border border-red-800 px-3 py-1 rounded shadow transition-colors font-bold text-[10px]">删除</button>
                     </div>
                  </td>
@@ -2530,30 +3399,30 @@ onMounted(async () => {
     <!-- Removed dead code placeholder -->
 
     <!-- 中间巨型工作区：控制台(原脚本引擎) -->
-    <div v-show="activeTab === '⚡️ 控制台'" class="relative flex flex-1 overflow-hidden p-4 gap-4 justify-start pl-[560px] bg-black">
+        <!-- =============== ⚡️ 控制台 =============== -->
+        <div v-if="activeTab === '⚡️ 控制台'" class="relative flex flex-col flex-1 overflow-auto bg-black bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-gray-900 via-gray-950 to-black p-0 custom-scrollbar">
       
-      <!-- 左：设备状态与光速屏幕投射及侧边实体按键融合区 (群控悬浮版) -->
-      <div class="flex gap-2 shrink-0 absolute z-[100] shadow-2xl rounded-2xl"
-           :style="{ left: deviceWin.x + 'px', top: deviceWin.y + 'px', width: deviceWin.w + 'px', height: deviceWin.h + 'px' }">
-           
-        <div class="flex flex-col flex-1 bg-gray-800 border border-gray-700 rounded-xl shadow-2xl relative z-30 overflow-hidden">
+      <!-- [上半区]: 控制台原主功能区 (精密动态对齐方案) -->
+      <div class="relative flex shrink-0 justify-start pl-[460px] pr-4 pb-4" :style="{ height: (deviceWin.h + deviceWin.y) + 'px', paddingTop: deviceWin.y + 'px' }">
+        <!-- 左：设备状态与光速屏幕投射及侧边实体按键融合区 (群控悬浮版) -->
+        <div class="flex gap-2 shrink-0 absolute z-[100] shadow-2xl rounded-2xl"
+             :style="{ left: deviceWin.x + 'px', top: deviceWin.y + 'px', width: deviceWin.w + 'px', height: deviceWin.h + 'px' }">
+             
+          <div class="flex flex-col flex-1 bg-gray-800 border border-gray-700 rounded-xl shadow-2xl relative z-30 overflow-hidden">
         
         <!-- 连接面板被压缩至单行 (顶端拖动握把) -->
         <div @mousedown="startWinDrag" class="cursor-move p-3 border-b border-gray-700 flex items-center justify-between shrink-0 w-full bg-gray-900/50 text-xs transition-colors hover:bg-gray-900/80 active:bg-gray-800">
            <!-- 动态显示区：根据模式展示不同内容 -->
-           <div class="flex items-center gap-2 flex-1">
-             <template v-if="connectionMode === 'ws'">
-                <span class="text-indigo-400 font-bold shrink-0 ml-1">云隧道(WS):</span>
-                <span class="bg-gray-900 border border-gray-600 rounded-md px-2 py-1.5 text-gray-200 shadow-inner font-mono text-[11px] select-all truncate w-[140px]">{{ devices.find(d => d.udid === selectedDevice)?.device_no || selectedDevice || '未锁定设备' }}</span>
-             </template>
-             <template v-else-if="connectionMode === 'lan'">
-                <span class="text-amber-400 font-bold shrink-0 ml-1">内网(LAN):</span>
-                <input @mousedown.stop v-model="deviceIp" placeholder="输入局域网IP" class="w-[140px] bg-gray-900 border border-gray-600 rounded-md px-2 py-1.5 text-gray-200 focus:outline-none focus:ring-1 focus:ring-amber-500 focus:border-amber-500 transition-colors shadow-inner font-mono text-[11px]" />
-             </template>
-             <template v-else>
-                <span class="text-green-400 font-bold shrink-0 ml-1">线缆通道:</span>
-                <span class="bg-gray-900 border border-gray-600 rounded-md px-2 py-1.5 text-green-300 shadow-inner font-mono text-[11px] font-bold text-center w-[140px]">USB 高速互联</span>
-             </template>
+           <div class="flex items-center gap-2 flex-1 ml-1">
+             
+             <select v-if="batchDevices?.length > 0" v-model="selectedDevice" @change="handleMasterChange" @mousedown.stop class="bg-gray-950 border border-gray-700 hover:border-gray-500 rounded-md px-2 py-1.5 text-gray-200 shadow-inner font-mono text-[11px] w-[140px] outline-none transition-all cursor-pointer focus:border-indigo-500">
+                <option v-for="dev in batchDevices" :key="dev.udid" :value="dev.udid">
+                   {{ dev.device_no || dev.udid.substring(0,8) }}
+                </option>
+             </select>
+             <span v-else class="bg-gray-900 border border-gray-700 rounded-md px-2 py-1.5 text-gray-600 shadow-inner font-mono text-[11px] w-[140px] text-center italic">
+                未锁定
+             </span>
            </div>
            
            <!-- 三态单选按钮组 -->
@@ -2591,10 +3460,15 @@ onMounted(async () => {
             <div class="px-3 py-1.5 bg-black rounded-md text-gray-300 flex justify-between text-[11px] font-mono border border-gray-800 items-center">
               <div class="flex items-center gap-3">
                  <div class="flex items-center gap-1.5">
-                    <span class="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
-                    <span class="text-gray-500">PNT:</span> 
-                    <span class="text-indigo-400 font-bold tracking-wider" v-if="pntX !== '--'">({{pntX}}, {{pntY}})</span>
-                    <span class="text-gray-600 font-bold tracking-wider" v-else>(--, --)</span>
+                      <span class="text-indigo-400 font-bold tracking-wider">
+                        {{ pntLabel !== '(--, --)' ? pntLabel : (selectedDevice && deviceSizeMap[selectedDevice] ? `${deviceSizeMap[selectedDevice]?.width || 0} × ${deviceSizeMap[selectedDevice]?.height || 0} pt` : 'READY') }}
+                      </span>
+                     <!-- v1668.23 实时延迟监控 -->
+                     <div class="flex items-center gap-1 px-1.5 py-0.5 rounded-full mr-1" :class="[wsLatency !== '--' && parseInt(wsLatency) < 200 ? 'bg-green-900/30 border border-green-600/40' : wsLatency !== '--' && parseInt(wsLatency) < 500 ? 'bg-yellow-900/30 border border-yellow-600/40' : 'bg-gray-800/60 border border-gray-700/50']" :title="'上次指令往返延迟: ' + wsLatency">
+                        <span class="w-1 h-1 rounded-full" :class="[wsLatency !== '--' && parseInt(wsLatency) < 200 ? 'bg-green-400' : wsLatency !== '--' && parseInt(wsLatency) < 500 ? 'bg-yellow-400' : 'bg-gray-500']"></span>
+                        <span class="text-[9px] font-mono font-bold tracking-tight whitespace-nowrap" :class="[wsLatency !== '--' && parseInt(wsLatency) < 200 ? 'text-green-400' : wsLatency !== '--' && parseInt(wsLatency) < 500 ? 'text-yellow-400' : 'text-gray-500']">{{ wsLatency }}</span>
+                     </div>
+
                  </div>
                  <div class="w-px h-3 bg-gray-800 mx-1"></div>
                  <div class="flex items-center gap-1.5">
@@ -2644,6 +3518,19 @@ onMounted(async () => {
                <span class="text-xl drop-shadow-md">🔒</span>
                <span class="text-[10px] mt-0.5 font-bold tracking-tighter">锁屏</span>
              </button>
+
+             <!-- 新增：群控与日志控制钩子 -->
+             <div class="h-px bg-gray-800 mx-1 mt-2 mb-1"></div>
+             <label class="flex flex-col items-center justify-center w-12 h-10 rounded-xl bg-gray-800 border border-gray-700 hover:bg-gray-700 transition-all cursor-pointer group">
+               <input type="checkbox" v-model="isGroupControl" class="hidden" />
+               <span class="text-sm shadow-md" :class="isGroupControl ? 'text-green-500' : 'text-gray-500 mb-0.5'">{{ isGroupControl ? '🟢' : '⚪️' }}</span>
+               <span class="text-[9px] mt-0.5 font-bold tracking-tighter" :class="isGroupControl ? 'text-green-400' : 'text-gray-400'">群控</span>
+             </label>
+             <label class="flex flex-col items-center justify-center w-12 h-10 rounded-xl bg-gray-800 border border-gray-700 hover:bg-gray-700 transition-all cursor-pointer group mt-1">
+               <input type="checkbox" v-model="isLogsOnlyMode" class="hidden" />
+               <span class="text-sm shadow-md" :class="isLogsOnlyMode ? 'text-blue-500' : 'text-gray-500 mb-0.5'">{{ isLogsOnlyMode ? '📝' : '📺' }}</span>
+               <span class="text-[9px] mt-0.5 font-bold tracking-tighter" :class="isLogsOnlyMode ? 'text-blue-400' : 'text-gray-400'">日志</span>
+             </label>
         </div>
 
         <!-- 全域缩放齿轮手柄 -->
@@ -2654,7 +3541,7 @@ onMounted(async () => {
       </div>
 
       <!-- 右：三列工作流矩阵 -->
-      <div class="flex flex-1 gap-4 overflow-hidden">
+      <div class="flex flex-1 gap-4 overflow-x-auto custom-scrollbar pb-2">
         
         <!-- 列1：原语库 -->
         <div class="flex flex-col w-[260px] bg-gray-800 border border-gray-700 rounded-xl shadow-xl overflow-hidden flex-shrink-0">
@@ -2667,103 +3554,64 @@ onMounted(async () => {
                <span class="mr-2 text-gray-500 text-[10px]">▶</span> {{ act.label }}
              </div>
            </div>
-        </div>
 
-        <!-- 列2：指令队列与文档面板 -->
-        <div class="flex flex-col w-[230px] bg-gray-800 border border-gray-700 rounded-xl shadow-xl overflow-hidden flex-shrink-0">
-           
-           <!-- 上截：队列 -->
-           <div class="flex flex-col flex-1 h-3/5 border-b border-gray-700 relative">
-             <div class="text-[11px] font-bold text-gray-300 p-3 border-b border-gray-700 bg-gray-900/80 flex items-center justify-between tracking-widest uppercase">
-                <div class="flex items-center gap-2"><span class="text-amber-500">⚙️</span> 指令队列</div>
-                <span class="bg-black text-gray-400 font-mono text-[9px] px-2 py-0.5 rounded-full border border-gray-700">{{ actionQueue.length }} OPs</span>
-             </div>
-             
-             <div class="flex-1 overflow-y-auto p-2 bg-gray-900/30 custom-scrollbar flex flex-col gap-1">
-                <div v-if="actionQueue.length === 0" class="h-full flex items-center justify-center text-gray-600 text-xs font-medium tracking-wide">
-                   从左侧植入序列指令
-                </div>
-                <div v-for="(act, idx) in actionQueue" :key="idx" class="text-xs px-2 py-2 bg-gray-800 hover:bg-gray-700 rounded border border-gray-700 text-gray-300 flex justify-between items-center group transition-colors">
-                  <span><span class="text-gray-500 mr-1 font-mono">[{{idx+1}}]</span> {{ act.label }}</span>
-                  <span v-if="act.type.includes('FIND')" class="text-amber-500 bg-amber-900/30 border border-amber-900 px-1 py-0.5 rounded font-mono text-[8px]">Img+B64</span>
-                </div>
-             </div>
-             
-             <div class="p-2 border-t border-gray-700 bg-gray-900/50">
-                <button @click="clearQueue" class="w-full bg-gray-800 hover:bg-red-900 text-gray-400 hover:text-red-300 font-semibold py-1.5 text-[11px] rounded shadow-sm border border-gray-700 transition-colors tracking-widest">
-                  🗑️ 轨道清空
-                </button>
-             </div>
+           <!-- ⬇️ 搬运过来的下截：字典 ⬇️ -->
+           <div class="flex flex-col h-[220px] bg-gray-950 border-t border-gray-700 relative" v-if="selectedActionDoc">
+              <div class="text-[10px] text-gray-400 p-2 font-bold tracking-widest uppercase border-b border-gray-800 flex justify-between items-center bg-gray-900/80">
+                 <span class="flex items-center gap-1.5"><span class="text-blue-400">📖</span> 释义: {{ selectedActionDoc.label.replace(/\[.*?\]\s*/, '') }}</span>
+                 <button @click="addActionToQueue(selectedActionDoc)" class="bg-blue-600 hover:bg-blue-500 text-white px-1.5 py-0.5 rounded shadow text-[9px] tracking-wide transition-colors">➕ 入列</button>
+              </div>
+              <div class="p-3 text-[11px] text-gray-300 flex flex-col gap-2 overflow-y-auto custom-scrollbar flex-1">
+                 <div><span class="text-gray-500 font-bold mb-0.5 block">✨ 功能:</span> {{ selectedActionDoc.desc }}</div>
+                 <div><span class="text-gray-500 font-bold mb-0.5 block">🛠 场景:</span> {{ selectedActionDoc.usage }}</div>
+                 
+                 <template v-if="selectedActionDoc.type === 'VPN_HYSTERIA'">
+                   <div class="mt-1 p-2 bg-gray-900 border border-indigo-500/30 rounded-lg">
+                      <div class="text-indigo-400 font-bold mb-1 flex justify-between items-center text-[10px]">
+                        <span>🔗 节点解析池</span>
+                      </div>
+                      <textarea v-model="vpnInputText" class="w-full h-14 bg-black border border-gray-700 rounded p-1 text-[10px] text-green-400 font-mono focus:border-indigo-500 outline-none resize-none custom-scrollbar" placeholder="粘贴节点 URI 或订阅链"></textarea>
+                      <div class="flex gap-1.5 mt-1.5">
+                         <button @click="parseVpnInput" :disabled="isVpnParsing" class="flex-1 bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white py-1 rounded text-[9px] font-bold shadow transition-colors flex justify-center items-center">
+                            <span v-if="isVpnParsing" class="animate-pulse">🔄 折解中..</span>
+                            <span v-else>📡 智能提取</span>
+                         </button>
+                         <button @click="addAllVpnNodesToScript" v-if="parsedVpnNodes.length > 0" class="bg-emerald-700 hover:bg-emerald-600 text-emerald-100 border border-emerald-600 px-2 py-1 rounded text-[9px] shadow transition-colors">写入</button>
+                      </div>
+                      <!-- 节点展示 -->
+                      <div v-if="parsedVpnNodes.length > 0" class="mt-2 flex flex-col gap-1 max-h-24 overflow-y-auto custom-scrollbar pr-1">
+                         <div v-for="(node, idx) in parsedVpnNodes" :key="node.id || idx" class="bg-gray-800 border border-gray-700 p-1.5 rounded flex justify-between items-center group">
+                            <div class="flex flex-col min-w-0 flex-1">
+                               <span class="font-bold text-gray-200 truncate text-[10px]">{{ node.name || node.server }}</span>
+                            </div>
+                            <button @click="addVpnNodeToScript(node)" class="bg-emerald-600 hover:bg-emerald-500 text-white px-1.5 py-0.5 rounded shadow-sm text-[8px] tracking-wide shrink-0 transition-colors">+ 写入</button>
+                         </div>
+                      </div>
+                   </div>
+                 </template>
+                 <template v-else>
+                   <div><span class="text-gray-500 font-bold mb-0.5 block">🎯 参数:</span>
+                      <pre class="text-[10px] text-indigo-300 font-mono bg-gray-900 p-1.5 rounded border border-gray-800 whitespace-pre-wrap">{{ selectedActionDoc.params }}</pre>
+                   </div>
+                 </template>
+              </div>
            </div>
-
-           <!-- 下截：字典 -->
-           <div class="flex flex-col h-2/5 min-h-[160px] bg-gray-950 relative" v-if="selectedActionDoc">
-             <div class="text-[10px] text-gray-400 p-2 font-bold tracking-widest uppercase border-b border-gray-800 flex justify-between items-center bg-gray-900/80">
-                <span class="flex items-center gap-1.5"><span class="text-blue-400">📖</span> 释义: {{ selectedActionDoc.label.replace(/\[.*?\]\s*/, '') }}</span>
-                <button @click="addActionToQueue(selectedActionDoc)" class="bg-blue-600 hover:bg-blue-500 text-white px-2 py-1 rounded shadow text-[9px] tracking-wide transition-colors">➕ 入列</button>
-             </div>
-             <div class="p-3 text-[11px] text-gray-300 flex flex-col gap-2 overflow-y-auto custom-scrollbar">
-                <div><span class="text-gray-500 font-bold mb-0.5 block">✨ 功能:</span> {{ selectedActionDoc.desc }}</div>
-                <div><span class="text-gray-500 font-bold mb-0.5 block">🛠 场景:</span> {{ selectedActionDoc.usage }}</div>
-                
-                <template v-if="selectedActionDoc.type === 'VPN_HYSTERIA'">
-                  <div class="mt-2 p-3 bg-gray-900 border border-indigo-500/30 rounded-lg">
-                     <div class="text-indigo-400 font-bold mb-2 flex justify-between items-center">
-                       <span>🔗 网关/代理节点解析池</span>
-                       <span class="text-[9px] text-gray-500 font-normal">支持 SS / V2Ray / Hys2 / 外挂订阅</span>
-                     </div>
-                     <textarea v-model="vpnInputText" class="w-full h-16 bg-black border border-gray-700 rounded p-1.5 text-[10px] text-green-400 font-mono focus:border-indigo-500 outline-none resize-none custom-scrollbar" placeholder="粘贴完整的节点分享 URI，或远程订阅链接 (http/https://...)"></textarea>
-                     <div class="flex gap-2 mt-2">
-                        <button @click="parseVpnInput" :disabled="isVpnParsing" class="flex-1 bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white py-1.5 rounded text-[10px] font-bold shadow transition-colors flex justify-center items-center">
-                           <span v-if="isVpnParsing" class="animate-pulse">🔄 节点拓扑拆解中...</span>
-                           <span v-else>📡 智能提取接驳节点</span>
-                        </button>
-                        <button @click="addAllVpnNodesToScript" v-if="parsedVpnNodes.length > 0" class="bg-emerald-700 hover:bg-emerald-600 text-emerald-100 border border-emerald-600 px-3 py-1.5 rounded text-[10px] shadow transition-colors font-bold">
-                           📥 全部写入代码
-                        </button>
-                        <button @click="parsedVpnNodes = []" v-if="parsedVpnNodes.length > 0" class="bg-red-900/50 hover:bg-red-800 text-red-300 border border-red-800/50 px-3 py-1.5 rounded text-[10px] transition-colors">🗑 清除流</button>
-                     </div>
-                     
-                     <!-- 节点列表展示 -->
-                     <div v-if="parsedVpnNodes.length > 0" class="mt-3 flex flex-col gap-1.5 max-h-32 overflow-y-auto custom-scrollbar pr-1">
-                        <div v-for="(node, idx) in parsedVpnNodes" :key="node.id || idx" class="bg-gray-800 border border-gray-700 p-2 rounded flex justify-between items-center hover:border-indigo-500 transition-colors group">
-                           <div class="flex flex-col min-w-0 flex-1">
-                              <span class="font-bold text-gray-200 truncate">{{ node.name || node.server }}</span>
-                              <span class="text-[9px] text-gray-500 font-mono mt-0.5">{{ node.type }} | {{ node.server }}:{{ node.port }}</span>
-                           </div>
-                           <div class="flex items-center gap-1.5 ml-2 opacity-80 group-hover:opacity-100 transition-opacity">
-                             <button @click="copyVpnNode(node)" title="导出分享此节点" class="bg-gray-700 hover:bg-gray-600 border border-gray-600 text-gray-200 px-2 py-1 rounded shadow-sm text-[9px] tracking-wide shrink-0 transition-colors">
-                               🔗 复制导出
-                             </button>
-                             <button @click="addVpnNodeToScript(node)" class="bg-emerald-600 hover:bg-emerald-500 border border-emerald-500 text-white px-2 py-1 rounded shadow-sm text-[9px] tracking-wide shrink-0 transition-colors">
-                               + 写入代码
-                             </button>
-                           </div>
-                        </div>
-                     </div>
-                  </div>
-                </template>
-                <template v-else>
-                  <div><span class="text-gray-500 font-bold mb-0.5 block">🎯 参数:</span>
-                     <pre class="text-[10px] text-indigo-300 font-mono bg-gray-900 p-1.5 rounded border border-gray-800 whitespace-pre-wrap">{{ selectedActionDoc.params }}</pre>
-                  </div>
-                </template>
-             </div>
-           </div>
-           
-           <div class="flex items-center justify-center h-2/5 min-h-[160px] bg-gray-950 text-gray-600 text-[11px] font-medium tracking-wide" v-else>
-              请单击左侧原语查阅释义
+           <div class="flex items-center justify-center h-[160px] bg-gray-950 text-gray-600 text-[11px] font-medium tracking-wide border-t border-gray-800" v-else>
+              请单击动作查阅释义
            </div>
         </div>
 
          <!-- 列3：黑客代码编译器面板 / 扩展功能 Tab -->
-         <div class="flex flex-col flex-1 bg-gray-800 border border-gray-700 rounded-xl shadow-xl overflow-hidden relative">
+          <div class="flex flex-col flex-1 bg-gray-800 border border-gray-700 rounded-xl shadow-xl overflow-hidden relative">
             <div class="flex text-[11px] font-bold text-gray-300 border-b border-gray-700 bg-gray-900/80 tracking-widest uppercase shrink-0">
               <div @click="activeRightTab = 'code'" :class="['px-4 py-3 cursor-pointer transition-colors border-b-2', activeRightTab === 'code' ? 'text-green-400 border-green-500 bg-gray-800' : 'text-gray-500 border-transparent hover:text-gray-300']">
                 <span class="mr-1">👨‍💻</span> 代码框
               </div>
               <div @click="activeRightTab = 'extensions'" :class="['px-4 py-3 cursor-pointer transition-colors border-b-2', activeRightTab === 'extensions' ? 'text-blue-400 border-blue-500 bg-gray-800' : 'text-gray-500 border-transparent hover:text-gray-300']">
                 <span class="mr-1">🔧</span> 扩展功能
+              </div>
+              <div @click="activeRightTab = 'spoof'" :class="['px-4 py-3 cursor-pointer transition-colors border-b-2', activeRightTab === 'spoof' ? 'text-purple-400 border-purple-500 bg-gray-800' : 'text-gray-500 border-transparent hover:text-gray-300']">
+                <span class="mr-1">🎭</span> 伪装信息
               </div>
             </div>
             
@@ -2778,6 +3626,9 @@ onMounted(async () => {
                 </button>
                 <button @click="runActions" class="flex-1 bg-green-700 hover:bg-green-600 text-white font-bold py-2.5 text-sm rounded shadow border border-green-600 flex justify-center items-center gap-2 tracking-wider transition-colors">
                   <span>▶ 执行脚本</span>
+                </button>
+                <button @click="clearQueue" class="bg-gray-800 hover:bg-red-900/80 text-gray-400 hover:text-red-300 font-semibold px-3 py-2 text-xs rounded shadow-sm border border-gray-700 transition-colors tracking-widest flex items-center gap-1" title="清空当前的指令序列缓冲区">
+                   <span>🗑️ 轨道清空</span>
                 </button>
               </div>
             </div>
@@ -2823,8 +3674,7 @@ onMounted(async () => {
                        <textarea readonly class="w-full h-[40px] text-[8px] text-emerald-300 font-mono bg-transparent border-none resize-none custom-scrollbar select-text cursor-text focus:outline-none p-0 leading-tight" :value="multiColorJS" @click="copyText(multiColorJS)" title="点击即刻复印此宏"></textarea>
                    </div>
                 </div>
-              </div>
-              
+               </div>              
               <!-- 2. 图像裁切找图 (Crop & Image Base64) -->
               <div class="flex flex-col bg-gray-800/80 border border-gray-700 shadow-md rounded-lg overflow-hidden shrink-0">
                  <div class="bg-gray-700/60 px-3 py-2 text-[10px] font-bold tracking-widest text-pink-300 border-b border-gray-700 flex justify-between items-center">
@@ -2873,9 +3723,36 @@ onMounted(async () => {
                     <!-- 大型图钉与缓冲区视窗 -->
                     <div class="bg-gray-950 rounded border border-gray-800 min-h-[160px] max-h-[300px] overflow-y-auto custom-scrollbar p-2 mt-1 flex flex-col gap-2 relative">
                        <!-- 暂存等待验收的切片 -->
-                       <div v-if="pendingCrop" class="border-[1.5px] border-dashed border-green-500/60 bg-green-900/10 rounded overflow-hidden flex flex-col items-center justify-center p-3 w-full shadow-[inset_0_0_20px_rgba(34,197,94,0.15)] animate-pulse-slow">
-                          <span class="text-[10px] text-green-400/80 font-bold tracking-widest block mb-2">- 待收纳的提取截面 -</span>
-                          <img :src="'data:image/png;base64,' + pendingCrop.b64" class="max-w-[120px] max-h-[120px] object-contain border border-gray-700 bg-black/60 shadow-xl" />
+                       <div v-if="pendingCrop" class="border-[1.5px] border-dashed border-green-500/60 bg-green-900/10 rounded overflow-hidden flex flex-col items-center justify-center p-3 w-full shadow-[inset_0_0_20px_rgba(34,197,94,0.15)]">
+                          <div class="flex justify-between w-full items-center mb-2 px-1">
+                             <span class="text-[10px] text-green-400/80 font-bold tracking-widest">- 待收纳的提取截面 -</span>
+                             <!-- 橡皮擦控制条 -->
+                             <div class="flex items-center gap-1.5">
+                                <button @click="isEraserMode = !isEraserMode" :class="['p-1 rounded text-[10px] flex items-center gap-1 transition-colors', isEraserMode ? 'bg-indigo-600 text-white shadow-sm' : 'bg-gray-800 text-gray-400 hover:text-gray-200 border border-gray-700']" title="开启橡皮擦后，可以在截面上涂抹擦除不平整的边缘或背景。">
+                                   <span>🧽 橡皮擦</span>
+                                </button>
+                                <div v-if="isEraserMode" class="flex items-center gap-1.5">
+                                   <span class="text-[9px] text-gray-500 scale-90">粗细:</span>
+                                   <input type="range" v-model.number="eraserBrushSize" min="2" max="40" class="w-12 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer" />
+                                   <span class="text-[9px] text-gray-400 w-3 text-center">{{eraserBrushSize}}</span>
+                                   
+                                   <!-- 撤销操作 -->
+                                   <button @click="undoEraser" :disabled="eraserHistory.length === 0" :class="['p-1 px-1.5 rounded text-[9px] border flex items-center gap-0.5 transition-colors', eraserHistory.length > 0 ? 'bg-gray-800 border-gray-600 text-yellow-500 hover:bg-gray-700 hover:text-yellow-400' : 'bg-gray-900/40 border-gray-800/50 text-gray-600 cursor-not-allowed']" title="点击回退上一次橡皮擦涂抹">
+                                      <span>↩️ 撤销</span>
+                                   </button>
+                                </div>
+                             </div>
+                          </div>
+
+                          <!-- 图片 / 画布 渲染区 -->
+                          <div class="relative flex justify-center items-center rounded overflow-hidden">
+                             <!-- 增加透明棋盘格底纹以便让透明镂空可见 -->
+                             <div class="absolute inset-0 z-0 bg-neutral-900" style="background-image: conic-gradient(#262626 25%, #171717 0 50%, #262626 0 75%, #171717 0); background-size: 12px 12px;"></div>
+                             
+                             <img v-if="!isEraserMode" :src="'data:image/png;base64,' + pendingCrop.b64" class="max-w-[150px] max-h-[150px] object-contain border border-gray-700 shadow-xl relative z-10" />
+                             <canvas v-else ref="eraserCanvasRef" @mousedown="startErase" @mousemove="handleErase" @mouseup="endErase" @mouseleave="endErase" :style="{ cursor: eraserCursor }" class="max-w-[150px] max-h-[150px] object-contain border border-indigo-500/50 shadow-xl relative z-10"></canvas>
+                          </div>
+
                           <span class="text-[9px] text-gray-500 mt-2 font-mono">Size: {{pendingCrop.w}}x{{pendingCrop.h}}</span>
                        </div>
                     
@@ -2931,7 +3808,7 @@ onMounted(async () => {
               <!-- 4. APP 起搏器 (App Lifecycle) -->
               <div class="flex flex-col bg-gray-800/80 border border-gray-700 shadow-md rounded-lg overflow-hidden shrink-0 mt-4 mb-2">
                  <div class="bg-gray-700/60 px-3 py-2 text-[10px] font-bold tracking-widest text-amber-400 border-b border-gray-700">
-                    � 深渊进程刺客 (Launch & Terminate)
+                    💀 深渊进程刺客 (Launch & Terminate)
                  </div>
                  <div class="p-3 flex flex-col gap-3">
                     <div class="flex flex-col gap-1">
@@ -2978,6 +3855,121 @@ onMounted(async () => {
                  </div>
               </div>
             </div>
+
+            <!-- Spoof Tab Content (伪装信息生成器) -->
+            <div v-show="activeRightTab === 'spoof'" class="flex flex-col flex-1 min-h-0 p-3 bg-gray-900/50 overflow-y-auto custom-scrollbar gap-3">
+
+              <!-- 基础参数 -->
+              <div class="flex flex-col bg-gray-800/80 border border-gray-700 shadow-md rounded-lg overflow-hidden shrink-0">
+                <div class="bg-gray-700/60 px-3 py-2 text-[10px] font-bold tracking-widest text-purple-300 border-b border-gray-700">
+                  📦 安装基础参数
+                </div>
+                <div class="p-3 flex flex-col gap-2.5">
+                  <div class="flex flex-col gap-1">
+                    <label class="text-[10px] text-gray-400">IPA 文件名（模糊匹配）</label>
+                    <input v-model="spoofForm.filename" type="text" placeholder="如: TikTok / Calculator" class="w-full bg-gray-950 border border-gray-600 rounded px-2 py-1.5 text-[11px] text-purple-200 outline-none focus:border-purple-500 font-mono transition-colors" />
+                  </div>
+                  <div class="flex flex-col gap-1">
+                    <label class="text-[10px] text-gray-400">克隆编号（0 = 原包，1/2/8 = 分身）</label>
+                    <input v-model="spoofForm.cloneNumber" type="text" placeholder="1" class="w-full bg-gray-950 border border-gray-600 rounded px-2 py-1.5 text-[11px] text-purple-200 outline-none focus:border-purple-500 font-mono transition-colors" />
+                  </div>
+                </div>
+              </div>
+
+              <!-- 设备型号选择 -->
+              <div class="flex flex-col bg-gray-800/80 border border-gray-700 shadow-md rounded-lg overflow-hidden shrink-0">
+                <div class="bg-gray-700/60 px-3 py-2 text-[10px] font-bold tracking-widest text-cyan-300 border-b border-gray-700">
+                  📱 设备型号
+                </div>
+                <div class="p-3 flex flex-col gap-2.5">
+                  <div class="flex flex-col gap-1">
+                    <label class="text-[10px] text-gray-400">选择机型（自动填充屏幕参数）</label>
+                    <select v-model="spoofForm.selectedDevice" class="w-full bg-gray-950 border border-gray-600 rounded px-2 py-1.5 text-[11px] text-cyan-200 outline-none focus:border-cyan-500 font-mono transition-colors">
+                      <option v-for="(info, model) in devicePresets" :key="model" :value="model">{{ model }} - {{ info.name }}</option>
+                    </select>
+                  </div>
+                  <div class="flex flex-col gap-1">
+                    <label class="text-[10px] text-gray-400">设备名称（用户自定义名）</label>
+                    <input v-model="spoofForm.deviceName" type="text" placeholder="iPhone" class="w-full bg-gray-950 border border-gray-600 rounded px-2 py-1.5 text-[11px] text-cyan-200 outline-none focus:border-cyan-500 font-mono transition-colors" />
+                  </div>
+                  <!-- 自动填充预览 -->
+                  <div v-if="devicePresets[spoofForm.selectedDevice]" class="bg-gray-950 rounded border border-gray-800 p-2 grid grid-cols-3 gap-1.5 text-[9px] font-mono text-gray-500">
+                    <span>宽:{{ devicePresets[spoofForm.selectedDevice]?.screenWidth }}</span>
+                    <span>高:{{ devicePresets[spoofForm.selectedDevice]?.screenHeight }}</span>
+                    <span>缩放:{{ devicePresets[spoofForm.selectedDevice]?.screenScale }}</span>
+                    <span>分辨率:{{ devicePresets[spoofForm.selectedDevice]?.nativeBounds }}</span>
+                    <span>刷新率:{{ devicePresets[spoofForm.selectedDevice]?.maxFPS }}Hz</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 国家/地区选择 -->
+              <div class="flex flex-col bg-gray-800/80 border border-gray-700 shadow-md rounded-lg overflow-hidden shrink-0">
+                <div class="bg-gray-700/60 px-3 py-2 text-[10px] font-bold tracking-widest text-amber-300 border-b border-gray-700">
+                  🌍 国家/地区（自动填充运营商/区域/语言）
+                </div>
+                <div class="p-3 flex flex-col gap-2.5">
+                  <select v-model="spoofForm.selectedCountry" class="w-full bg-gray-950 border border-gray-600 rounded px-2 py-1.5 text-[11px] text-amber-200 outline-none focus:border-amber-500 font-mono transition-colors">
+                    <option v-for="(info, code) in countryPresets" :key="code" :value="code">{{ code }} - {{ info.name }}</option>
+                  </select>
+                  <!-- 自动填充预览 -->
+                  <div v-if="countryPresets[spoofForm.selectedCountry]" class="bg-gray-950 rounded border border-gray-800 p-2 flex flex-col gap-1 text-[9px] font-mono text-gray-500">
+                    <div class="grid grid-cols-2 gap-1">
+                      <span>运营商: {{ countryPresets[spoofForm.selectedCountry]?.carrier }}</span>
+                      <span>MCC/MNC: {{ countryPresets[spoofForm.selectedCountry]?.mcc }}/{{ countryPresets[spoofForm.selectedCountry]?.mnc }}</span>
+                    </div>
+                    <div class="grid grid-cols-2 gap-1">
+                      <span>时区: {{ countryPresets[spoofForm.selectedCountry]?.timezone }}</span>
+                      <span>货币: {{ countryPresets[spoofForm.selectedCountry]?.currency }}</span>
+                    </div>
+                    <div class="grid grid-cols-2 gap-1">
+                      <span>语言: {{ derivedLangParams.languageCode }}</span>
+                      <span>区域: {{ derivedLangParams.localeIdentifier }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 系统版本选择 -->
+              <div class="flex flex-col bg-gray-800/80 border border-gray-700 shadow-md rounded-lg overflow-hidden shrink-0">
+                <div class="bg-gray-700/60 px-3 py-2 text-[10px] font-bold tracking-widest text-green-300 border-b border-gray-700">
+                  ⚙️ 系统版本
+                </div>
+                <div class="p-3 flex flex-col gap-2.5">
+                  <select v-model="spoofForm.selectedSystemVersion" class="w-full bg-gray-950 border border-gray-600 rounded px-2 py-1.5 text-[11px] text-green-200 outline-none focus:border-green-500 font-mono transition-colors">
+                    <option v-for="(info, ver) in systemVersionPresets" :key="ver" :value="ver">iOS {{ ver }} ({{ info.buildVersion }})</option>
+                  </select>
+                </div>
+              </div>
+
+              <!-- 网络拦截开关 -->
+              <div class="flex flex-col bg-gray-800/80 border border-gray-700 shadow-md rounded-lg overflow-hidden shrink-0">
+                <div class="bg-gray-700/60 px-3 py-2 text-[10px] font-bold tracking-widest text-red-300 border-b border-gray-700">
+                  🛡️ 网络拦截
+                </div>
+                <div class="p-3 flex flex-col gap-2">
+                  <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" v-model="spoofForm.enableNetworkInterception" class="accent-red-500" />
+                    <span class="text-[11px] text-gray-300">网络拦截总开关</span>
+                  </label>
+                  <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" v-model="spoofForm.disableQUIC" class="accent-red-500" />
+                    <span class="text-[11px] text-gray-300">禁用 QUIC/UDP</span>
+                  </label>
+                </div>
+              </div>
+
+              <!-- 生成代码按钮 -->
+              <div class="flex gap-2 shrink-0">
+                <button @click="generateSpoofCode(false)" class="flex-1 py-3 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-bold rounded-lg shadow-lg border border-purple-500 transition-all active:scale-[0.98] flex justify-center items-center gap-1.5 tracking-wider">
+                  <span>🚀 生成完整伪装</span>
+                </button>
+                <button @click="generateSpoofCode(true)" class="flex-1 py-3 bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-bold rounded-lg shadow-lg border border-gray-700 transition-all active:scale-[0.98] flex justify-center items-center gap-1.5 tracking-wider">
+                  <span>🛡️ 仅伪装克隆</span>
+                </button>
+              </div>
+
+            </div>
             
             <!-- Logs section, always visible -->
             <div class="shrink-0 flex flex-col gap-1.5 bg-black p-3 rounded-none border-t border-gray-800 shadow-inner h-[180px] overflow-y-auto custom-scrollbar select-text cursor-text">
@@ -2993,12 +3985,74 @@ onMounted(async () => {
                   </div>
                </div>
             </div>
-         </div>
-      </div>
-    </div>
-    
-    <!-- 配置中心独立渲染 -->
-    <div v-show="activeTab === '⚙️ 配置中心'" class="flex flex-1 flex-col overflow-auto p-6 bg-[#0B0F19]">
+          </div> <!-- End Column 3 (3587) -->
+
+          <!-- [右三列]: 从属受控方矩阵 (原底部矩阵) -->
+          <div v-if="batchDevices.filter(d => d.udid !== selectedDevice).length > 0" class="flex flex-col w-[580px] bg-gray-800 border border-gray-700 rounded-xl shadow-xl overflow-hidden shrink-0">
+             <div class="px-4 py-3 bg-gray-900/80 border-b border-gray-700 flex items-center justify-between shrink-0">
+                <h3 class="text-[11px] font-bold text-gray-300 flex items-center gap-2 tracking-widest uppercase">
+                    <span class="text-indigo-400">🤖</span> 从属矩阵
+                    <span v-if="isGroupControl" class="ml-2 text-[9px] text-green-400 border border-green-500/20 bg-green-900/10 px-1.5 py-0.5 rounded">群控同步</span>
+                </h3>
+                <div class="flex items-center gap-1.5">
+                    <select v-model="slaveQuality" @change="batchDisconnectAll()" class="bg-gray-800 text-gray-400 border border-gray-700 rounded px-1.5 py-1 text-[10px] font-bold outline-none focus:border-indigo-500 cursor-pointer h-[26px]">
+                       <option value="low">🌫️ 模糊</option>
+                       <option value="medium">📺 普通</option>
+                       <option value="high">🔬 高清</option>
+                    </select>
+                    <button @click="batchConnectAll" class="bg-indigo-600/30 hover:bg-indigo-500/60 text-indigo-300 px-2 py-1 rounded text-[10px] font-bold border border-indigo-500/30 transition-all active:scale-95" title="一键串流">💫</button>
+                    <button @click="batchDisconnectAll" class="bg-gray-800 hover:bg-red-900/50 text-gray-400 hover:text-red-400 px-2 py-1 rounded text-[10px] font-bold border border-gray-700 transition-all active:scale-95" title="断流回路">⏹</button>
+                </div>
+             </div>
+             
+             <div class="flex-1 overflow-y-auto p-3 custom-scrollbar bg-gray-950/20">
+                 <div class="flex flex-wrap gap-4 justify-center">
+                     <div v-for="dev in batchDevices.filter(d => d.udid !== selectedDevice)" :key="dev.udid" 
+                          class="w-40 bg-gray-900/60 border border-gray-800 rounded-lg overflow-hidden flex flex-col shadow-lg transition-all hover:border-gray-600 group">
+                          <!-- 节点头部 -->
+                          <div class="px-2 py-1.5 bg-black/60 border-b border-gray-800 flex items-center justify-between">
+                              <div class="flex items-center gap-1.5 min-w-0">
+                                  <span :class="['w-1.5 h-1.5 rounded-full shrink-0 shadow-[0_0_2px_currentColor]', dev.status === 'online' ? 'bg-green-500 text-green-500' : 'bg-gray-600 text-transparent']"></span>
+                                  <span class="text-[10px] font-bold text-gray-300 tracking-wider truncate" :title="dev.udid">{{ dev.device_no || dev.udid.substring(0,6) }}</span>
+                              </div>
+                          </div>
+ 
+                          <!-- 内容视窗 -->
+                          <div class="aspect-[9/16] bg-black relative flex flex-col overflow-hidden">
+                              <template v-if="!isLogsOnlyMode">
+                                  <img v-if="batchImageData[dev.udid]" :src="'data:image/jpeg;base64,' + batchImageData[dev.udid]" class="w-full h-full object-contain pointer-events-none" crossorigin="anonymous" />
+                                  <div v-else-if="batchSockets[dev.udid]" class="w-full h-full flex flex-col items-center justify-center gap-2 bg-gray-950/40">
+                                      <div class="w-4 h-4 border-2 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin"></div>
+                                      <span class="text-[9px] text-indigo-400/60 uppercase tracking-tighter">WS Linking...</span>
+                                  </div>
+                                  <img v-else-if="batchStreams[dev.udid]" :src="batchStreams[dev.udid]" class="w-full h-full object-contain pointer-events-none opacity-40 grayscale" crossorigin="anonymous" />
+                                  <div v-else class="flex-1 flex flex-col items-center justify-center gap-2 opacity-30 select-none">
+                                      <span class="text-3xl text-gray-600">📴</span>
+                                      <button @click="batchConnect(dev)" class="bg-gray-800 text-gray-400 border border-gray-700 hover:bg-indigo-900/50 hover:text-indigo-300 hover:border-indigo-500 px-2 py-1 rounded text-[9px] transition-colors mt-2">唤醒视频流</button>
+                                  </div>
+                              </template>
+                              <template v-else>
+                                  <div class="flex-1 p-2 bg-black overflow-y-auto custom-scrollbar flex flex-col gap-1 select-text cursor-text scroll-smooth" id="clone-logs-container">
+                                      <div v-for="(log, lidx) in (batchLogs[dev.udid] || []).slice(-100)" :key="lidx" 
+                                           class="text-[9px] text-gray-400 font-mono leading-tight break-all border-l border-indigo-500/20 pl-1 py-0.5 hover:bg-white/5 transition-colors">
+                                         {{ log }}
+                                      </div>
+                                      <!-- 自动锚点：用于保持日志底部显示 -->
+                                      <div class="h-0 w-0"></div>
+                                  </div>
+                              </template>
+                          </div>
+                     </div>
+                 </div>
+             </div>
+          </div>
+
+        </div> <!-- End Columns Wrapper (3526) -->
+      </div> <!-- End Upper Section (3385) -->
+
+
+    </div> <!-- End Console Tab Root (3382) -->
+    <div v-if="activeTab === '⚙️ 配置中心'" class="flex flex-1 flex-col overflow-auto p-6 bg-[#0B0F19]">
         <div class="max-w-6xl mx-auto w-full">
             <h2 class="text-2xl font-semibold text-gray-100 flex items-center mb-8">
                <span class="mr-2">⚙️</span>全局字典与预设配置管理中心
@@ -3120,6 +4174,21 @@ onMounted(async () => {
                   </div>
               </div>
 
+              <!-- Wi-Fi 配置 -->
+              <div>
+                  <label class="block text-gray-400 text-xs font-bold mb-3 uppercase tracking-wider">📶 Wi-Fi 配置</label>
+                  <div class="grid grid-cols-2 gap-4">
+                      <div>
+                          <label class="block text-gray-500 text-[10px] mb-1">Wi-Fi 名称 (SSID)</label>
+                          <input v-model="configForm.wifi_ssid" type="text" placeholder="网络名称" class="w-full bg-gray-950 border border-gray-800 text-gray-300 text-sm px-3 py-2 rounded focus:outline-none focus:border-teal-500 font-mono transition-colors">
+                      </div>
+                      <div>
+                          <label class="block text-gray-500 text-[10px] mb-1">Wi-Fi 密码 (明文)</label>
+                          <input v-model="configForm.wifi_password" type="text" placeholder="8位以上或留空" class="w-full bg-gray-950 border border-gray-800 text-gray-300 text-sm px-3 py-2 rounded focus:outline-none focus:border-teal-500 font-mono transition-colors">
+                      </div>
+                  </div>
+              </div>
+
               <!-- TikTok 多账号管理 -->
               <div>
                   <div class="flex justify-between items-center mb-3">
@@ -3177,7 +4246,8 @@ onMounted(async () => {
     </div>
 
     <!-- =============== 评论管理 ================= -->
-    <div v-show="activeTab === '💬 评论管理'" class="flex flex-1 flex-col overflow-auto p-6 bg-[#0B0F19]">
+        <!-- =============== 💬 评论管理 =============== -->
+        <div v-if="activeTab === '💬 评论管理'" class="flex flex-1 flex-col overflow-auto p-6 bg-[#0B0F19]">
       <div class="max-w-7xl mx-auto w-full space-y-4">
         
         <!-- 头部栏 -->
@@ -3235,7 +4305,8 @@ onMounted(async () => {
     </div>
 
     <!-- =============== TikTok 账号管理 ================= -->
-    <div v-show="activeTab === '🎵 TikTok 账号'" class="flex flex-1 flex-col overflow-auto p-6 bg-[#0B0F19]">
+        <!-- =============== 🎵 TikTok 账号 =============== -->
+        <div v-if="activeTab === '🎵 TikTok 账号'" class="flex flex-1 flex-col overflow-auto p-6 bg-[#0B0F19]">
         <div class="max-w-7xl mx-auto w-full space-y-4">
             <div class="flex flex-col md:flex-row justify-between items-center gap-4 bg-gray-900 p-4 rounded-lg border border-gray-800 shadow-md">
                 <div>
@@ -3246,6 +4317,62 @@ onMounted(async () => {
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
                     刷新数据
                 </button>
+            </div>
+
+            <!-- TikTok 资产筛选工具栏 -->
+            <div class="bg-gray-900/80 p-5 rounded-lg border border-gray-800 shadow-lg flex flex-wrap items-end gap-x-6 gap-y-4">
+                <div class="flex flex-col gap-1.5">
+                    <label class="text-[10px] font-bold text-gray-500 uppercase tracking-widest">🌍 归属国家</label>
+                    <select v-model="tkFilterForm.country" class="bg-black border border-gray-700 text-gray-200 text-xs px-3 py-2 rounded focus:outline-none focus:border-indigo-500 w-32 transition-all cursor-pointer">
+                        <option value="">全部国家</option>
+                        <option v-for="c in countries" :key="c.id" :value="c.name">{{ c.name }}</option>
+                    </select>
+                </div>
+                <div class="flex flex-col gap-1.5">
+                    <label class="text-[10px] font-bold text-gray-500 uppercase tracking-widest">📱 设备名称</label>
+                    <input v-model="tkFilterForm.device_no" type="text" placeholder="搜索设备..." class="bg-black border border-gray-700 text-gray-200 text-xs px-3 py-2 rounded focus:outline-none focus:border-indigo-500 w-32 transition-all font-mono">
+                </div>
+                <div class="flex flex-col gap-1.5">
+                    <label class="text-[10px] font-bold text-gray-500 uppercase tracking-widest">🆔 账号模糊搜索</label>
+                    <input v-model="tkFilterForm.account" type="text" placeholder="搜索账号..." class="bg-black border border-gray-700 text-gray-200 text-xs px-3 py-2 rounded focus:outline-none focus:border-indigo-500 w-40 transition-all font-mono">
+                </div>
+                <div class="flex flex-col gap-1.5">
+                    <label class="text-[10px] font-bold text-gray-500 uppercase tracking-widest">👥 粉丝区间</label>
+                    <div class="flex items-center gap-2">
+                        <input v-model.number="tkFilterForm.fans_min" type="number" placeholder="MIN" class="bg-black border border-gray-700 text-gray-200 text-xs px-2 py-2 rounded focus:outline-none focus:border-indigo-500 w-20 transition-all font-mono">
+                        <span class="text-gray-600">-</span>
+                        <input v-model.number="tkFilterForm.fans_max" type="number" placeholder="MAX" class="bg-black border border-gray-700 text-gray-200 text-xs px-2 py-2 rounded focus:outline-none focus:border-indigo-500 w-20 transition-all font-mono">
+                    </div>
+                </div>
+                <div class="flex flex-col gap-1.5">
+                    <label class="text-[10px] font-bold text-gray-500 uppercase tracking-widest">🪟 开窗状态</label>
+                    <select v-model="tkFilterForm.is_window_opened" class="bg-black border border-gray-700 text-gray-200 text-xs px-3 py-2 rounded focus:outline-none focus:border-indigo-500 w-28 transition-all cursor-pointer">
+                        <option value="all">不限</option>
+                        <option value="yes">已开窗</option>
+                        <option value="no">未开窗</option>
+                    </select>
+                </div>
+                <div class="flex flex-col gap-1.5">
+                    <label class="text-[10px] font-bold text-gray-500 uppercase tracking-widest">🤝 出售状态</label>
+                    <select v-model="tkFilterForm.is_for_sale" class="bg-black border border-gray-700 text-gray-200 text-xs px-3 py-2 rounded focus:outline-none focus:border-indigo-500 w-28 transition-all cursor-pointer">
+                        <option value="all">不限</option>
+                        <option value="yes">已出售</option>
+                        <option value="no">未出售</option>
+                    </select>
+                </div>
+                <div v-if="isSuperAdmin" class="flex flex-col gap-1.5">
+                    <label class="text-[10px] font-bold text-gray-500 uppercase tracking-widest">👤 所属管理员</label>
+                    <select v-model="tkFilterForm.admin" class="bg-black border border-gray-700 text-gray-200 text-xs px-3 py-2 rounded focus:outline-none focus:border-indigo-500 w-32 transition-all cursor-pointer">
+                        <option value="">全部管理员</option>
+                        <option v-for="adm in adminList" :key="adm.id" :value="adm.username">{{ adm.username }}</option>
+                    </select>
+                </div>
+                <div class="flex items-center">
+                    <button @click="tkFilterForm = { country: '', device_no: '', account: '', fans_min: null, fans_max: null, is_window_opened: 'all', is_for_sale: 'all', admin: '' }" 
+                            class="bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white px-4 py-2 rounded text-[10px] font-bold border border-gray-700 transition-all uppercase tracking-widest">
+                        🧹 重置筛选
+                    </button>
+                </div>
             </div>
 
             <div class="overflow-x-auto bg-gray-900/50 border border-gray-800 rounded-lg shadow-xl">
@@ -3278,15 +4405,24 @@ onMounted(async () => {
                                         <span class="text-teal-400 text-base">📱</span>
                                         <span class="text-teal-300 font-bold text-sm tracking-wide">{{ grp.device_no }}</span>
                                         <span class="text-gray-600 text-[10px] font-mono">{{ grp.device_udid.substring(0,8) }}...</span>
-                                        <span class="ml-auto text-[10px] text-gray-500 bg-gray-800 px-2 py-0.5 rounded border border-gray-700">{{ grp.accounts.length }} 个账号</span>
+                                        
+                                        <button @click="openAddTkModal(grp)" 
+                                                class="ml-auto px-2 py-1 bg-green-900/40 text-green-400 border border-green-800/60 hover:bg-green-600 hover:text-white rounded text-[10px] font-bold transition-all flex items-center shadow-sm">
+                                            <span class="mr-1">➕</span> 添加账号
+                                        </button>
+                                        
+                                        <span class="text-[10px] text-gray-500 bg-gray-800 px-2 py-0.5 rounded border border-gray-700">{{ grp.accounts.length }} 个账号</span>
                                     </div>
                                 </td>
                             </tr>
                             <tr v-for="tk in grp.accounts" :key="tk.id" class="hover:bg-gray-700/30 transition-colors group">
                                 <td class="p-4 text-center font-mono text-gray-500">#{{ tk.id }}</td>
                                 <td class="p-4 text-green-400/50 text-xs font-mono pl-8">↳ {{ grp.device_no }}</td>
-                                <td class="p-4 text-gray-200 font-mono font-semibold">{{ tk.account }}</td>
-                                <td class="p-4 text-center text-indigo-300 font-medium">{{ tk.country || '未标记' }}</td>
+                                <td class="p-4 text-gray-200 font-mono font-semibold">
+                                    <span v-if="tk.is_primary" class="text-amber-400 mr-1" title="设备主账号">⭐</span>
+                                    {{ tk.account }}
+                                </td>
+                                <td class="p-4 text-center text-indigo-300 font-medium">{{ grp.country || '未标记' }}</td>
                                 <td class="p-4 text-center text-pink-400 font-bold font-mono">{{ tk.fans_count }} <span class="text-[10px] text-gray-500 ml-1">粉丝</span></td>
                                 <td class="p-4 text-center">
                                     <span v-if="tk.is_window_opened" class="bg-indigo-900/30 text-indigo-400 border border-indigo-800 px-2 py-1 rounded text-xs font-bold shadow-sm">✅ 已满粉开窗</span>
@@ -3301,6 +4437,12 @@ onMounted(async () => {
                                 </td>
                                 <td class="p-4 text-center">
                                     <div class="flex justify-center space-x-2">
+                                        <button @click="setPrimaryTkAccount(tk)" 
+                                                title="设为主号"
+                                                :class="tk.is_primary ? 'bg-amber-900/40 text-amber-400 border-amber-800/60' : 'bg-gray-800/60 text-gray-400 border-gray-700 hover:bg-amber-700 hover:text-white'"
+                                                class="p-2 rounded border transition-all shadow-sm">
+                                            <span class="text-xs">⭐</span>
+                                        </button>
                                         <button @click="openTkModal(tk)" class="p-2 bg-blue-900/30 text-blue-400 hover:bg-blue-600 hover:text-white rounded border border-blue-900/50 hover:border-blue-500 transition-all shadow-sm" title="深度编辑档案">
                                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
                                         </button>
@@ -3316,6 +4458,7 @@ onMounted(async () => {
             </div>
         </div>
 
+    </div>
         <!-- TikTok 编辑 Modal -->
         <div v-if="isTkModalOpen" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
             <div class="bg-gray-800 border border-gray-700 w-full max-w-2xl rounded-xl shadow-2xl flex flex-col max-h-[90vh]">
@@ -3329,27 +4472,40 @@ onMounted(async () => {
                 </div>
                 <div class="p-6 flex-1 overflow-auto flex flex-col space-y-6">
                     <div class="flex items-center gap-4 bg-gray-900/50 p-4 rounded-lg border border-gray-700/50">
-                       <div class="flex-1">
-                           <div class="text-xs text-gray-500 font-bold uppercase mb-1">账号字符串</div>
-                           <div class="text-xl font-mono text-gray-200 font-bold">{{ editingTkAccount.account }}</div>
-                       </div>
-                       <div class="flex-1 text-right">
-                           <div class="text-xs text-gray-500 font-bold uppercase mb-1">当前所在设备</div>
-                           <div class="text-xl font-mono text-green-400 font-bold">{{ editingTkAccount.device_no || '未知' }}</div>
-                       </div>
+                        <div class="flex-1" v-if="editingTkAccount">
+                            <div class="text-xs text-gray-500 font-bold uppercase mb-1">账号字符串</div>
+                            <input v-model="editingTkAccount.account" 
+                                   class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xl font-mono text-gray-200 font-bold outline-none focus:border-indigo-500 transition-all shadow-inner"
+                                   placeholder="例如: user_888">
+                        </div>
+                        <div class="flex-1 text-right" v-if="editingTkAccount">
+                            <div class="text-xs text-gray-500 font-bold uppercase mb-1">当前所在设备</div>
+                            <div class="text-xl font-mono text-green-400 font-bold">{{ editingTkAccount?.device_no || '未知' }}</div>
+                        </div>
                     </div>
 
                     <div class="grid grid-cols-2 gap-6">
                         <div>
                             <label class="block text-sm font-medium text-gray-300 mb-1">归属地 (CountryCode)</label>
-                            <select v-model="editingTkAccount.country" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-gray-100 outline-none focus:border-indigo-500 transition-all">
-                                <option value="">(未设置)</option>
-                                <option v-for="c in countries" :key="c.id" :value="c.name">{{ c.name }}</option>
-                            </select>
+                            <div class="w-full bg-gray-900/50 border border-gray-700/50 rounded-lg px-4 py-2 text-indigo-400 font-bold outline-none flex items-center gap-2">
+                                <span>📍</span> {{ editingTkAccount.device_country || '未设置' }}
+                                <span class="bg-indigo-500/10 text-indigo-500 text-[10px] px-1.5 py-0.5 rounded ml-auto">同步自设备</span>
+                            </div>
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-gray-300 mb-1">实时粉丝数量</label>
                             <input v-model="editingTkAccount.fans_count" type="number" min="0" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-gray-100 outline-none focus:border-indigo-500 transition-all font-mono" placeholder="粉丝量级">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-6">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-1">账号密码 (Password)</label>
+                            <input v-model="editingTkAccount.password" type="text" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-gray-100 outline-none focus:border-indigo-500 transition-all font-mono" placeholder="登录密码">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-1">关联邮箱 (Email)</label>
+                            <input v-model="editingTkAccount.email" type="text" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-gray-100 outline-none focus:border-indigo-500 transition-all font-mono" placeholder="绑定邮箱地址">
                         </div>
                     </div>
 
@@ -3403,10 +4559,9 @@ onMounted(async () => {
                 </div>
             </div>
         </div>
-    </div>
 
     <!-- =============== 用户管理（超级管理员专用） ================= -->
-    <div v-show="activeTab === '👤 用户管理'" class="flex flex-1 flex-col overflow-auto p-6 bg-[#0B0F19]">
+    <div v-if="activeTab === '👤 用户管理'" class="flex flex-1 flex-col overflow-auto p-6 bg-[#0B0F19]">
         <div class="max-w-5xl mx-auto w-full space-y-4">
             <div class="flex justify-between items-center bg-gray-900 p-4 rounded-lg border border-gray-800 shadow-md">
                 <div>
@@ -3560,7 +4715,7 @@ onMounted(async () => {
     </div>
 
     <!-- =============== 一次性任务管理 ================= -->
-    <div v-show="activeTab === '⚡ 一次性任务'" class="flex flex-1 flex-col overflow-auto p-6 bg-[#0B0F19]">
+    <div v-if="activeTab === '⚡ 一次性任务'" class="flex flex-1 flex-col overflow-auto p-6 bg-[#0B0F19]">
         <div class="max-w-6xl mx-auto w-full space-y-4">
             <div class="flex justify-between items-center bg-gray-900 p-4 rounded-lg border border-gray-800 shadow-md">
                 <div>
@@ -3596,9 +4751,10 @@ onMounted(async () => {
                             <td class="px-4 py-3 text-gray-500 font-mono text-[10px]">{{ task.udid?.substring(0, 12) }}...</td>
                             <td class="px-4 py-3 text-emerald-400 font-bold">{{ task.name }}</td>
                             <td class="px-4 py-3">
-                                <span :class="task.status === 'pending' ? 'bg-amber-900/30 text-amber-400 border-amber-700' : 'bg-blue-900/30 text-blue-400 border-blue-700'" class="px-2 py-0.5 rounded-full text-[10px] font-bold border">
-                                    {{ task.status === 'pending' ? '❤️ 待执行' : '🔄 执行中' }}
-                                </span>
+                                <span v-if="task.status === 'pending'" class="bg-amber-900/30 text-amber-400 border-amber-700 px-2 py-0.5 rounded-full text-[10px] font-bold border">❤️ 待执行</span>
+                                <span v-else-if="task.status === 'running'" class="bg-blue-900/30 text-blue-400 border-blue-700 px-2 py-0.5 rounded-full text-[10px] font-bold border animate-pulse">🔄 执行中</span>
+                                <span v-else-if="task.status === 'failed'" class="bg-red-900/30 text-red-500 border-red-800 px-2 py-0.5 rounded-full text-[10px] font-bold border hover:bg-red-800 cursor-pointer transition-colors" @click="showTaskError({ task_name: task.name, last_command: JSON.parse(task.result || '{}').last_command || '未知', error: JSON.parse(task.result || '{}').error || task.result || '执行异常' })">❌ 失败 (查看日志)</span>
+                                <span v-else class="text-gray-500 text-[10px]">{{ task.status }}</span>
                             </td>
                             <td class="px-4 py-3 text-gray-500 font-mono text-[10px] max-w-[200px] truncate">{{ task.code?.substring(0, 60) }}...</td>
                             <td class="px-4 py-3 text-gray-500 text-[10px]">{{ task.created_at ? new Date(task.created_at * 1000).toLocaleString('zh-CN') : '-' }}</td>
@@ -3612,7 +4768,64 @@ onMounted(async () => {
         </div>
     </div>
 
-  </div> <!-- End Main App Container -->
+    <!-- ========== 📁 文件管理 Tab ========== -->
+    <div v-if="activeTab === '📁 文件管理'" class="flex flex-1 flex-col overflow-auto p-6 bg-[#0B0F19]">
+        <div class="max-w-4xl w-full mx-auto">
+            <div class="flex items-center justify-between mb-6">
+                <h2 class="text-xl font-bold text-gray-100 flex items-center gap-3">
+                    <span class="p-2.5 bg-emerald-900/40 rounded-xl text-emerald-400">📁</span>
+                    文件管理
+                    <span class="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full font-normal">{{ sharedFiles.length }} 个文件</span>
+                </h2>
+                <label v-if="isSuperAdmin" class="cursor-pointer">
+                    <input type="file" class="hidden" @change="uploadSharedFile" :disabled="fileUploading" />
+                    <span :class="['inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold transition-all', fileUploading ? 'bg-gray-700 text-gray-500 cursor-wait' : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/30 hover:shadow-emerald-800/40']">
+                        {{ fileUploading ? '⏳ 上传中...' : '📤 上传文件' }}
+                    </span>
+                </label>
+            </div>
+
+            <div v-if="sharedFiles.length === 0" class="text-center py-20 text-gray-600">
+                <div class="text-5xl mb-4">📂</div>
+                <p class="text-sm">暂无共享文件</p>
+                <p v-if="isSuperAdmin" class="text-xs text-gray-700 mt-2">点击右上角「上传文件」添加文件</p>
+            </div>
+
+            <div v-else class="bg-gray-900/60 border border-gray-800 rounded-2xl overflow-hidden">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="border-b border-gray-800 bg-gray-900/80">
+                            <th class="px-5 py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest">文件名</th>
+                            <th class="px-5 py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest">大小</th>
+                            <th class="px-5 py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest">上传时间</th>
+                            <th class="px-5 py-3 text-right text-[10px] font-bold text-gray-500 uppercase tracking-widest">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr v-for="file in sharedFiles" :key="file.name" class="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors">
+                            <td class="px-5 py-3">
+                                <div class="flex items-center gap-3">
+                                    <span class="text-lg">{{ file.name.endsWith('.ipa') ? '📦' : file.name.endsWith('.zip') ? '🗜️' : file.name.endsWith('.tar') || file.name.endsWith('.gz') ? '📚' : '📄' }}</span>
+                                    <span class="text-gray-200 font-medium truncate max-w-[300px]" :title="file.name">{{ file.name }}</span>
+                                </div>
+                            </td>
+                            <td class="px-5 py-3 text-gray-400 text-xs font-mono">{{ formatFileSize(file.size) }}</td>
+                            <td class="px-5 py-3 text-gray-500 text-xs">{{ new Date(file.upload_time * 1000).toLocaleString('zh-CN') }}</td>
+                            <td class="px-5 py-3">
+                                <div class="flex items-center justify-end gap-2">
+                                    <button @click="copyFileDownloadLink(file.name)" class="px-3 py-1.5 bg-blue-900/30 text-blue-400 hover:bg-blue-600 hover:text-white rounded-lg border border-blue-800/50 transition-all text-[11px] font-bold">📋 复制下载链接</button>
+                                    <a :href="`${apiBase}/files/download/${encodeURIComponent(file.name)}`" class="px-3 py-1.5 bg-emerald-900/30 text-emerald-400 hover:bg-emerald-600 hover:text-white rounded-lg border border-emerald-800/50 transition-all text-[11px] font-bold no-underline" download>⬇️ 下载</a>
+                                    <button v-if="isSuperAdmin" @click="deleteSharedFile(file.name)" class="px-3 py-1.5 bg-red-900/30 text-red-400 hover:bg-red-600 hover:text-white rounded-lg border border-red-900/50 transition-all text-[11px] font-bold">🗑 删除</button>
+                                </div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+  <!-- End Main App Container (主容器由模板根元素自动闭合) -->
 
     <!-- 批量配置 Modal -->
     <div v-if="showBatchConfigModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-[999] flex items-center justify-center p-4">
@@ -3648,6 +4861,17 @@ onMounted(async () => {
                             <option value="">(不修改)</option>
                             <option v-for="g in groups" :key="g.id" :value="g.name">{{ g.name }}</option>
                         </select>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-bold text-gray-500 uppercase tracking-widest mb-2 flex items-center gap-2 cursor-pointer w-max" @click="batchConfigForm.enableWifi = !batchConfigForm.enableWifi">
+                           <input type="checkbox" v-model="batchConfigForm.enableWifi" class="accent-indigo-500 rounded bg-gray-900 border-gray-700 w-4 h-4 cursor-pointer" @click.stop>
+                           <span>统一配置 Wi-Fi</span>
+                        </label>
+                        <div v-if="batchConfigForm.enableWifi" class="grid grid-cols-2 gap-3 mt-3">
+                            <input v-model="batchConfigForm.wifi_ssid" type="text" placeholder="网络名称 (SSID)" class="w-full bg-black border border-gray-800 rounded-xl px-4 py-3 text-sm text-gray-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-all">
+                            <input v-model="batchConfigForm.wifi_password" type="text" placeholder="明文密码" class="w-full bg-black border border-gray-800 rounded-xl px-4 py-3 text-sm text-gray-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-all">
+                        </div>
                     </div>
 
                     <div>
@@ -3709,11 +4933,12 @@ onMounted(async () => {
             <div class="p-6 bg-gray-900/80 border-t border-gray-800 flex justify-end gap-3 px-8 pb-8">
                 <button @click="showOneshotModal = false" class="px-5 py-2 text-gray-400 hover:text-white font-medium text-xs transition-colors tracking-widest">取消</button>
                 <button @click="submitOneshotTask" class="bg-emerald-600 hover:bg-emerald-500 text-white px-8 py-2.5 rounded-xl shadow-lg shadow-emerald-500/20 transition-all font-bold text-xs tracking-widest">
-                    ⭐ 立即下发
                 </button>
             </div>
         </div>
     </div>
+  </main>
+</div>
 </template>
 
 
