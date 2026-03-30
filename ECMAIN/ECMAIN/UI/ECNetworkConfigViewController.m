@@ -90,7 +90,8 @@ extern NSString *rootHelperPath(void);
     @"id" : @"wifi_password",
     @"label" : @"Wi-Fi 密码",
     @"type" : @"text",
-    @"placeholder" : @"密码 (8位以上)"
+    @"placeholder" : @"密码 (8位以上)",
+    @"secure" : @NO
   }];
   [wifiRows addObject:@{
     @"id" : @"action_configure_wifi",
@@ -204,6 +205,7 @@ extern NSString *rootHelperPath(void);
     cell.textField.tag = indexPath.section * 1000 + indexPath.row;
     cell.textField.delegate = self;
     cell.textField.keyboardType = UIKeyboardTypeDefault;
+    cell.textField.secureTextEntry = [row[@"secure"] boolValue];
     [cell.textField addTarget:self
                        action:@selector(textFieldDidChange:)
              forControlEvents:UIControlEventEditingChanged];

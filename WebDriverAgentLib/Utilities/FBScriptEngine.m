@@ -8,11 +8,14 @@
 #import "FBScriptEngine.h"
 #import <JavaScriptCore/JavaScriptCore.h>
 #import <XCTest/XCTest.h>
+#import "FBOCREngine.h"
+#import "FBScreenshot.h"
+#import "FBXCTestDaemonsProxy.h"
+#import "XCPointerEventPath.h"
+#import "XCSynthesizedEventRecord.h"
 
-// Forward declarations for WDA categories
-@interface XCUIApplication (FBActive)
-+ (instancetype)fb_activeApplication;
-@end
+// [v1738-fix] 不再需要 fb_activeApplication 前置声明
+// 触摸操作改用 XCPointerEventPath 直接坐标注入，无需 App 引用
 
 // WDA API 协议 - 暴露给 JavaScript
 @protocol FBWDAJSExports <JSExport>
@@ -102,39 +105,48 @@
   x += offsetX;
   y += offsetY;
 
-  // 直接使用 XCUITest API（避免 HTTP 自调用死锁）
-  XCUIApplication *app = [XCUIApplication fb_activeApplication];
-  XCUICoordinate *coord =
-      [app coordinateWithNormalizedOffset:CGVectorMake(0, 0)];
-  XCUICoordinate *target = [coord coordinateWithOffset:CGVectorMake(x, y)];
-  [target tap];
+  // [v1738-fix] 使用 XCPointerEventPath 直接坐标点击，
+  // 彻底避免 fb_activeApplication 遍历 Accessibility 树（TikTok 场景下可能 10-30s）
+  CGPoint targetPoint = CGPointMake(x, y);
+  XCPointerEventPath *path =
+      [[XCPointerEventPath alloc] initForTouchAtPoint:targetPoint offset:0];
+  [path liftUpAtOffset:0.05];
+  XCSynthesizedEventRecord *record =
+      [[XCSynthesizedEventRecord alloc] initWithName:@"scriptTap"];
+  [record addPointerEventPath:path];
+  [FBXCTestDaemonsProxy synthesizeEventWithRecord:record error:nil];
 
   self.engine.executedCommands++;
-  // [self log:[NSString stringWithFormat:@"tap(%d, %d)", (int)x, (int)y]];
 }
 
 - (void)doubleTapAtX:(double)x y:(double)y {
-  XCUIApplication *app = [XCUIApplication fb_activeApplication];
-  XCUICoordinate *coord =
-      [app coordinateWithNormalizedOffset:CGVectorMake(0, 0)];
-  XCUICoordinate *target = [coord coordinateWithOffset:CGVectorMake(x, y)];
-  [target doubleTap];
+  // [v1738-fix] 使用 XCPointerEventPath 直接坐标双击
+  CGPoint targetPoint = CGPointMake(x, y);
+  XCPointerEventPath *path =
+      [[XCPointerEventPath alloc] initForTouchAtPoint:targetPoint offset:0];
+  [path liftUpAtOffset:0.05];
+  [path pressDownAtOffset:0.1];
+  [path liftUpAtOffset:0.15];
+  XCSynthesizedEventRecord *record =
+      [[XCSynthesizedEventRecord alloc] initWithName:@"scriptDoubleTap"];
+  [record addPointerEventPath:path];
+  [FBXCTestDaemonsProxy synthesizeEventWithRecord:record error:nil];
 
   self.engine.executedCommands++;
-  // [self log:[NSString stringWithFormat:@"doubleTap(%d, %d)", (int)x,
-  // (int)y]];
 }
 
 - (void)longPressAtX:(double)x y:(double)y duration:(double)duration {
-  XCUIApplication *app = [XCUIApplication fb_activeApplication];
-  XCUICoordinate *coord =
-      [app coordinateWithNormalizedOffset:CGVectorMake(0, 0)];
-  XCUICoordinate *target = [coord coordinateWithOffset:CGVectorMake(x, y)];
-  [target pressForDuration:duration];
+  // [v1738-fix] 使用 XCPointerEventPath 直接坐标长按
+  CGPoint targetPoint = CGPointMake(x, y);
+  XCPointerEventPath *path =
+      [[XCPointerEventPath alloc] initForTouchAtPoint:targetPoint offset:0];
+  [path liftUpAtOffset:duration];
+  XCSynthesizedEventRecord *record =
+      [[XCSynthesizedEventRecord alloc] initWithName:@"scriptLongPress"];
+  [record addPointerEventPath:path];
+  [FBXCTestDaemonsProxy synthesizeEventWithRecord:record error:nil];
 
   self.engine.executedCommands++;
-  // [self log:[NSString stringWithFormat:@"longPress(%d, %d, %.1f)", (int)x,
-  // (int)y, duration]];
 }
 
 - (void)swipeFromX:(double)fromX
@@ -147,19 +159,19 @@
   toX += (arc4random_uniform(30) - 15);
   toY += (arc4random_uniform(30) - 15);
 
-  // 直接使用 XCUITest API
-  XCUIApplication *app = [XCUIApplication fb_activeApplication];
-  XCUICoordinate *start =
-      [[app coordinateWithNormalizedOffset:CGVectorMake(0, 0)]
-          coordinateWithOffset:CGVectorMake(fromX, fromY)];
-  XCUICoordinate *end = [[app coordinateWithNormalizedOffset:CGVectorMake(0, 0)]
-      coordinateWithOffset:CGVectorMake(toX, toY)];
-
-  [start pressForDuration:0.05 thenDragToCoordinate:end];
+  // [v1738-fix] 使用 XCPointerEventPath 直接坐标滑动
+  CGPoint startPoint = CGPointMake(fromX, fromY);
+  CGPoint endPoint = CGPointMake(toX, toY);
+  XCPointerEventPath *path =
+      [[XCPointerEventPath alloc] initForTouchAtPoint:startPoint offset:0];
+  [path moveToPoint:endPoint atOffset:0.5];
+  [path liftUpAtOffset:0.55];
+  XCSynthesizedEventRecord *record =
+      [[XCSynthesizedEventRecord alloc] initWithName:@"scriptSwipe"];
+  [record addPointerEventPath:path];
+  [FBXCTestDaemonsProxy synthesizeEventWithRecord:record error:nil];
 
   self.engine.executedCommands++;
-  // [self log:[NSString stringWithFormat:@"swipe(%d,%d -> %d,%d)", (int)fromX,
-  // (int)fromY, (int)toX, (int)toY]];
 }
 
 - (void)swipeUp {
@@ -209,23 +221,70 @@
   // [self log:[NSString stringWithFormat:@"launchApp(%@)", bundleId]];
 }
 
-#pragma mark - OCR
+#pragma mark - OCR (直接内存调用，消除 HTTP 回环死锁风险)
+
+// 内部辅助：带超时保护的截图
+- (UIImage *)takeScreenshotWithTimeout:(NSTimeInterval)timeout {
+  __block NSData *screenshotData = nil;
+  dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    NSError *error = nil;
+    screenshotData = [FBScreenshot takeInOriginalResolutionWithQuality:2 error:&error];
+    dispatch_semaphore_signal(sema);
+  });
+
+  long result = dispatch_semaphore_wait(sema,
+      dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout * NSEC_PER_SEC)));
+  if (result != 0 || !screenshotData) return nil;
+  return [UIImage imageWithData:screenshotData];
+}
 
 - (NSArray *)ocr {
-  // 调用 WDA OCR API
-  NSDictionary *result = [self executeWDACommand:@"ocr" params:@{}];
-  return result[@"texts"] ?: @[];
+  UIImage *screenshot = [self takeScreenshotWithTimeout:10.0];
+  if (!screenshot) return @[];
+
+  NSArray<FBOCRTextResult *> *results =
+      [[FBOCREngine sharedEngine] recognizeText:screenshot];
+  CGFloat scale = [UIScreen mainScreen].scale;
+
+  NSMutableArray *jsonResults = [NSMutableArray array];
+  for (FBOCRTextResult *res in results) {
+    CGRect f = res.frame;
+    [jsonResults addObject:@{
+      @"text"   : res.text ?: @"",
+      @"x"      : @(f.origin.x / scale),
+      @"y"      : @(f.origin.y / scale),
+      @"width"  : @(f.size.width / scale),
+      @"height" : @(f.size.height / scale)
+    }];
+  }
+  return jsonResults;
 }
 
 - (NSDictionary *)findText:(NSString *)text {
-  NSDictionary *result = [self executeWDACommand:@"findText"
-                                          params:@{@"text" : text}];
-  return result ?: @{};
+  UIImage *screenshot = [self takeScreenshotWithTimeout:10.0];
+  if (!screenshot) return @{};
+
+  FBOCRTextResult *result =
+      [[FBOCREngine sharedEngine] findText:text inImage:screenshot];
+  if (!result) return @{};
+
+  CGFloat scale = [UIScreen mainScreen].scale;
+  CGRect f = result.frame;
+  return @{
+    @"found"  : @YES,
+    @"x"      : @(f.origin.x / scale),
+    @"y"      : @(f.origin.y / scale),
+    @"width"  : @(f.size.width / scale),
+    @"height" : @(f.size.height / scale),
+    @"text"   : result.text ?: @""
+  };
 }
 
 - (void)tapText:(NSString *)text {
   NSDictionary *result = [self findText:text];
-  if (result[@"x"] && result[@"y"]) {
+  if ([result[@"found"] boolValue]) {
     double x = [result[@"x"] doubleValue] + [result[@"width"] doubleValue] / 2;
     double y = [result[@"y"] doubleValue] + [result[@"height"] doubleValue] / 2;
     [self tapAtX:x y:y];

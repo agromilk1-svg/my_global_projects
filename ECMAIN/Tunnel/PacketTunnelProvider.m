@@ -3,31 +3,53 @@
 #import "ECTun2Proxy.h"
 #import "ECUDPBridge.h"
 #import <Mihomo/Mihomo.h>
+#import <os/log.h>
 
 #import <arpa/inet.h>
 #import <netdb.h>
 
 extern BOOL BridgeStart(NSString *config, NSError **error);
-// NOTE: BridgeStop is NOT exported from Mihomo.framework.
-// iOS terminates the extension process on tunnel stop, so cleanup is automatic.
 
 @interface PacketTunnelProvider ()
 @property(atomic) BOOL isTunnelRunning;
 @property(nonatomic, strong) NSFileHandle *logFileHandle;
 @property(nonatomic, assign)
     int tunFD; // Native TUN FD from iOS (0 = fallback to bridge)
-// FALLBACK: Restored for when TUN FD is unavailable
 @property(nonatomic, strong) ECHevTunnel *hevTunnel;
 @property(nonatomic, strong) ECUDPBridge *udpBridge;
-// tun2proxy: Native SOCKS5 UDP support
 @property(nonatomic, strong) ECTun2Proxy *tun2proxy;
 @end
 
 @implementation PacketTunnelProvider
 
 - (void)redirectConsoleLogToDocumentFolder {
-  // 恢复开发模式环境输出
-  return;
+  // BUILD #415: 强制捕获被吞噬的 Go 内核底层日志
+  // 警告：NSLog 会写往 stderr，如果此时 dup2 劫持了 stderr，会诱发无线递归死锁。
+  // 解决：使用 os_log (iOS 10+) 绕过标准流直接写入系统日志。
+  NSPipe *pipe = [NSPipe pipe];
+  NSFileHandle *pipeReadHandle = [pipe fileHandleForReading];
+  int writeFD = [[pipe fileHandleForWriting] fileDescriptor];
+  dup2(writeFD, fileno(stdout));
+  dup2(writeFD, fileno(stderr));
+  
+  os_log_t logger = os_log_create("com.ecmain.app", "Mihomo-Go");
+
+  dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
+    char buffer[4096];
+    while (YES) {
+      ssize_t bytesRead = read([pipeReadHandle fileDescriptor], buffer, sizeof(buffer) - 1);
+      if (bytesRead > 0) {
+        buffer[bytesRead] = '\0';
+        NSString *str = [NSString stringWithUTF8String:buffer];
+        if (str) {
+          str = [str stringByTrimmingCharactersInSet:[NSCharacterSet newlineCharacterSet]];
+          os_log(logger, "%{public}@", str);
+        }
+      } else {
+        break; 
+      }
+    }
+  });
 }
 
 - (void)logToFile:(NSString *)message {
@@ -68,14 +90,10 @@ extern BOOL BridgeStart(NSString *config, NSError **error);
 }
 
 - (NSInteger)getMTUFrom:(NSDictionary *)dict {
-  NSInteger mtu = 1300; // Build #402: Global default tuned to 1300 for maximum compatibility
-  if (dict[@"mtu"]) {
-    NSInteger val = [dict[@"mtu"] integerValue];
-    if (val >= 1280 && val <= 1500) {
-      mtu = val;
-    }
-  }
-  return mtu;
+    // BUILD #415: 强制使用 1280 (IPv6 最小 MTU)
+    // 理由：经过 Chained Proxy (SS+HTTP+Socks5) 三层封装后，原始 1500 报文极易分片
+    // iOS 虚拟网卡对分片包的重组效率极低且易导致断流，1280 是最稳妥的选择。
+    return 1280;
 }
 
 - (void)startTunnelWithOptions:(NSDictionary *)options
@@ -179,10 +197,21 @@ extern BOOL BridgeStart(NSString *config, NSError **error);
   [self logToFile:
             @"Configuring Tunnel Network Settings (Full Tunnel + Tun Mode)..."];
 
-  // 4. Configure Tunnel Network Settings (Proxy Mode)
+  // BUILD #415: tunnelRemoteAddress 必须使用代理服务器真实 IP
+  // 使用 127.0.0.1 会导致 iOS 系统反复报 "address is loopback" 并破坏路由表
+  id serverVal = configDict[@"server"];
+  NSString *tunnelRemoteAddr = serverVal ? [NSString stringWithFormat:@"%@", serverVal] : @"192.0.2.1";
+
+  // 将供应商域名显式地提前解析为 IP 以适配底层 Network Extension 路由表的限制
+  NSArray<NSString *> *resolvedAddrs = [self resolveHostToIPs:tunnelRemoteAddr];
+  if (resolvedAddrs.count > 0) {
+      tunnelRemoteAddr = resolvedAddrs.firstObject;
+  }
+
   NEPacketTunnelNetworkSettings *settings =
       [[NEPacketTunnelNetworkSettings alloc]
-          initWithTunnelRemoteAddress:@"127.0.0.1"];
+          initWithTunnelRemoteAddress:tunnelRemoteAddr];
+  [self logToFile:[NSString stringWithFormat:@"📦 tunnelRemoteAddress = %@", tunnelRemoteAddr]];
 
   // IPv4: 198.18.0.1/16 (Virtual TUN Address)
   settings.IPv4Settings =
@@ -254,63 +283,94 @@ extern BOOL BridgeStart(NSString *config, NSError **error);
   id serverHostVal = configDict[@"server"];
   NSString *serverHost =
       (serverHostVal) ? [NSString stringWithFormat:@"%@", serverHostVal] : @"";
-  NSString *excludeIP = nil;
+  NSMutableArray<NSString *> *excludeIPs = [NSMutableArray array];
 
-  // Dynamic Resolution to fix Loop (Replace hardcoded IP)
+  NSMutableArray<NSString *> *hostsToResolve = [NSMutableArray array];
   if (serverHost.length > 0) {
-    excludeIP = [self resolveHost:serverHost];
-    if (!excludeIP) {
-      [self
-          logToFile:[NSString stringWithFormat:@"⚠️ DNS Resolution failed for "
-                                               @"'%@', using fallback IP check",
-                                               serverHost]];
-      // Fallback: Check if it's already an IP
-      NSRegularExpression *regex = [NSRegularExpression
-          regularExpressionWithPattern:
-              @"^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$"
-                               options:0
-                                 error:nil];
-      NSTextCheckingResult *match =
-          [regex firstMatchInString:serverHost
-                            options:0
-                              range:NSMakeRange(0, serverHost.length)];
-      if (match) {
-        excludeIP = serverHost;
+    [hostsToResolve addObject:serverHost];
+  }
+
+  // BUILD #412: 链式代理排除逻辑
+  // 如果当前是链式代理，前置节点 (FrontProxyNode) 的物理 IP 也必须加 excludedRoutes，否则同样引发 Loop
+  NSString *proxyThroughID = configDict[@"proxy_through_id"];
+  if (proxyThroughID.length > 0) {
+    NSDictionary *frontNode = configDict[@"proxy_through_node"];
+    if (!frontNode || ![frontNode isKindOfClass:[NSDictionary class]]) {
+       NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
+       NSArray *allNodes = [defaults arrayForKey:@"VPNNodeList"];
+       if (allNodes) {
+           for (NSDictionary *n in allNodes) {
+               if ([n[@"id"] isEqualToString:proxyThroughID] || [n[@"name"] isEqualToString:proxyThroughID]) {
+                   frontNode = n;
+                   break;
+               }
+           }
+       }
+    }
+    if (frontNode && frontNode[@"server"]) {
+      NSString *frontHost = [NSString stringWithFormat:@"%@", frontNode[@"server"]];
+      if (frontHost.length > 0 && ![hostsToResolve containsObject:frontHost]) {
+          [hostsToResolve addObject:frontHost];
+          [self logToFile:[NSString stringWithFormat:@"🔗 链式代理：检测到前置节点 %@，一同纳入排除路由", frontHost]];
       }
-    } else {
-      [self
-          logToFile:[NSString stringWithFormat:@"✅ Resolved Server '%@' -> %@",
-                                               serverHost, excludeIP]];
     }
   }
 
-  if (excludeIP) {
+  // BUILD #415: DNS 服务器加入 excludedRoutes 循环防御逻辑
+  // 确保所有 DNS 服务器 IP 都被排除，防止 DNS 查询流量被 TUN 拦截导致解析失败
+  NSArray<NSString *> *dnsServers = settings.DNSSettings.servers;
+  for (NSString *dnsIP in dnsServers) {
+      if (dnsIP.length > 0 && ![hostsToResolve containsObject:dnsIP]) {
+          [hostsToResolve addObject:dnsIP];
+          [self logToFile:[NSString stringWithFormat:@"🛡️ DNS 防御：将 DNS 服务器 %@ 加入排除列表", dnsIP]];
+      }
+  }
+
+  for (NSString *host in hostsToResolve) {
+      NSArray<NSString *> *resolvedIPs = [self resolveHostToIPs:host];
+      if (resolvedIPs.count == 0) {
+          [self logToFile:[NSString stringWithFormat:@"⚠️ DNS Resolution failed for '%@', using fallback check", host]];
+          NSRegularExpression *regex = [NSRegularExpression
+              regularExpressionWithPattern:@"^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$"
+                                    options:0
+                                      error:nil];
+          NSTextCheckingResult *match = [regex firstMatchInString:host options:0 range:NSMakeRange(0, host.length)];
+          if (match) {
+            [excludeIPs addObject:host];
+          }
+      } else {
+          [excludeIPs addObjectsFromArray:resolvedIPs];
+          [self logToFile:[NSString stringWithFormat:@"✅ Resolved '%@' -> %@", host, [resolvedIPs componentsJoinedByString:@", "]]];
+      }
+  }
+
+  if (excludeIPs.count > 0) {
     [self logToFile:[NSString
-                        stringWithFormat:@"Excluding Loop IP: %@", excludeIP]];
-    NEIPv4Route *excludeRoute =
-        [[NEIPv4Route alloc] initWithDestinationAddress:excludeIP
-                                             subnetMask:@"255.255.255.255"];
+                        stringWithFormat:@"Excluding Loop IPs: %@", [excludeIPs componentsJoinedByString:@", "]]];
+    NSMutableArray<NEIPv4Route *> *excludedRoutes = [NSMutableArray array];
+    for (NSString *ip in excludeIPs) {
+        [excludedRoutes addObject:[[NEIPv4Route alloc] initWithDestinationAddress:ip
+                                                                       subnetMask:@"255.255.255.255"]];
+    }
 
-    // EXCLUDE LOCALHOST (127.0.0.1/32) TO PREVENT LOOP
-    // HevTunnel talks to 127.0.0.1:7890. Use loopback, not TUN.
-    NEIPv4Route *excludeLocal =
-        [[NEIPv4Route alloc] initWithDestinationAddress:@"127.0.0.1"
-                                             subnetMask:@"255.255.255.255"];
 
-    settings.IPv4Settings.excludedRoutes = @[ excludeRoute, excludeLocal ];
+
+    // BUILD #415: 移除 DNS 直连路由排除
+    // 理由：在中国网络环境下，直连 8.8.8.8 会遭到 DNS 污染。
+    // 必须让 DNS 请求通过 TUN 隧道，由 Mihomo 内核进行加密解密后再安全解析。
+    
+    settings.IPv4Settings.excludedRoutes = excludedRoutes;
+    [self logToFile:[NSString stringWithFormat:@"🛡️ 排除路由已设置 (排除节点 IP: %lu 个)", (unsigned long)excludedRoutes.count]];
 
     // CAPTURE ALL TRAFFIC
     settings.IPv4Settings.includedRoutes = @[ [NEIPv4Route defaultRoute] ];
 
-    // DNS SETTINGS - BUILD #385: FIX DNS PORT MISMATCH
-    // Problem: 127.0.0.1:53 doesn't reach Mihomo (listening on :1053)
-    // Solution: Use a TUN-routable address, dns-hijack will capture it
-    // The address must be in the included route (default route captures all)
+    // DNS: 使用 standard Public DNS (将通过 TUN 隧道被 Mihomo 拦截)
     NEDNSSettings *dnsSettings =
-        [[NEDNSSettings alloc] initWithServers:@[ @"198.18.0.2" ]];
-    dnsSettings.matchDomains = @[ @"" ]; // Match ALL domains
+        [[NEDNSSettings alloc] initWithServers:@[ @"8.8.8.8", @"1.1.1.1" ]];
+    dnsSettings.matchDomains = @[ @"" ];
     settings.DNSSettings = dnsSettings;
-    [self logToFile:@"📌 DNS set to 198.18.0.2 (TUN-routable, for dns-hijack)"];
+    [self logToFile:@"📌 DNS set to 8.8.8.8 / 1.1.1.1 (物理网卡直连，绕过 TUN)"];
 
   } else {
     [self logToFile:[NSString stringWithFormat:@"⚠️ Cannot exclude server '%@' "
@@ -399,6 +459,10 @@ extern BOOL BridgeStart(NSString *config, NSError **error);
                    [strongSelf
                        logToFile:
                            @"⚠️ TUN FD=0, falling back to SOCKS5 Bridge Mode"];
+
+                   // BUILD #415: Shadowrocket 模型 —— DNS 已在 excludedRoutes 中直连
+                   // 无需额外重置 DNS，主逻辑已设置 8.8.8.8/1.1.1.1 走物理网卡
+                   [strongSelf logToFile:@"📌 tun2proxy 降级模式：DNS 走物理网卡直连 8.8.8.8（Shadowrocket 模型）"];
 
                    // ============================================================
                    // BUILD #384: SOCKS5 BRIDGE FALLBACK
@@ -719,6 +783,12 @@ extern BOOL BridgeStart(NSString *config, NSError **error);
     if ([dict[@"network"] length] > 0)
       [yaml appendString:[NSString stringWithFormat:@"    network: %@\n",
                                                     dict[@"network"]]];
+    // BUILD #415: Add missing UDP support for Trojan (Crucial for TikTok/QUIC)
+    BOOL udpEnabled = (dict[@"udp"] != nil) ? [dict[@"udp"] boolValue] : YES;
+    [yaml appendString:[NSString
+                           stringWithFormat:@"    udp: %@\n",
+                                            udpEnabled ? @"true" : @"false"]];
+
   } else if ([type isEqualToString:@"Hysteria"]) {
     [yaml appendString:@"    type: hysteria\n"];
     [yaml appendString:[NSString stringWithFormat:@"    auth_str: \"%@\"\n",
@@ -816,7 +886,7 @@ extern BOOL BridgeStart(NSString *config, NSError **error);
                          stringWithFormat:@"mixed-port: %ld\n", (long)pPort]];
   [yaml appendString:@"allow-lan: false\n"];
   [yaml appendString:@"mode: rule\n"];
-  [yaml appendString:@"log-level: info\n"];
+  [yaml appendString:@"log-level: debug\n"];
   [yaml appendString:@"ipv6: true\n"];
   [yaml appendString:@"tcp-concurrent: true\n"];
   [yaml appendString:@"geodata-mode: true\n"];
@@ -846,16 +916,17 @@ extern BOOL BridgeStart(NSString *config, NSError **error);
 
   [yaml appendString:@"dns:\n"];
   [yaml appendString:@"  enable: true\n"];
-  [yaml appendString:@"  listen: 127.0.0.1:1053\n"];
+  [yaml appendString:@"  listen: 0.0.0.0:1053\n"];
   [yaml appendString:@"  enhanced-mode: fake-ip\n"];
   [yaml appendString:@"  fake-ip-range: 198.18.0.0/15\n"];
-  [yaml appendString:@"  fake-ip-filter:\n"];
-  [yaml appendString:@"    - '*.lan'\n"];
-  [yaml appendString:@"    - '*.local'\n"];
-  [yaml appendString:@"    - 'localhost'\n"];
+  // 极简名单降低内存
+  [yaml appendString:@"  fake-ip-filter: ['+', 'localhost.ptest.com']\n"];
+  // BUILD #415: 强制使用 DoH/DoT 加密解析，抵抗 GFW 投毒
+  // 日志表明：明文发往 1.1.1.1:53 的节点域名被硬性投毒为 127.0.0.1
   [yaml appendString:@"  nameserver:\n"];
-  [yaml appendString:@"    - 8.8.8.8\n"];
-  [yaml appendString:@"    - 1.1.1.1\n"];
+  [yaml appendString:@"    - https://dns.google/dns-query\n"];
+  [yaml appendString:@"    - tls://1.1.1.1\n"];
+  [yaml appendString:@"    - https://dns.alidns.com/dns-query\n"];
   [yaml appendString:@"  ipv6: true\n"];
 
   [yaml appendString:@"proxies:\n"];
@@ -912,32 +983,25 @@ extern BOOL BridgeStart(NSString *config, NSError **error);
   }
 
   if (dialerProxyName.length > 0) {
-    // 官方推荐格式：落地节点的 dialer-proxy 指向一个 proxy-group
-    // 而 MATCH 规则直接指向落地节点名
+    // 修复：Mihomo 要求 dialer-proxy 必须精确指向 Proxy Name，禁止指向 Proxy Group。
     [self appendProxyConfigForNode:dict
                           withName:name
-                       dialerProxy:@"dialer"
+                       dialerProxy:dialerProxyName
                             toYAML:yaml];
-
-    [yaml appendString:@"proxy-groups:\n"];
-    [yaml appendString:@"  - name: dialer\n"];
-    [yaml appendString:@"    type: select\n"];
-    [yaml appendString:@"    proxies:\n"];
-    [yaml appendString:[NSString
-                           stringWithFormat:@"      - %@\n", dialerProxyName]];
   } else {
     [self appendProxyConfigForNode:dict
                           withName:name
                        dialerProxy:nil
                             toYAML:yaml];
-
-    [yaml appendString:@"proxy-groups:\n"];
-    [yaml appendString:@"  - name: Proxy\n"];
-    [yaml appendString:@"    type: select\n"];
-    [yaml appendString:@"    proxies:\n"];
-    [yaml appendString:[NSString stringWithFormat:@"      - %@\n", name]];
-    [yaml appendString:@"      - DIRECT\n"];
   }
+  
+  // 统一输出代理决策组
+  [yaml appendString:@"proxy-groups:\n"];
+  [yaml appendString:@"  - name: Proxy\n"];
+  [yaml appendString:@"    type: select\n"];
+  [yaml appendString:@"    proxies:\n"];
+  [yaml appendString:[NSString stringWithFormat:@"      - %@\n", name]];
+  [yaml appendString:@"      - DIRECT\n"];
 
   [yaml appendString:@"rules:\n"];
   // 管理域名强制直连白名单 —— 心跳/云控/更新请求不经过代理，避免 502
@@ -956,12 +1020,8 @@ extern BOOL BridgeStart(NSString *config, NSError **error);
       }
     }
   } else {
-    if (dialerProxyName.length > 0) {
-      // 官方标准：MATCH 直接指向落地节点名
-      [yaml appendString:[NSString stringWithFormat:@"  - MATCH,%@\n", name]];
-    } else {
-      [yaml appendString:@"  - MATCH,Proxy\n"];
-    }
+    // 任何情况下均通过策略组下发连接，保证可用性统一
+    [yaml appendString:@"  - MATCH,Proxy\n"];
   }
 
   return yaml;

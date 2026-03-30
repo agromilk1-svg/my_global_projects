@@ -7,10 +7,14 @@ from typing import Dict, Any, List
 logger = logging.getLogger("Database")
 logging.basicConfig(level=logging.INFO)
 
+# 核心配置
 DB_PATH = "ecmain_control.db"
+HEARTBEAT_TIMEOUT = 180 # 设备在线判定超时时间 (秒)，180秒 = 3分钟
 
 # 纯内存的高并发心跳池（UDID -> Details）
 HEARTBEAT_CACHE: Dict[str, dict] = {}
+# [v1682.3] 持久最新状态缓存：确保 get_all_cloud_devices 能无延迟读到最新心跳（即便尚未 Flush 到磁盘）
+LATEST_STATUS_CACHE: Dict[str, dict] = {}
 CACHE_LOCK = threading.Lock()
 
 def init_db():
@@ -97,6 +101,19 @@ def init_db():
         
         # [配置中心] 执行时间配置表 (取代原先的 0-23 常量)
         cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ec_execution_times (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                hour INTEGER UNIQUE
+            )
+        ''')
+        
+        # [v1682.2] 自动清理逻辑：剔除 3 天未活跃的“僵尸”设备，解决 UDID 换代后的历史残留干扰
+        # 防止由于 UDID 变更导致列表中出现大量同名但 UDID 不同的离线设备
+        three_days_ago = time.time() - (3 * 24 * 3600)
+        cursor.execute('DELETE FROM ec_devices WHERE last_heartbeat < ?', (three_days_ago,))
+        
+        conn.commit()
+        cursor.execute('''
             CREATE TABLE IF NOT EXISTS ec_exec_times (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT UNIQUE
@@ -132,9 +149,35 @@ def init_db():
         except Exception:
             pass
         
-        # [任务状态] 存储设备上报的任务完成状态（JSON 数组）
+        # [任务状态] 存储设备上报的任务完成状态（现在直接用作独立存储实时 JSON 字典，如 {"task_name": "...", "status": "正在执行"}）
         try:
             cursor.execute("ALTER TABLE ec_devices ADD COLUMN task_status TEXT DEFAULT '';")
+        except Exception:
+            pass
+            
+        try:
+            cursor.execute("ALTER TABLE ec_devices ADD COLUMN wifi_ssid TEXT;")
+        except Exception:
+            pass
+            
+        try:
+            cursor.execute("ALTER TABLE ec_devices ADD COLUMN wifi_password TEXT;")
+        except Exception:
+            pass
+        
+        # [日志分离] 独立存储 /api/device/task_report 上报的详细日志，防止被心跳覆盖
+        try:
+            cursor.execute("ALTER TABLE ec_devices ADD COLUMN task_report TEXT;")
+        except Exception:
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE ec_devices ADD COLUMN tiktok_version TEXT;")
+        except Exception:
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE ec_devices ADD COLUMN vpn_node TEXT;")
         except Exception:
             pass
         
@@ -193,6 +236,8 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 device_udid TEXT NOT NULL,
                 account TEXT NOT NULL,
+                password TEXT DEFAULT '',
+                email TEXT DEFAULT '',
                 country TEXT DEFAULT '',
                 fans_count INTEGER DEFAULT 0,
                 is_for_sale INTEGER DEFAULT 0,
@@ -200,9 +245,22 @@ def init_db():
                 add_time TEXT DEFAULT '',
                 window_open_time TEXT DEFAULT '',
                 sale_time TEXT DEFAULT '',
+                is_primary INTEGER DEFAULT 0,
                 UNIQUE(device_udid, account)
             )
         ''')
+        try:
+            cursor.execute("ALTER TABLE ec_tiktok_accounts ADD COLUMN is_primary INTEGER DEFAULT 0;")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE ec_tiktok_accounts ADD COLUMN password TEXT DEFAULT '';")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE ec_tiktok_accounts ADD COLUMN email TEXT DEFAULT '';")
+        except Exception:
+            pass
 
         # 建立索引以加速待处理任务的分发查询
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_tasks_udid_status ON ec_tasks(udid, status);')
@@ -237,6 +295,7 @@ def init_db():
                 name TEXT NOT NULL,
                 code TEXT NOT NULL,
                 status TEXT DEFAULT 'pending',
+                result TEXT,
                 created_at REAL
             )
         ''')
@@ -278,6 +337,13 @@ def _flush_heartbeat_worker():
                 # 批量 UPSERT，遇到重复 UDID 就更新后续字段
                 bulk_data = []
                 for udid, data in snapshot.items():
+                    # 预处理 task_status，确保其为合法的 JSON 字符串，否则 JSON_EXTRACT 会报错
+                    ts_raw = data.get('task_status', '')
+                    if not ts_raw or ts_raw == '""':
+                        ts_json = '[]'
+                    else:
+                        ts_json = ts_raw
+
                     # 采取单独 UPSERT 核心心跳字段的形式，以防抹除从别处修改的国家/分组/编号信息
                     bulk_data.append((
                         data.get('device_no', ''),
@@ -289,7 +355,10 @@ def _flush_heartbeat_worker():
                         data.get('vpn_active', 0),
                         data.get('vpn_ip', ''),
                         data.get('ecwda_status', 'offline'),
-                        data.get('task_status', ''),
+                        ts_json, # task_status CASE 条件判断
+                        ts_json, # task_status CASE 赋值
+                        data.get('tiktok_version', ''),
+                        data.get('vpn_node', ''),
                         data.get('timestamp', time.time()),
                         udid
                     ))
@@ -302,13 +371,15 @@ def _flush_heartbeat_worker():
                         battery = COALESCE(NULLIF(?, ''), battery),
                         app_version = COALESCE(NULLIF(?, ''), app_version),
                         ecwda_version = COALESCE(NULLIF(?, ''), ecwda_version),
-                        vpn_active = COALESCE(NULLIF(?, ''), vpn_active),
-                        vpn_ip = COALESCE(NULLIF(?, ''), vpn_ip),
+                        vpn_active = ?,
+                        vpn_ip = ?,
                         ecwda_status = COALESCE(NULLIF(?, ''), ecwda_status),
-                        task_status = CASE WHEN ? != '' THEN ? ELSE task_status END,
+                        task_status = CASE WHEN ? != '[]' THEN ? ELSE task_status END,
+                        tiktok_version = ?,
+                        vpn_node = ?,
                         last_heartbeat = ?
                     WHERE udid = ?
-                ''', [(d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9], d[9], d[10], d[11]) for d in bulk_data])
+                ''', bulk_data)
                 
                 # 若有的设备连UPDATE都命不中（全新UDID），需要额外INSERT
                 # 首先收集刚更新受影响的UDID，对于没有受影响的插入全新数据
@@ -327,12 +398,14 @@ def _flush_heartbeat_worker():
                         data.get('vpn_ip', ''),
                         data.get('ecwda_status', 'offline'),
                         data.get('task_status', ''),
+                        data.get('tiktok_version', ''),
+                        data.get('vpn_node', ''), # 新增 vpn_node
                         data.get('timestamp', time.time())
                    ))
                 cursor.executemany('''
                     INSERT OR IGNORE INTO ec_devices 
-                    (udid, device_no, ip, status, battery, app_version, ecwda_version, vpn_active, vpn_ip, ecwda_status, task_status, last_heartbeat) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (udid, device_no, ip, status, battery, app_version, ecwda_version, vpn_active, vpn_ip, ecwda_status, task_status, tiktok_version, vpn_node, last_heartbeat) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', insert_data)
                 conn.commit()
             logger.debug(f"[Heartbeat] Flushed {len(snapshot)} device spikes to disk.")
@@ -348,6 +421,10 @@ def register_heartbeat(udid: str, payload: dict):
     payload['timestamp'] = time.time()
     with CACHE_LOCK:
         HEARTBEAT_CACHE[udid] = payload
+        # 同步更新持久缓存，供实时接口读取
+        if udid not in LATEST_STATUS_CACHE:
+            LATEST_STATUS_CACHE[udid] = {}
+        LATEST_STATUS_CACHE[udid].update(payload)
 
 def pop_pending_tasks(udid: str, limit: int = 1) -> List[dict]:
     """取出并发给指定设备的待命任务 (直接返回首个任务并打上发送中标签)"""
@@ -428,9 +505,31 @@ def get_all_cloud_devices() -> List[dict]:
             now = time.time()
             for r in cursor.fetchall():
                 d = dict(r)
-                # 超过 180 秒（3 分钟）未有心跳，动态将状态覆盖为离线
-                if (now - d['last_heartbeat']) >= 180:
+                # 超过阈值未有心跳，动态将状态覆盖为离线
+                if (now - d.get('last_heartbeat', 0)) >= HEARTBEAT_TIMEOUT:
                     d['status'] = 'offline'
+                
+                # [v1682.4] 内存热数据覆盖：如果该设备刚发过心跳，直接用内存里的最新值覆盖数据库旧值
+                # 这样可以解决 Flusher 5秒周期导致的实时显示延迟
+                with CACHE_LOCK:
+                    mem_data = LATEST_STATUS_CACHE.get(d['udid'])
+                    if mem_data:
+                        # 转换字段名对齐 (database vs request)
+                        # vpn_node 已经是同名
+                        ts = mem_data.get('timestamp', d['last_heartbeat'])
+                        d.update({
+                            "status": mem_data.get('status', d['status']),
+                            "battery": mem_data.get('battery_level', d['battery']),
+                            "ip": mem_data.get('local_ip', d['ip']),
+                            "vpn_active": 1 if mem_data.get('vpn_active') else 0,
+                            "vpn_ip": mem_data.get('vpn_ip', d.get('vpn_ip', '')),
+                            "vpn_node": mem_data.get('vpn_node', d.get('vpn_node', '')),
+                            "ecwda_status": mem_data.get('ecwda_status', d.get('ecwda_status', 'offline')),
+                            "tiktok_version": mem_data.get('tiktok_version', d.get('tiktok_version', '')),
+                            "last_heartbeat": ts
+                        })
+                    # 数据库原始值本身就是绝对时间戳，无需修改
+                
                 devices.append(d)
                 
             return devices
@@ -463,8 +562,8 @@ def batch_delete_devices(udids: list) -> bool:
         logger.error(f"Error batch deleting devices: {e}")
         return False
 
-def batch_update_devices_config(udids: list, country: str = None, group_name: str = None, exec_time: str = None, config_vpn: str = None) -> bool:
-    """批量更新设备的国家、分组、启动时间或 VPN 配置，值为 None 则不修改"""
+def batch_update_devices_config(udids: list, country: str = None, group_name: str = None, exec_time: str = None, config_vpn: str = None, wifi_ssid: str = None, wifi_password: str = None) -> bool:
+    """批量更新设备的国家、分组、启动时间、VPN或WiFi配置，值为 None 则不修改"""
     if not udids:
         return True
     updates = []
@@ -482,6 +581,12 @@ def batch_update_devices_config(udids: list, country: str = None, group_name: st
     if config_vpn is not None:
         updates.append("config_vpn = ?")
         params.append(config_vpn)
+    if wifi_ssid is not None:
+        updates.append("wifi_ssid = ?")
+        params.append(wifi_ssid)
+    if wifi_password is not None:
+        updates.append("wifi_password = ?")
+        params.append(wifi_password)
         
     if not updates:
         return True # 没有需要修改的字段
@@ -501,15 +606,15 @@ def batch_update_devices_config(udids: list, country: str = None, group_name: st
         return False
 
 def get_device_config(udid: str) -> dict:
-    """获取设备的静态 IP 和 VPN 配置"""
+    """获取设备的静态 IP 和 VPN 等高级配置"""
     try:
         with sqlite3.connect(DB_PATH, timeout=5) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute('SELECT config_ip, config_vpn, device_no, country, group_name, exec_time, apple_account, apple_password, tiktok_accounts FROM ec_devices WHERE udid = ?', (udid,))
+            cursor.execute('SELECT config_ip, config_vpn, device_no, country, group_name, exec_time, apple_account, apple_password, tiktok_accounts, wifi_ssid, wifi_password FROM ec_devices WHERE udid = ?', (udid,))
             row = cursor.fetchone()
             if row:
-                return {
+                config_data = {
                     "config_ip": row["config_ip"] or "",
                     "config_vpn": row["config_vpn"] or "",
                     "device_no": row["device_no"] or "",
@@ -518,13 +623,29 @@ def get_device_config(udid: str) -> dict:
                     "exec_time": row["exec_time"] or "",
                     "apple_account": row["apple_account"] or "",
                     "apple_password": row["apple_password"] or "",
-                    "tiktok_accounts": row["tiktok_accounts"] or "[]"
+                    "tiktok_accounts": row["tiktok_accounts"] or "[]",
+                    "wifi_ssid": row["wifi_ssid"] or "",
+                    "wifi_password": row["wifi_password"] or ""
                 }
+                
+                # [TikTok 数据补全逻辑] 从独立账号表拉取实时数据，覆盖 devices 表中的老旧 JSON
+                import json
+                cursor.execute('SELECT account, password, email FROM ec_tiktok_accounts WHERE device_udid = ? ORDER BY is_primary DESC, id ASC', (udid,))
+                rows = cursor.fetchall()
+                accounts = []
+                for r in rows:
+                    accounts.append({
+                        "account": r["account"],
+                        "password": r["password"] or "",
+                        "email": r["email"] or ""
+                    })
+                config_data["tiktok_accounts"] = json.dumps(accounts, ensure_ascii=False)
+                return config_data
     except Exception as e:
         logger.error(f"Error getting config for {udid}: {e}")
-    return {"config_ip": "", "config_vpn": "", "device_no": "", "country": "", "group_name": "", "exec_time": "", "apple_account": "", "apple_password": "", "tiktok_accounts": "[]"}
+    return {"config_ip": "", "config_vpn": "", "device_no": "", "country": "", "group_name": "", "exec_time": "", "apple_account": "", "apple_password": "", "tiktok_accounts": "[]", "wifi_ssid": "", "wifi_password": ""}
 
-def set_device_config(udid: str, config_ip: str, config_vpn: str, device_no: str = "", country: str = "", group_name: str = "", exec_time: str = "", apple_account: str = "", apple_password: str = "", tiktok_accounts: str = "[]"):
+def set_device_config(udid: str, config_ip: str, config_vpn: str, device_no: str = "", country: str = "", group_name: str = "", exec_time: str = "", apple_account: str = "", apple_password: str = "", tiktok_accounts: str = "[]", wifi_ssid: str = "", wifi_password: str = ""):
     """保存设备的静态 IP、网络及高级设置配置"""
     try:
         with sqlite3.connect(DB_PATH, timeout=5) as conn:
@@ -533,9 +654,10 @@ def set_device_config(udid: str, config_ip: str, config_vpn: str, device_no: str
                 UPDATE ec_devices 
                 SET config_ip = ?, config_vpn = ?,
                     device_no = ?, country = ?, group_name = ?, exec_time = ?,
-                    apple_account = ?, apple_password = ?, tiktok_accounts = ?
+                    apple_account = ?, apple_password = ?, tiktok_accounts = ?,
+                    wifi_ssid = ?, wifi_password = ?
                 WHERE udid = ?
-            ''', (config_ip, config_vpn, device_no, country, group_name, exec_time, apple_account, apple_password, tiktok_accounts, udid))
+            ''', (config_ip, config_vpn, device_no, country, group_name, exec_time, apple_account, apple_password, tiktok_accounts, wifi_ssid, wifi_password, udid))
             
             # [TikTok 联动逻辑] 自动解析传递过来的 JSON 格式的 tiktok_accounts
             import json
@@ -550,26 +672,36 @@ def set_device_config(udid: str, config_ip: str, config_vpn: str, device_no: str
                 cursor.execute('SELECT account FROM ec_tiktok_accounts WHERE device_udid = ?', (udid,))
                 existing_accounts = {row[0] for row in cursor.fetchall()}
                 
-                new_accounts = set()
-                for act in accounts_list:
-                    if isinstance(act, dict) and 'account' in act:
-                        acc_str = str(act['account']).strip()
-                        if acc_str:
-                            new_accounts.add(acc_str)
-                    elif isinstance(act, str) and act.strip():
-                        new_accounts.add(act.strip())
-                
                 # 获取系统当前时间用于添加时间
                 now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 
-                # 处理新增账号
-                added = new_accounts - existing_accounts
-                for act_str in added:
-                    cursor.execute('''
-                        INSERT INTO ec_tiktok_accounts 
-                        (device_udid, account, add_time)
-                        VALUES (?, ?, ?)
-                    ''', (udid, act_str, now_str))
+                # 遍历表单传递过来的账号列表，执行增量更新或插入
+                for act in accounts_list:
+                    if not isinstance(act, dict) or 'account' not in act:
+                        continue
+                    
+                    acc_str = str(act.get('account', '')).strip()
+                    pwd_str = str(act.get('password', '')).strip()
+                    email_str = str(act.get('email', '')).strip()
+                    is_pri = 1 if act.get('is_primary') else 0
+                    
+                    if not acc_str:
+                        continue
+                        
+                    if acc_str in existing_accounts:
+                        # 已存在则更新密码、邮箱和主号标识
+                        cursor.execute('''
+                            UPDATE ec_tiktok_accounts 
+                            SET password = ?, email = ?, is_primary = ?
+                            WHERE device_udid = ? AND account = ?
+                        ''', (pwd_str, email_str, is_pri, udid, acc_str))
+                    else:
+                        # 不存在则新增
+                        cursor.execute('''
+                            INSERT INTO ec_tiktok_accounts 
+                            (device_udid, account, password, email, is_primary, add_time)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        ''', (udid, acc_str, pwd_str, email_str, is_pri, now_str))
                 
                 # 我们选择暂时不自动删除遗失的账号记录（避免误删单独编辑过的状态）
                 # 仅将它与该设备的关联清空或者留档。为保持独立管理，我们什么也不做。
@@ -623,6 +755,21 @@ def update_script(script_id: int, name: str, code: str, country: str = "", group
             return cursor.rowcount > 0
     except Exception as e:
         logger.error(f"Error updating script {script_id}: {e}")
+        return False
+
+def update_device_task_status(udid: str, task_status_json: str) -> bool:
+    """实时更新设备的详细任务日志（写入独立的 task_report 字段，不会被心跳覆盖）"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE ec_devices SET task_report = ?
+                WHERE udid = ?
+            ''', (task_status_json, udid))
+            conn.commit()
+            return cursor.rowcount > 0
+    except Exception as e:
+        logger.error(f"Error updating task report for {udid}: {e}")
         return False
 
 def delete_script(script_id: int) -> bool:
@@ -802,7 +949,7 @@ def get_all_tiktok_accounts() -> List[dict]:
             cursor = conn.cursor()
             # 联表拿 device_no
             cursor.execute('''
-                SELECT t.*, d.device_no 
+                SELECT t.*, d.device_no, d.country as device_country
                 FROM ec_tiktok_accounts t
                 LEFT JOIN ec_devices d ON t.device_udid = d.udid
                 ORDER BY t.id DESC
@@ -812,21 +959,70 @@ def get_all_tiktok_accounts() -> List[dict]:
         logger.error(f"Error getting tiktok accounts: {e}")
         return []
 
-def update_tiktok_account(account_id: int, country: str, fans_count: int, is_for_sale: int, is_window_opened: int, add_time: str, window_open_time: str, sale_time: str) -> bool:
+def update_tiktok_account(account_id: int, country: str, fans_count: int, is_for_sale: int, is_window_opened: int, add_time: str, window_open_time: str, sale_time: str, password: str = "", email: str = "") -> bool:
     """更新独立维护的 TikTok 账号全部属性"""
     try:
         with sqlite3.connect(DB_PATH, timeout=5) as conn:
             cursor = conn.cursor()
+            
+            # 如果传入国家为空，则尝试自动锁定关联设备的国家
+            if not country:
+                cursor.execute('SELECT d.country FROM ec_devices d JOIN ec_tiktok_accounts t ON d.udid = t.device_udid WHERE t.id = ?', (account_id,))
+                row = cursor.fetchone()
+                if row:
+                    country = row[0] or ""
+
             cursor.execute('''
                 UPDATE ec_tiktok_accounts 
                 SET country = ?, fans_count = ?, is_for_sale = ?, is_window_opened = ?,
-                    add_time = ?, window_open_time = ?, sale_time = ?
+                    add_time = ?, window_open_time = ?, sale_time = ?,
+                    password = ?, email = ?
                 WHERE id = ?
-            ''', (country, fans_count, is_for_sale, is_window_opened, add_time, window_open_time, sale_time, account_id))
+            ''', (country, fans_count, is_for_sale, is_window_opened, add_time, window_open_time, sale_time, password, email, account_id))
             conn.commit()
             return cursor.rowcount > 0
     except Exception as e:
         logger.error(f"Error updating tiktok account {account_id}: {e}")
+        return False
+
+def create_tiktok_account(device_udid: str, account: str, password: str = "", email: str = "", country: str = "", fans_count: int = 0, is_for_sale: int = 0, is_window_opened: int = 0) -> int:
+    """手动创建一条 TikTok 账号记录"""
+    try:
+        import datetime
+        now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO ec_tiktok_accounts 
+                (device_udid, account, password, email, country, fans_count, is_for_sale, is_window_opened, add_time)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (device_udid, account, password, email, country, fans_count, is_for_sale, is_window_opened, now_str))
+            conn.commit()
+            return cursor.lastrowid
+    except Exception as e:
+        logger.error(f"Error creating tiktok account for {device_udid}: {e}")
+        return 0
+
+def set_tiktok_account_primary(account_id: int) -> bool:
+    """设置某账号为所属设备的主号（排他性设置）"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            # 1. 获取该账号关联的设备 UDID
+            cursor.execute('SELECT device_udid FROM ec_tiktok_accounts WHERE id = ?', (account_id,))
+            row = cursor.fetchone()
+            if not row:
+                return False
+            udid = row[0]
+            
+            # 2. 开启事务：取消该设备所有其他账号的主号标识，然后设置当前账号
+            cursor.execute('UPDATE ec_tiktok_accounts SET is_primary = 0 WHERE device_udid = ?', (udid,))
+            cursor.execute('UPDATE ec_tiktok_accounts SET is_primary = 1 WHERE id = ?', (account_id,))
+            
+            conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Error setting primary tiktok account {account_id}: {e}")
         return False
 
 def delete_tiktok_account(account_id: int) -> bool:

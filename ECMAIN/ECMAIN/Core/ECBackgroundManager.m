@@ -13,6 +13,7 @@
 #import "ECScriptParser.h"
 #import "ECTaskPollManager.h"
 #import "ECVPNConfigManager.h"
+#import "../../Network/ECWebServer.h"
 #import <AVFoundation/AVFoundation.h>
 #import <NetworkExtension/NetworkExtension.h>
 #import <Security/Security.h>
@@ -41,6 +42,14 @@ static BOOL _isUpdating = NO;
 
 // Audio
 @property(nonatomic, strong) AVAudioRecorder *audioRecorder;
+
+// MJPEG Zero-Copy Cache
+@property(nonatomic, strong) NSURLSession *mjpegSession;
+@property(nonatomic, strong) NSURLSessionDataTask *mjpegTask;
+@property(nonatomic, strong) NSMutableData *mjpegBuffer;
+@property(nonatomic, strong) NSData *latestJPEGFrame;
+@property(nonatomic, assign) NSTimeInterval lastMJPEGRequestTime;
+@property(nonatomic, strong) NSTimer *mjpegWatchdogTimer;
 
 @end
 
@@ -100,6 +109,9 @@ static BOOL _isUpdating = NO;
            selector:@selector(_foregroundSelfCheck)
                name:UIApplicationWillEnterForegroundNotification
              object:nil];
+
+    // [v1735] 心跳启动已由 AppDelegate.didFinishLaunchingWithOptions 统一管控
+    // 此处不再重复调用，避免 GCD Timer 竞态
   }
   return self;
 }
@@ -704,7 +716,7 @@ static NSString *_cachedDeviceUDID = nil;
     CFTypeRef (*_MGCopyAnswer)(CFStringRef) = dlsym(lib, "MGCopyAnswer");
     if (_MGCopyAnswer) {
       CFStringRef uniqueId =
-          (CFStringRef)_MGCopyAnswer(CFSTR("UniqueDeviceID"));
+          (CFStringRef)_MGCopyAnswer(CFSTR("SerialNumber"));
       if (uniqueId) {
         udid = [NSString stringWithString:(__bridge NSString *)uniqueId];
         CFRelease(uniqueId);
@@ -865,10 +877,9 @@ static NSString *_cachedDeviceUDID = nil;
       return;
     }
 
-    NSUserDefaults *defaults =
-        [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
-    NSString *savedNo = [defaults stringForKey:@"EC_DEVICE_NO"];
-    NSString *deviceKey = savedNo.length > 0 ? savedNo : udid;
+    // 必须强制使用硬件唯一 UDID（现已修复为 12位 Serial Number）作为 WebSocket 身份主键！
+    // 因为后端下发控制指令严格按照 UDID 查询 ACTIVE_TUNNELS，不可使用易变的 device_no 作为路由标识。
+    NSString *deviceKey = udid;
 
     NSString *wsUrl =
         [NSString stringWithFormat:@"%@/tunnel/ws/%@", baseUrl, deviceKey];
@@ -1051,10 +1062,7 @@ static NSString *_cachedDeviceUDID = nil;
           msgStr.length > 100 ? [msgStr substringToIndex:100] : msgStr;
 
       // Log received message (on main queue for UI logging)
-      dispatch_async(dispatch_get_main_queue(), ^{
-        [[ECLogManager sharedManager]
-            log:[NSString stringWithFormat:@"[Tunnel] 收到消息: %@", logMsg]];
-      });
+      // Removed noisy receive log to prevent UI spam during fast API WS polling
 
       NSData *data = [msgStr dataUsingEncoding:NSUTF8StringEncoding];
       NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data
@@ -1077,6 +1085,7 @@ static NSString *_cachedDeviceUDID = nil;
 
   // Log request details (skip noisy screenshot requests)
   BOOL isScreenshotRequest = url && [url containsString:@"screenshot"];
+  BOOL isLowQuality = url && [url containsString:@"quality=low"];
 
   if (!isScreenshotRequest) {
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -1113,7 +1122,7 @@ static NSString *_cachedDeviceUDID = nil;
                                         [[NSString alloc]
                                             initWithData:d
                                                 encoding:NSUTF8StringEncoding]]
-              completionHandler:nil];
+              completionHandler:^(NSError * _Nullable error) {}];
     return;
   }
   if ([method isEqualToString:@"STOP_STREAM"]) {
@@ -1133,93 +1142,72 @@ static NSString *_cachedDeviceUDID = nil;
                                         [[NSString alloc]
                                             initWithData:d
                                                 encoding:NSUTF8StringEncoding]]
-              completionHandler:nil];
+              completionHandler:^(NSError * _Nullable error) {}];
     return;
   }
 
   // ========== 截图请求专用高速通道（极致压缩，适配慢速 VPN/Cloudflare 网络） ==========
   if (isScreenshotRequest) {
-    __unsafe_unretained typeof(self) weakSelf = self;
-    NSURL *targetURL = [NSURL URLWithString:url];
-    if (!targetURL) {
-      NSLog(@"[Tunnel] 截图 URL 无效: %@", url);
-      return;
+    // [v1720.2] 节流阀门：防止高频截图请求淹没 CPU 导致 8089 端口饥饿
+    static NSTimeInterval lastScreenshotProcessTime = 0;
+    NSTimeInterval nowTs = [[NSDate date] timeIntervalSince1970];
+    
+    self.lastMJPEGRequestTime = nowTs;
+    [self _ensureMJPEGTunnel];
+
+    NSData *frame = nil;
+    @synchronized (self) {
+        frame = self.latestJPEGFrame;
     }
-    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:targetURL];
-    request.HTTPMethod = @"GET";
-    request.timeoutInterval = 5.0;
+    
+    NSMutableDictionary *respPayload = [NSMutableDictionary dictionary];
+    respPayload[@"type"] = @"response";
+    respPayload[@"id"] = reqId;
+    
+    if (frame) {
+        if (isLowQuality) {
+#if TARGET_OS_IOS
+            UIImage *img = [UIImage imageWithData:frame];
+            if (img) {
+                CGSize newSize = CGSizeMake(img.size.width * 0.25, img.size.height * 0.25);
+                UIGraphicsBeginImageContextWithOptions(newSize, NO, 1.0);
+                [img drawInRect:CGRectMake(0, 0, newSize.width, newSize.height)];
+                UIImage *resized = UIGraphicsGetImageFromCurrentImageContext();
+                UIGraphicsEndImageContext();
+                NSData *lowQData = UIImageJPEGRepresentation(resized, 0.15); // Extreme compression
+                NSString *b64JPEG = [lowQData base64EncodedStringWithOptions:0];
+                respPayload[@"status"] = @200;
+                respPayload[@"body"] = @{@"value" : b64JPEG ?: @""};
+            } else {
+                // 如果图片解码失败，降级回传原始图
+                NSString *b64JPEG = [frame base64EncodedStringWithOptions:0];
+                respPayload[@"status"] = @200;
+                respPayload[@"body"] = @{@"value" : b64JPEG ?: @""};
+            }
+#else
+            // 非 iOS 平台（如 macOS 调试），直接回传原始图
+            NSString *b64JPEG = [frame base64EncodedStringWithOptions:0];
+            respPayload[@"status"] = @200;
+            respPayload[@"body"] = @{@"value" : b64JPEG ?: @""};
+#endif
+        } else {
+            // [v1715] MJPEG 提取的源图或者是正常请求，性能无损
+            NSString *b64JPEG = [frame base64EncodedStringWithOptions:0];
+            respPayload[@"status"] = @200;
+            respPayload[@"body"] = @{@"value" : b64JPEG ?: @""};
+        }
+    } else {
+        respPayload[@"status"] = @500;
+        respPayload[@"body"] = @{@"error" : @"mjpeg_buffering"};
+        // 还没缓冲好，返回错误，让远端（python main.py）继续轮询
+    }
 
-    [[NSURLSession.sharedSession
-        dataTaskWithRequest:request
-          completionHandler:^(NSData *_Nullable data,
-                              NSURLResponse *_Nullable response,
-                              NSError *_Nullable error) {
-            dispatch_async([ECBackgroundManager tunnelQueue], ^{
-              __strong typeof(weakSelf) strongSelf = weakSelf;
-              if (!strongSelf || !strongSelf.webSocketTask) return;
-
-              NSMutableDictionary *respPayload = [NSMutableDictionary dictionary];
-              respPayload[@"type"] = @"response";
-              respPayload[@"id"] = reqId;
-
-              if (error || !data) {
-                respPayload[@"status"] = @500;
-                respPayload[@"body"] = @{@"error" : error.localizedDescription ?: @"无数据"};
-              } else {
-                // WDA 的 /screenshot 返回 JSON: {"value": "<base64 PNG>", ...}
-                // 先解析 JSON 以提取 base64 原始数据
-                NSDictionary *wdaJSON = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-                NSString *b64PNG = nil;
-                if (wdaJSON && wdaJSON[@"value"]) {
-                  b64PNG = wdaJSON[@"value"];
-                }
-
-                if (b64PNG) {
-                  // 将 Base64 PNG 解码成 UIImage，缩小并压缩为超低质量 JPEG
-                  NSData *pngData = [[NSData alloc] initWithBase64EncodedString:b64PNG options:NSDataBase64DecodingIgnoreUnknownCharacters];
-                  UIImage *fullImage = pngData ? [UIImage imageWithData:pngData] : nil;
-
-                  if (fullImage) {
-                    // 缩小到 50% 分辨率以大幅减少像素数
-                    CGFloat scaleFactor = 0.5;
-                    CGSize newSize = CGSizeMake(fullImage.size.width * scaleFactor,
-                                               fullImage.size.height * scaleFactor);
-                    UIGraphicsBeginImageContextWithOptions(newSize, YES, 1.0);
-                    [fullImage drawInRect:CGRectMake(0, 0, newSize.width, newSize.height)];
-                    UIImage *resizedImage = UIGraphicsGetImageFromCurrentImageContext();
-                    UIGraphicsEndImageContext();
-
-                    // 压缩为极低质量 JPEG (quality=0.15), 约 30-80KB
-                    NSData *jpegData = UIImageJPEGRepresentation(resizedImage ?: fullImage, 0.15);
-                    NSString *b64JPEG = [jpegData base64EncodedStringWithOptions:0];
-
-                    respPayload[@"status"] = @200;
-                    respPayload[@"body"] = @{@"value" : b64JPEG ?: @""};
-                  } else {
-                    // 解码失败，原样回传（降级）
-                    respPayload[@"status"] = @200;
-                    respPayload[@"body"] = wdaJSON ?: @{@"error": @"decode_fail"};
-                  }
-                } else {
-                  // 非标准格式，原样回传
-                  NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
-                  respPayload[@"status"] = @(httpResp ? httpResp.statusCode : 500);
-                  respPayload[@"body"] = wdaJSON ?: @{@"error": @"no_value_field"};
-                }
-              }
-
-              // 通过 WebSocket 回传压缩后的截图
-              NSData *respData = [NSJSONSerialization dataWithJSONObject:respPayload options:0 error:nil];
-              if (!respData) return;
-              NSString *respStr = [[NSString alloc] initWithData:respData encoding:NSUTF8StringEncoding];
-              [strongSelf.webSocketTask
-                        sendMessage:[[NSURLSessionWebSocketMessage alloc] initWithString:respStr]
-                  completionHandler:^(NSError *_Nullable sendError) {
-                    if (sendError)
-                      NSLog(@"[Tunnel] 截图回传失败: %@", sendError);
-                  }];
-            });
-          }] resume];
+    NSData *respData = [NSJSONSerialization dataWithJSONObject:respPayload options:0 error:nil];
+    if (respData) {
+        NSString *respStr = [[NSString alloc] initWithData:respData encoding:NSUTF8StringEncoding];
+        [self.webSocketTask sendMessage:[[NSURLSessionWebSocketMessage alloc] initWithString:respStr]
+                            completionHandler:^(NSError *_Nullable sendError) {}];
+    }
     return;
   }
 
@@ -1254,7 +1242,7 @@ static NSString *_cachedDeviceUDID = nil;
                           initWithString:[[NSString alloc]
                                              initWithData:d
                                                  encoding:NSUTF8StringEncoding]]
-            completionHandler:nil];
+            completionHandler:^(NSError * _Nullable error) {}];
 
         if (body && body[@"script"]) {
           NSDictionary *mockJson = @{
@@ -1349,6 +1337,86 @@ static NSString *_cachedDeviceUDID = nil;
                 }];
           });
         }] resume];
+}
+
+#pragma mark - Local MJPEG Buffer Stream
+
+- (void)_ensureMJPEGTunnel {
+    @synchronized (self) {
+        if (!self.mjpegTask) {
+            NSLog(@"[Tunnel] 📸 按需启动本地 MJPEG 获取通道 (10089)...");
+            NSURL *url = [NSURL URLWithString:@"http://127.0.0.1:10089/"];
+            self.mjpegBuffer = [NSMutableData data];
+            
+            NSURLSessionConfiguration *config = [NSURLSessionConfiguration defaultSessionConfiguration];
+            config.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+            
+            self.mjpegSession = [NSURLSession sessionWithConfiguration:config delegate:self delegateQueue:nil];
+            self.mjpegTask = [self.mjpegSession dataTaskWithURL:url];
+            [self.mjpegTask resume];
+            
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (!self.mjpegWatchdogTimer) {
+                    self.mjpegWatchdogTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(_checkMJPEGWatchdog) userInfo:nil repeats:YES];
+                }
+            });
+        }
+    }
+}
+
+- (void)_checkMJPEGWatchdog {
+    @synchronized (self) {
+        if (self.mjpegTask) {
+            NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+            if (now - self.lastMJPEGRequestTime > 2.0) {
+                NSLog(@"[Tunnel] 🛑 2秒未收到截图请求，自动休眠本地 MJPEG 通道...");
+                [self.mjpegTask cancel];
+                self.mjpegTask = nil;
+                [self.mjpegSession invalidateAndCancel];
+                self.mjpegSession = nil;
+                self.mjpegBuffer = nil;
+                // 不清除 latestJPEGFrame，保留最后一帧
+                
+                [self.mjpegWatchdogTimer invalidate];
+                self.mjpegWatchdogTimer = nil;
+            }
+        }
+    }
+}
+
+- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)dataTask didReceiveData:(NSData *)data {
+    if (session == self.mjpegSession) {
+        @synchronized (self) {
+            if (!self.mjpegBuffer) return;
+            [self.mjpegBuffer appendData:data];
+            
+            const char jpegStart[] = {0xFF, 0xD8};
+            const char jpegEnd[] = {0xFF, 0xD9};
+            
+            NSData *startData = [NSData dataWithBytes:jpegStart length:2];
+            NSData *endData = [NSData dataWithBytes:jpegEnd length:2];
+            
+            NSRange startRange = [self.mjpegBuffer rangeOfData:startData options:0 range:NSMakeRange(0, self.mjpegBuffer.length)];
+            NSRange endRange = [self.mjpegBuffer rangeOfData:endData options:0 range:NSMakeRange(0, self.mjpegBuffer.length)];
+            
+            if (startRange.location != NSNotFound && endRange.location != NSNotFound && endRange.location > startRange.location) {
+                // 成功剥离一帧完整的 JPEG
+                NSRange frameRange = NSMakeRange(startRange.location, endRange.location + 2 - startRange.location);
+                self.latestJPEGFrame = [self.mjpegBuffer subdataWithRange:frameRange];
+                
+                // 清理消费过的数据
+                [self.mjpegBuffer replaceBytesInRange:NSMakeRange(0, endRange.location + 2) withBytes:NULL length:0];
+            } else if (startRange.location != NSNotFound && endRange.location == NSNotFound) {
+                // 剔除 FFD8 前的无用头部垃圾，防止内存累积
+                if (startRange.location > 0) {
+                    [self.mjpegBuffer replaceBytesInRange:NSMakeRange(0, startRange.location) withBytes:NULL length:0];
+                }
+            } else if (self.mjpegBuffer.length > 2 * 1024 * 1024) {
+                // 防御性保护：缓冲超过 2MB 说明流已损坏，清空重来
+                self.mjpegBuffer.length = 0;
+            }
+        }
+    }
 }
 
 #pragma mark - Streaming
@@ -1484,18 +1552,43 @@ static BOOL _isStreamingActive = NO;
   dispatch_queue_t heartbeatQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0);
   _heartbeatGCDTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, heartbeatQueue);
   dispatch_source_set_timer(_heartbeatGCDTimer,
-      dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC),
+      dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC),  // [v1729] 首次触发从 60s 降至 10s
       60 * NSEC_PER_SEC,
-      1 * NSEC_PER_SEC);   // 抖动从 5 秒降至 1 秒，减少系统合并延迟
+      1 * NSEC_PER_SEC);
   
   __weak typeof(self) weakSelf = self;
   dispatch_source_set_event_handler(_heartbeatGCDTimer, ^{
       typeof(self) strongSelf = weakSelf;
       if (!strongSelf) return;
       
-      // 记录本次心跳时间戳
-      strongSelf->_lastHeartbeatTime = [[NSDate date] timeIntervalSince1970];
       [strongSelf sendHeartbeat:serverUrl];
+
+      // [v1726] 独立 8089 端口探测：与 sendHeartbeat 平级，不受节流/飞行模式 return 影响
+      {
+          NSLog(@"[ECBackground] 🔍 正在检测 8089 端口...");
+          static NSInteger _port8089FailCount = 0;
+          NSURL *probeUrl = [NSURL URLWithString:@"http://127.0.0.1:8089/ping"];
+          NSMutableURLRequest *probeReq = [NSMutableURLRequest requestWithURL:probeUrl];
+          probeReq.timeoutInterval = 3.0;
+          [[NSURLSession.sharedSession dataTaskWithRequest:probeReq completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+              NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
+              if (error || httpResp.statusCode != 200) {
+                  _port8089FailCount++;
+                  NSString *errInfo = error ? error.localizedDescription : [NSString stringWithFormat:@"HTTP %ld", (long)httpResp.statusCode];
+                  [[ECLogManager sharedManager] log:[NSString stringWithFormat:@"[ECBackground] ⚠️ 8089 自检失败 (%ld/2): %@", (long)_port8089FailCount, errInfo]];
+                  if (_port8089FailCount >= 2) {
+                      [[ECLogManager sharedManager] log:@"[ECBackground] 🚨 8089 连续两次探测失败，触发后台线程自愈重启..."];
+                      [[ECWebServer sharedServer] restartOnPort:8089];
+                      _port8089FailCount = 0;
+                  }
+              } else {
+                  if (_port8089FailCount > 0) {
+                      [[ECLogManager sharedManager] log:@"[ECBackground] ✅ 8089 端口已恢复正常"];
+                  }
+                  _port8089FailCount = 0;
+              }
+          }] resume];
+      }
 
       // 每次心跳时顺带检查音频保活是否还活着
       dispatch_async(dispatch_get_main_queue(), ^{
@@ -1522,10 +1615,28 @@ static BOOL _isStreamingActive = NO;
       }
   });
   dispatch_resume(_heartbeatGCDTimer);
+  NSLog(@"[ECBackground] ✅ 心跳 GCD Timer 已启动 (首次触发: 10s, 周期: 60s, 含 8089 端口自检)");
 
   // Fire immediately
   [self sendHeartbeat:serverUrl];
   [self startTunnel];
+  
+  // [v1729] 启动时立即执行首次 8089 端口探测（不等 Timer 触发）
+  NSLog(@"[ECBackground] 🔍 启动时立即检测 8089 端口...");
+  {
+      NSURL *initProbeUrl = [NSURL URLWithString:@"http://127.0.0.1:8089/ping"];
+      NSMutableURLRequest *initReq = [NSMutableURLRequest requestWithURL:initProbeUrl];
+      initReq.timeoutInterval = 3.0;
+      [[NSURLSession.sharedSession dataTaskWithRequest:initReq completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+          NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
+          if (error || httpResp.statusCode != 200) {
+              NSString *errInfo = error ? error.localizedDescription : [NSString stringWithFormat:@"HTTP %ld", (long)httpResp.statusCode];
+              NSLog(@"[ECBackground] ⚠️ 启动时 8089 探测失败: %@", errInfo);
+          } else {
+              NSLog(@"[ECBackground] ✅ 启动时 8089 端口正常");
+          }
+      }] resume];
+  }
 }
 
 #pragma mark - 自动更新
@@ -1836,7 +1947,7 @@ static BOOL _isStreamingActive = NO;
   [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
 
   [[NSURLSession.sharedSession dataTaskWithRequest:request
-                                 completionHandler:nil] resume];
+                                 completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {}] resume];
 }
 
 #import "ECBackgroundManager_Heartbeat.m"

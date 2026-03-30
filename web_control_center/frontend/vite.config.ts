@@ -5,6 +5,6 @@ import vue from '@vitejs/plugin-vue'
 export default defineConfig({
   plugins: [vue()],
   server: {
-    allowedHosts: ['web.ecmain.site'],
+    allowedHosts: ['w.ecmain.site'],
   }
 })

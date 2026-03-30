@@ -1089,9 +1089,11 @@ const saveBatchConfig = async () => {
   if (selectedDevices.value.length === 0) return;
   try {
     const payload: any = { udids: selectedDevices.value };
-    if (batchConfigForm.value.country.trim() !== '') payload.country = batchConfigForm.value.country;
-    if (batchConfigForm.value.group_name.trim() !== '') payload.group_name = batchConfigForm.value.group_name;
-    if (batchConfigForm.value.exec_time.trim() !== '') payload.exec_time = batchConfigForm.value.exec_time;
+    // 哨兵值 __CLEAR__ 代表「清空该字段」，映射为空字符串发送给后端
+    const resolve = (v: string) => v === '__CLEAR__' ? '' : v;
+    if (batchConfigForm.value.country.trim() !== '') payload.country = resolve(batchConfigForm.value.country);
+    if (batchConfigForm.value.group_name.trim() !== '') payload.group_name = resolve(batchConfigForm.value.group_name);
+    if (batchConfigForm.value.exec_time.trim() !== '') payload.exec_time = resolve(batchConfigForm.value.exec_time);
     
     if (batchConfigForm.value.enableWifi && batchConfigForm.value.wifi_ssid.trim() !== '') {
         payload.wifi_ssid = batchConfigForm.value.wifi_ssid.trim();
@@ -1401,6 +1403,12 @@ const connectSmart = async () => {
       await sendDeviceAction('probe_size').catch(() => {});
   }
 
+  // [v1742.7] 连接群控扩展：同步唤醒所有从机矩阵
+  if (isGroupControl.value) {
+      log('🔗 [群控模式] 正在同步激活从属矩阵画面...');
+      batchConnectAll();
+  }
+
   updateStreamUrl();
 };
 
@@ -1422,20 +1430,12 @@ const enterBatchControl = () => {
 const selectDeviceAndConnect = (dev: any, resetPool = false) => {
     selectedDevice.value = dev.udid;
     
-    // [v1741] 交互逻辑升级：如果明确要求重置，或者当前勾选了多台设备且该设备本就在池中（意味着用户想从多选切回单选控制），则重置勾选池
-    // 强制重置是为了解决用户反馈的“点击控制按钮后仍显示旧勾选状态”的问题
-    if (resetPool || !selectedDevices.value.includes(dev.udid) || (selectedDevices.value.length > 1 && selectedDevices.value.includes(dev.udid))) {
+    // [v1742] 优化的交互逻辑：保持选中状态的连续性
+    // 1. 如果明确要求重置 (resetPool)，则清空池并仅保留当前设备
+    // 2. 如果当前点击控制的设备不在已选池中，则清空池并切换到该设备
+    // 3. 如果设备已在池中（无论池中有几台），保留当前多选状态，以支持群控/批量执行
+    if (resetPool || !selectedDevices.value.includes(dev.udid)) {
         selectedDevices.value = [dev.udid];
-        
-        // 如果是分组设备，顺便把同组的心跳机也带上（保持群控联动特性）
-        // 只有在不是强制单选重置的情况下才自动拉取同组（或者用户可能希望即使单选也带上组，这里保持原有逻辑但增加 resetPool 判断）
-        if (dev.group_name) {
-            sortedDevices.value.filter(d => d.group_name === dev.group_name && d.status !== 'offline').forEach(d => {
-                if (!selectedDevices.value.includes(d.udid)) {
-                    selectedDevices.value.push(d.udid);
-                }
-            });
-        }
     }
 
     activeTab.value = '⚡️ 控制台';
@@ -1533,6 +1533,30 @@ const batchDisconnectAll = () => {
     batchStreams.value = {};
     // [v1740] 响应用户需求：断流后自动切换至日志模式，隐藏空镜像，显示执行详情
     isLogsOnlyMode.value = true;
+};
+
+// [v1743] 清晰度切换：断开旧流后自动以新 quality 参数重连，避免画面闪烁或丢失
+const onSlaveQualityChange = () => {
+    // 先断开所有现有连接（使用旧 quality 的流）
+    Object.values(batchSockets.value).forEach(ws => {
+      try { ws.close(); } catch(e) {}
+    });
+    batchSockets.value = {};
+    batchImageData.value = {};
+    batchStreams.value = {};
+    // 短暂延迟后以新 quality 重新连接所有从机
+    setTimeout(() => {
+        batchConnectAll();
+        isLogsOnlyMode.value = false;
+        log(`📺 从机画质已切换为 [${slaveQuality.value}]，正在重建视频链路...`);
+    }, 300);
+};
+
+// [v1743] 清空日志：同时清除主控终端日志和所有从机的 batchLogs
+const clearAllLogs = () => {
+    logs.value = [];
+    batchLogs.value = {};
+    log('🗑️ 主控及所有受控机日志已全部清空。');
 };
 
 const batchDevices = computed(() => {
@@ -1903,38 +1927,45 @@ const performMagicWand = (startX: number, startY: number) => {
 };
 
 const isGroupControl = ref(false);
+
+// [v1742.10] 群控状态监听器：开启瞬间自动同步唤醒所有从属矩阵，解决“从机黑屏”痛点
+watch(isGroupControl, (newVal) => {
+    if (newVal) {
+        log('🟢 群控引擎已启动，正在唤醒从属矩阵视频流...');
+        batchConnectAll();
+    } else {
+        log('⚪️ 群控引擎已静默，维持现有监控链路。');
+    }
+});
 const isLogsOnlyMode = ref(false);
+
+// [v1743] 日志模式流量优化：切到日志模式时断开从机视频流，恢复时自动重连
+watch(isLogsOnlyMode, (logsOnly) => {
+    if (logsOnly) {
+        // 断开所有从机视频 WebSocket，节约带宽
+        Object.values(batchSockets.value).forEach(ws => {
+            try { ws.close(); } catch(e) {}
+        });
+        batchSockets.value = {};
+        batchImageData.value = {};
+    } else {
+        // 退出日志模式，自动重连从机画面
+        batchConnectAll();
+    }
+});
 const batchLogs = ref<Record<string, string[]>>({});
 
 const sendDeviceAction = async (type: string, payload: any = {}) => {
-  const _t0 = performance.now(); // [v1668.23] 精准延迟计时起点
-  
-  // [v1672.21] 统一下发显示逻辑：将 0-1000 的归一化坐标换算回人可读的逻辑 Points (如 180, 300)
-  const sz = selectedDevice.value ? deviceSizeMap.value[selectedDevice.value] : null;
-  const toPnt = (val: any, dim: 'w' | 'h') => {
-      if (val === undefined || val === null || val === '--') return '--';
-      if (!sz) return val;
-      const base = dim === 'w' ? sz.width : sz.height;
-      return Math.round(val * base / 1000);
-  };
+  const _t0 = performance.now();
 
-  const logX = toPnt(payload.x, 'w');
-  const logY = toPnt(payload.y, 'h');
-  const logX1 = toPnt(payload.x1, 'w');
-  const logY1 = toPnt(payload.y1, 'h');
-  const logX2 = toPnt(payload.x2, 'w');
-  const logY2 = toPnt(payload.y2, 'h');
+  // [v1760] 坐标已由前端直接换算为 iOS 逻辑 Points，无需归一化中间层
+  if (type === 'click') log(`📡 下发单击: (${payload.x ?? '--'}, ${payload.y ?? '--'})`);
+  if (type === 'longPress') log(`⏳ 下发长按: (${payload.x ?? '--'}, ${payload.y ?? '--'})`);
+  if (type === 'swipe') log(`📡 下发滑动: (${payload.x1 ?? '--'}, ${payload.y1 ?? '--'}) → (${payload.x2 ?? '--'}, ${payload.y2 ?? '--'})`);
 
-  // [v1668.27] C1: 乐观 UI 反馈——立即显示操作日志，不等待后端返回
-  if (type === 'click') log(`📡 下发单击: (${logX}, ${logY})`);
-  if (type === 'longPress') log(`⏳ 下发长按: (${logX}, ${logY})`);
-  if (type === 'swipe') log(`📡 下发滑动: (${logX1}, ${logY1}) → (${logX2}, ${logY2})`);
-
-  // [v1672.25] 坐标逻辑转换核心：移除 0-1000 归一化，拥抱原生 WDA Points 体系
-  // 此时 payload 传入的 x, y 已经是基于 deviceSizeMap 计算出的逻辑点坐标
+  // [v1760] payload 中的坐标已经是 WDA 可直接消费的逻辑 Points，直接透传
   const normPayload = {
-    ...payload,
-    is_normalized: true // [v1682.1] 指示后端使用 0-1000 归一化协议，消除 Points fallback 带来的偏移
+    ...payload
   };
 
   // [v1672] 矩阵群控：如果开启了群控引擎，即刻无阻塞镜像动作到所有被选从属设备
@@ -2016,6 +2047,24 @@ const sendDeviceAction = async (type: string, payload: any = {}) => {
 
 const testEcmain = async () => {
   log(`📡 全频段探活雷达启动：目标 ${ecmainUrl.value}`);
+  
+  // [v1742.3] 探测群控扩展：同步探测所有从机
+  if (isGroupControl.value) {
+      const slaves = batchDevices.value.filter(d => d.udid !== selectedDevice.value);
+      slaves.forEach(dev => {
+          const ip = dev.ip || dev.local_ip || '';
+          if (ip) {
+              fetch(`${apiBase}/probe?ip=${encodeURIComponent(`http://${ip}:8089`)}`)
+                  .then(res => res.json())
+                  .then(data => {
+                      if (data.status === 'ok') {
+                          log(`[探测报告-Slave] [${dev.device_no || dev.udid.substring(0,8)}] ${data.detail}`);
+                      }
+                  }).catch(() => {});
+          }
+      });
+  }
+
   try {
     const res = await fetch(`${apiBase}/probe?ip=${encodeURIComponent(ecmainUrl.value)}`);
     const data = await res.json();
@@ -2041,7 +2090,22 @@ const launchEcwda = async () => {
     return;
   }
   
-  log(`🚀 正在通过 USB 向设备发送 ECWDA 启动指令... (目标: ${selectedDevice.value.substring(0,8)})`);
+  // [v1742.5] 启动EC群控扩展：同步启动所有从机
+  if (isGroupControl.value) {
+      const slaves = batchDevices.value.filter(d => d.udid !== selectedDevice.value);
+      slaves.forEach(dev => {
+          if (dev.can_usb) {
+              authFetch(`${apiBase}/launch_ecwda`, {
+                  method: 'POST',
+                  body: JSON.stringify({ udid: dev.udid })
+              }).then(res => res.json()).then(data => {
+                  if (data.status === 'ok') log(`[从机启动] [${dev.device_no || dev.udid.substring(0,8)}] 启动指令已送达。`);
+              }).catch(() => {});
+          }
+      });
+  }
+
+  log(`🚀 正在通过 USB 向主要设备发送启动指令... (目标: ${selectedDevice.value.substring(0,8)})`);
   
   // USB 设备自动切换到 USB 模式
   connectionMode.value = 'usb';
@@ -2339,6 +2403,12 @@ const actionLibrary = [
   { label: '[📦 注入安装] Inject Install', type: 'INSTALL_IPA', desc: '自动化执行：搜索 IPA → 解压注入 Dylib → 克隆分身 → 设备伪装 → 系统安装（逻辑与 ECMAIN UI 一致）', usage: '实现 IPA 的全自动静默克隆与伪装安装', params: 'filename: IPA文件名(支持模糊匹配)\\nclone_number: 分身编号(1/2/8等,0=原包)\\nspoof_config: 伪装字典(键值同ECDeviceInfoManager)', example: '// 📦 自动化注入安装示例\\nvar result = wda.installIPA({\\n    filename: \"TikTok\",         // IPA文件名\\n    clone_number: \"1\",          // 分身编号(自动处理隔离)\\n    spoof_config: {              // ★ 设备伪装参数\\n        // -- 设备信息 --\\n        machineModel: \"iPhone9,1\",\\n        deviceName: \"iPhone\",\\n        screenWidth: \"375\",\\n        screenHeight: \"667\",\\n        nativeBounds: \"750x1334\",\\n\\n        // -- 系统/区域 --\\n        systemVersion: \"15.8.6\",\\n        timezone: \"Asia/Tokyo\",\\n        localeIdentifier: \"en_JP\",\\n        languageCode: \"en\",\\n        currencyCode: \"JPY\",\\n\\n        // -- 运营商 --\\n        carrierCountry: \"JP\",\\n        mobileCountryCode: \"440\",\\n        mobileNetworkCode: \"10\"\\n    }\\n});\\nwda.log(\"安装结果: \" + JSON.stringify(result));' }
 ];
 
+// [v1738] 追加动作：VPN 重连 + 全局弹窗
+actionLibrary.push(
+  { label: '[🔗 重连VPN] Reconnect Last VPN', type: 'RECONNECT_VPN', desc: '自动连接上次使用过的 VPN 节点。如果设备上没有上次的连接记录则返回 false，不做任何操作', usage: '脚本开始前自动恢复 VPN 网络环境，无需手动指定节点', params: '无需传参（自动读取上次连接记录）', example: '// 自动重连上次的 VPN 节点\nvar ok = wda.connectProxy(\"\");\nif(ok) {\n    wda.log(\"VPN 重连成功（已恢复上次节点）\");\n} else {\n    wda.log(\"没有上次VPN连接记录，跳过\");\n}\nwda.sleep(3); // 等待隧道建立' },
+  { label: '[📢 全局弹窗] Show Alert', type: 'SHOW_ALERT', desc: '在 iOS 设备上弹出一个系统级 Alert 弹窗（标题 ECMAIN），包含自定义消息和一个 OK 按钮。脚本会暂停执行直到用户点击 OK（最长等待60秒后自动关闭）', usage: '脚本执行到关键节点时暂停提醒用户确认、调试时检查中间状态', params: 'message: 弹窗显示的消息文字', example: '// 在 iOS 设备上弹出提示\nwda.showAlert(\"脚本已执行完毕！请检查结果。\");\n\n// 也可以用于调试暂停\nwda.showAlert(\"即将开始下一轮操作，点击OK继续\");\nwda.log(\"用户已确认，继续执行...\");' }
+);
+
 const handleActionClick = (act: any) => {
   selectedActionDoc.value = act;
   const snippet = `// [样例参考]: ${act.label}\n${act.example || '// 当前参数暂无示例宏代码'}`;
@@ -2384,6 +2454,13 @@ const disconnectDevice = () => {
   if (selectedDevice.value) {
     // 仅清空推流地址和日志流，但保留 selectedDevice 不变 (锁定当前手机)，防止 fetchDevices 轮询导致串台
     streamUrl.value = '';
+    
+    // [v1742.9] 断开群控扩展：同步释放所有从机流
+    if (isGroupControl.value) {
+        log('🛑 [群控模式] 正在同步释放从属矩阵资源...');
+        batchDisconnectAll();
+    }
+    
     log('已断开与设备的 USB 同步流，设备锁定状态维持。');
   }
 }
@@ -2656,9 +2733,11 @@ const endDraw = async (e: MouseEvent) => {
   }
   const realScale = nw / renderW;
 
-  // 用于触控动作的归一化 (0-1000)：像素坐标 / 图像尺寸 * 1000
-  const finalX = coord.x;  // 像素坐标
-  const finalY = coord.y;  // 像素坐标
+  // [v1760] 直接计算逻辑 Points（废除 0-1000 归一化中间层）
+  const _devSize = deviceSizeMap.value[selectedDevice.value];
+  const pixToLogic = _devSize ? (nw / _devSize.width) : (config.value?.scale || 2);
+  const finalX = coord.x;  // 截图像素坐标
+  const finalY = coord.y;  // 截图像素坐标
   const startCoord = {
       x: Math.floor(((startX.value - (rect.width - renderW)/2) * realScale)),
       y: Math.floor(((startY.value - (rect.height - renderH)/2) * realScale))
@@ -2688,23 +2767,23 @@ const endDraw = async (e: MouseEvent) => {
           }
           return;
       }
-      // 分支 3: 点击/长按 → 归一化下发
+      // 分支 3: 点击/长按 → 直接下发逻辑 Points
       if (duration > 600) {
-          sendDeviceAction('longPress', { x: Math.round(finalX / nw * 1000), y: Math.round(finalY / nh * 1000) });
+          sendDeviceAction('longPress', { x: Math.round(finalX / pixToLogic), y: Math.round(finalY / pixToLogic) });
       } else {
-          sendDeviceAction('click', { x: Math.round(finalX / nw * 1000), y: Math.round(finalY / nh * 1000) });
+          sendDeviceAction('click', { x: Math.round(finalX / pixToLogic), y: Math.round(finalY / pixToLogic) });
       }
       return;
   }
   
-  // 分支 4: 滑动 → 归一化下发
+  // 分支 4: 滑动 → 直接下发逻辑 Points
   if (!isPickMode.value) {
       if(startCoord?.x > 0 && startCoord?.y > 0) {
           sendDeviceAction('swipe', { 
-              x1: Math.round(startCoord.x / nw * 1000), 
-              y1: Math.round(startCoord.y / nh * 1000), 
-              x2: Math.round(finalX / nw * 1000), 
-              y2: Math.round(finalY / nh * 1000)
+              x1: Math.round(startCoord.x / pixToLogic), 
+              y1: Math.round(startCoord.y / pixToLogic), 
+              x2: Math.round(finalX / pixToLogic), 
+              y2: Math.round(finalY / pixToLogic)
           });
       }
       return;
@@ -3621,7 +3700,7 @@ const handleImageUpload = (event: Event) => {
                 <textarea v-model="generatedJs" class="w-full h-full bg-transparent text-green-500 font-mono text-xs p-2 border border-gray-800 rounded focus:outline-none focus:ring-1 focus:ring-green-700 resize-none leading-relaxed custom-scrollbar" placeholder="// AST Build Output..."></textarea>
               </div>
               <div class="p-3 bg-gray-900 border-t border-gray-700 shrink-0 flex gap-2">
-                <button @click="logs = []" class="w-1/4 bg-gray-800 hover:bg-red-900/50 text-gray-400 hover:text-red-400 font-bold py-2.5 text-sm rounded shadow border border-gray-700 flex justify-center items-center gap-2 tracking-wider transition-colors" title="清除底部终端所有日志">
+                <button @click="clearAllLogs()" class="w-1/4 bg-gray-800 hover:bg-red-900/50 text-gray-400 hover:text-red-400 font-bold py-2.5 text-sm rounded shadow border border-gray-700 flex justify-center items-center gap-2 tracking-wider transition-colors" title="清除主控及所有受控机日志">
                   <span>🗑️ 清空日志</span>
                 </button>
                 <button @click="runActions" class="flex-1 bg-green-700 hover:bg-green-600 text-white font-bold py-2.5 text-sm rounded shadow border border-green-600 flex justify-center items-center gap-2 tracking-wider transition-colors">
@@ -3995,7 +4074,7 @@ const handleImageUpload = (event: Event) => {
                     <span v-if="isGroupControl" class="ml-2 text-[9px] text-green-400 border border-green-500/20 bg-green-900/10 px-1.5 py-0.5 rounded">群控同步</span>
                 </h3>
                 <div class="flex items-center gap-1.5">
-                    <select v-model="slaveQuality" @change="batchDisconnectAll()" class="bg-gray-800 text-gray-400 border border-gray-700 rounded px-1.5 py-1 text-[10px] font-bold outline-none focus:border-indigo-500 cursor-pointer h-[26px]">
+                    <select v-model="slaveQuality" @change="onSlaveQualityChange()" class="bg-gray-800 text-gray-400 border border-gray-700 rounded px-1.5 py-1 text-[10px] font-bold outline-none focus:border-indigo-500 cursor-pointer h-[26px]">
                        <option value="low">🌫️ 模糊</option>
                        <option value="medium">📺 普通</option>
                        <option value="high">🔬 高清</option>
@@ -4851,6 +4930,7 @@ const handleImageUpload = (event: Event) => {
                         <label class="block text-xs font-bold text-gray-500 uppercase tracking-widest mb-2">所属国家</label>
                         <select v-model="batchConfigForm.country" class="w-full bg-black border border-gray-800 rounded-xl px-4 py-3 text-sm text-gray-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-all">
                             <option value="">(不修改)</option>
+                            <option value="__CLEAR__" class="text-red-400">🗑️ (清空国家)</option>
                             <option v-for="c in countries" :key="c.id" :value="c.name">{{ c.name }}</option>
                         </select>
                     </div>
@@ -4859,6 +4939,7 @@ const handleImageUpload = (event: Event) => {
                         <label class="block text-xs font-bold text-gray-500 uppercase tracking-widest mb-2">设备分组</label>
                         <select v-model="batchConfigForm.group_name" class="w-full bg-black border border-gray-800 rounded-xl px-4 py-3 text-sm text-gray-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-all">
                             <option value="">(不修改)</option>
+                            <option value="__CLEAR__" class="text-red-400">🗑️ (清空分组)</option>
                             <option v-for="g in groups" :key="g.id" :value="g.name">{{ g.name }}</option>
                         </select>
                     </div>
@@ -4878,6 +4959,7 @@ const handleImageUpload = (event: Event) => {
                         <label class="block text-xs font-bold text-gray-500 uppercase tracking-widest mb-2">自动执行时辰</label>
                         <select v-model="batchConfigForm.exec_time" class="w-full bg-black border border-gray-800 rounded-xl px-4 py-3 text-sm text-gray-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-all">
                             <option value="">(不修改)</option>
+                            <option value="__CLEAR__" class="text-red-400">🗑️ (清空时辰)</option>
                             <option v-for="t in execTimes" :key="t.id" :value="t.name">{{ t.name }} 点整</option>
                         </select>
                     </div>

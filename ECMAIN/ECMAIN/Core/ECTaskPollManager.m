@@ -32,6 +32,17 @@
 // 每个任务的执行日志，key=taskId字符串, value=日志字典
 @property(nonatomic, strong)
     NSMutableDictionary<NSString *, NSDictionary *> *taskExecutionLogs;
+// 当前正在执行的任务名（用于 airplaneOn 提前上报）
+@property(nonatomic, copy) NSString *currentTaskName;
+// 标记当前任务是否已经提前上报过（避免重复上报）
+@property(nonatomic, assign) BOOL hasPreReported;
+
+- (void)reportTaskStatus:(NSString *)status
+                    name:(NSString *)name
+                 success:(BOOL)success
+                   error:(NSString *)error
+             lastCommand:(NSString *)lastCommand;
+
 @end
 
 @implementation ECTaskPollManager
@@ -80,6 +91,52 @@
     _taskExecutionLogs = [logs mutableCopy];
   } else {
     _taskExecutionLogs = [NSMutableDictionary dictionary];
+  }
+
+  // --- 崩溃重启哨兵自检 ---
+  NSDictionary *crashSentinel = [defaults dictionaryForKey:@"EC_CRASH_REPORT_SENTINEL"];
+  if (crashSentinel && crashSentinel[@"id"]) {
+      BOOL isOTA = [defaults boolForKey:@"ECMAIN_IS_DOING_OTA_UPDATE"];
+      [defaults removeObjectForKey:@"ECMAIN_IS_DOING_OTA_UPDATE"];
+      [defaults synchronize];
+
+      if (isOTA) {
+          NSLog(@"[ECTaskPollManager] 🔄 检测到 OTA 更新导致的系统重启，清除哨兵。稍后系统将自动重新拉回并接续执行中断的任务。");
+          [defaults removeObjectForKey:@"EC_CRASH_REPORT_SENTINEL"];
+          [defaults synchronize];
+      } else {
+          NSNumber *crashedTaskId = crashSentinel[@"id"];
+          NSString *crashedName = crashSentinel[@"name"] ?: @"未知任务";
+          
+          NSLog(@"[ECTaskPollManager] ⚠️ 检测到脚本执行期间发生意外退出，任务: %@", crashedName);
+          
+          // 立即补发失败报告
+          [self reportTaskStatus:@"执行完成"
+                            name:crashedName
+                         success:NO
+                           error:@"⚠️ 引擎发生崩溃或意外退出。客户端已离线并重启。"
+                     lastCommand:@"致命异常/崩溃闪退"];
+                     
+          // 强制标记为已执行，防止重复导致循环崩溃
+          _executedTaskDates[[crashedTaskId stringValue]] = [self currentDateTimeString];
+          
+          // 注意 _taskExecutionLogs 也应该填充一条错误以供本地查看
+          NSDictionary *crashLogRecord = @{
+            @"success" : @(NO),
+            @"error" : @"⚠️ 引擎发生崩溃或意外退出。客户端已离线并重启。",
+            @"last_command" : @"致命异常/崩溃闪退",
+            @"log_count" : @(1),
+            @"logs" : @[], 
+            @"timestamp" : [self currentDateTimeString]
+          };
+          _taskExecutionLogs[[crashedTaskId stringValue]] = crashLogRecord;
+          
+          [self savePersistedData];
+          
+          // 清理哨兵
+          [defaults removeObjectForKey:@"EC_CRASH_REPORT_SENTINEL"];
+          [defaults synchronize];
+      }
   }
 }
 
@@ -395,8 +452,23 @@
           @"[脚本动作] 🎬 发现新任务，开始自动执行: %@ (ID: %@)", name,
           taskId];
   [[ECLogManager sharedManager] log:logMsg];
-  NSLog(@"%@", logMsg);
-  NSLog(@"[脚本动作] 脚本内容:\n%@", code);
+  NSLog(@"%@\n[脚本动作] 脚本内容:\n%@", logMsg, code);
+
+  // 记录当前任务名，清空提前上报标记
+  self.currentTaskName = name;
+  self.hasPreReported = NO;
+
+  // 上报任务状态：正在执行
+  [self reportTaskStatus:@"正在执行" name:name success:YES error:@"" lastCommand:@""];
+
+  // ====== 设置崩溃哨兵 ======
+  NSDictionary *sentinelInfo = @{
+      @"id": taskId,
+      @"name": name
+  };
+  NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+  [defaults setObject:sentinelInfo forKey:@"EC_CRASH_REPORT_SENTINEL"];
+  [defaults synchronize];
 
   dispatch_async(dispatch_get_main_queue(), ^{
     [[ECScriptParser sharedParser]
@@ -409,6 +481,11 @@
                      name, success ? @"成功" : @"失败"];
              [[ECLogManager sharedManager] log:resLog];
              NSLog(@"%@", resLog);
+
+             // === 擦除崩溃哨兵 ===
+             NSUserDefaults *defs = [NSUserDefaults standardUserDefaults];
+             [defs removeObjectForKey:@"EC_CRASH_REPORT_SENTINEL"];
+             [defs synchronize];
 
              // === 持久化保存执行日志 ===
              NSString *lastCommand = @"（无）";
@@ -437,10 +514,20 @@
                @"timestamp" : [self currentDateTimeString]
              };
 
-             dispatch_async(self.pollQueue, ^{
+              dispatch_async(self.pollQueue, ^{
                self.taskExecutionLogs[[taskId stringValue]] = logRecord;
                [self savePersistedData];
              });
+
+              // 上报任务状态：执行完成（如果已经在 airplaneOn 前提前上报过则跳过）
+              if (!self.hasPreReported) {
+                [self reportTaskStatus:@"执行完成" name:name success:success error:errorInfo lastCommand:lastCommand];
+              } else {
+                NSLog(@"[ECTaskPollManager] ℹ️ 已在 airplaneOn 前提前上报，跳过重复上报");
+              }
+              // 清理当前任务上下文
+              self.currentTaskName = nil;
+              self.hasPreReported = NO;
 
              // 如果脚本执行出错，弹窗显示错误信息
              if (!success) {
@@ -590,6 +677,145 @@
     log = self.taskExecutionLogs[[taskId stringValue]];
   });
   return log;
+}
+- (void)reportTaskStatus:(NSString *)status
+                    name:(NSString *)name
+                 success:(BOOL)success
+                   error:(NSString *)error
+             lastCommand:(NSString *)lastCommand {
+  NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
+  NSString *savedUrl = [defaults stringForKey:@"CloudServerURL"];
+  NSString *baseUrl = savedUrl.length > 0 ? savedUrl : EC_DEFAULT_CLOUD_SERVER_URL;
+  
+  // 拼接加固，防止双斜杠
+  NSString *apiPath = @"/api/device/task_report";
+  if ([baseUrl hasSuffix:@"/"]) {
+      baseUrl = [baseUrl substringToIndex:baseUrl.length - 1];
+  }
+  NSString *urlString = [baseUrl stringByAppendingString:apiPath];
+  NSURL *url = [NSURL URLWithString:urlString];
+  if (!url) return;
+
+  NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+  req.HTTPMethod = @"POST";
+  [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+
+  // 使用 ECBackgroundManager 获取标准的 UDID
+  NSString *udid = [ECBackgroundManager deviceUDID];
+
+  NSDictionary *payload = @{
+    @"udid": udid ?: @"",
+    @"task_name": name ?: @"",
+    @"status": status ?: @"",
+    @"success": @(success),
+    @"error": error ?: @"",
+    @"last_command": lastCommand ?: @""
+  };
+
+  NSData *body = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
+  if (!body) return;
+  req.HTTPBody = body;
+  req.timeoutInterval = 10.0;
+
+  NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error) {
+      NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
+      if (error || (httpResp && httpResp.statusCode != 200)) {
+          NSLog(@"[ECTaskPollManager] ❌ 上报任务状态失败 (Status: %ld): %@", 
+                (long)(httpResp ? httpResp.statusCode : 0),
+                error.localizedDescription ?: @"HTTP/Connection Error");
+      } else {
+          NSLog(@"[ECTaskPollManager] ✅ 上报任务状态成功 (%@) -> %@", name, status);
+      }
+  }];
+  [task resume];
+}
+
+- (void)preReportTaskCompletion {
+  if (self.hasPreReported) return; // 防止重复触发
+  NSString *name = self.currentTaskName;
+  if (!name || name.length == 0) {
+    NSLog(@"[ECTaskPollManager] ⚠️ preReport 被调用但没有正在执行的任务");
+    return;
+  }
+  self.hasPreReported = YES;
+  NSLog(@"[ECTaskPollManager] ✈️ 检测到即将开启飞行模式，提前上报任务完成: %@", name);
+  [self reportTaskStatus:@"执行完成" name:name success:YES error:@"" lastCommand:@"airplaneOn (提前上报)"];
+}
+
+- (void)interruptAllPendingTasks {
+  dispatch_async(self.pollQueue, ^{
+    NSString *today = [self todayDateString];
+    NSInteger interruptedCount = 0;
+
+    for (NSDictionary *task in self.localTasks) {
+      NSNumber *taskId = task[@"id"];
+      NSString *name = task[@"name"] ?: @"未命名";
+      NSString *key = [taskId stringValue];
+      NSString *execRecord = self.executedTaskDates[key];
+
+      // 跳过今天已经执行完的任务
+      if (execRecord && [execRecord hasPrefix:today]) {
+        continue;
+      }
+
+      // 将未完成的任务标记为已执行（错误状态）
+      self.executedTaskDates[key] = [self currentDateTimeString];
+
+      // 写入错误日志
+      NSDictionary *errorLog = @{
+        @"success" : @(NO),
+        @"error" : @"人为中断",
+        @"last_command" : @"用户手动中断所有未完成任务",
+        @"log_count" : @(1),
+        @"logs" : @[],
+        @"timestamp" : [self currentDateTimeString]
+      };
+      self.taskExecutionLogs[key] = errorLog;
+
+      // 上报错误状态到服务器
+      [self reportTaskStatus:@"执行完成"
+                        name:name
+                     success:NO
+                       error:@"人为中断"
+                 lastCommand:@"用户手动中断所有未完成任务"];
+
+      interruptedCount++;
+      NSLog(@"[ECTaskPollManager] 🛑 已中断任务: %@ (ID: %@)", name, taskId);
+    }
+
+    // 如果当前有正在执行的任务，标记中止状态
+    if (self.isExecuting) {
+      self.isExecuting = NO;
+      self.currentTaskName = nil;
+      self.hasPreReported = NO;
+      
+      // 清除崩溃哨兵
+      NSUserDefaults *defs = [NSUserDefaults standardUserDefaults];
+      [defs removeObjectForKey:@"EC_CRASH_REPORT_SENTINEL"];
+      [defs synchronize];
+      
+      [self resumePolling];
+      // 核心：通知脚本引擎立即中断执行
+      [[ECScriptParser sharedParser] interruptExecution];
+      NSLog(@"[ECTaskPollManager] 🛑 已强制停止当前正在执行的脚本");
+    }
+
+    [self savePersistedData];
+
+    // 通知 UI 刷新
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [[NSNotificationCenter defaultCenter]
+          postNotificationName:@"ECTasksDidUpdateAlert"
+                        object:nil];
+    });
+
+    NSLog(@"[ECTaskPollManager] 🛑 人为中断完成，共中断 %ld 个未完成任务",
+          (long)interruptedCount);
+    [[ECLogManager sharedManager]
+        log:[NSString stringWithFormat:
+                 @"[任务中断] 🛑 已中断 %ld 个未完成任务，错误日志: 人为中断",
+                 (long)interruptedCount]];
+  });
 }
 
 @end

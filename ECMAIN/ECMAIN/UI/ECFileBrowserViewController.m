@@ -466,4 +466,38 @@ static NSArray *jailbreakDetectionPaths(void) {
   }
 }
 
+#pragma mark - Table view editing
+
+- (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
+  if (self.isRoot && indexPath.section == 0) {
+    return NO;
+  }
+  return YES;
+}
+
+- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
+  if (editingStyle == UITableViewCellEditingStyleDelete) {
+    if (self.isRoot && indexPath.section == 0) return;
+    
+    NSString *fileName = self.files[indexPath.row];
+    NSString *fullPath = [self.currentPath stringByAppendingPathComponent:fileName];
+    
+    NSError *error = nil;
+    BOOL success = [[NSFileManager defaultManager] removeItemAtPath:fullPath error:&error];
+    
+    if (success) {
+      NSMutableArray *newFiles = [self.files mutableCopy];
+      [newFiles removeObjectAtIndex:indexPath.row];
+      self.files = [newFiles copy];
+      [tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
+    } else {
+      UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"删除失败"
+                                                                     message:error.localizedDescription
+                                                              preferredStyle:UIAlertControllerStyleAlert];
+      [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil]];
+      [self presentViewController:alert animated:YES completion:nil];
+    }
+  }
+}
+
 @end

@@ -22,6 +22,9 @@ JSExportAs(swipe, -(BOOL)swipe : (NSNumber *)fromX fromY : (NSNumber *)
 - (BOOL)sleep:(NSNumber *)seconds;
 - (BOOL)input:(NSString *)text;
 - (BOOL)home;
+- (BOOL)lock;
+- (BOOL)volumeUp;
+- (BOOL)volumeDown;
 - (NSDictionary *)screenshot;
 
 // App Management
@@ -71,11 +74,41 @@ JSExportAs(random, -(double)random : (double)min max : (double)max);
 - (BOOL)connectVPN:(NSDictionary *)config;
 - (BOOL)isVPNConnected;
 
+// 全局弹窗（在 iOS 设备上弹出系统级 Alert，脚本会阻塞直到用户点击 OK）
+- (BOOL)showAlert:(NSString *)message;
+
 // 评论数据引擎
 JSExportAs(syncCommentsFromServer,
            -(BOOL)syncCommentsFromServer : (NSString *)serverUrl);
 JSExportAs(getRandomComment,
            -(NSString *)getRandomComment : (NSString *)language);
+
+// TikTok 主账号数据读取（从设备配置中获取主账号信息并写入剪切板）
+- (NSString *)getMasterTkAccount;
+- (NSString *)getMasterTkPassword;
+- (NSString *)getMasterTkEmail;
+
+// 立即同步配置（触发心跳包立即向服务器获取最新配置）
+- (BOOL)syncConfig;
+
+// 下载 IPA 文件到应用管理已下载目录
+- (BOOL)downloadIPA:(NSString *)url;
+
+// 自动化注入安装 IPA（远程脚本调用，无 UI 交互）
+// config 参数字典：
+//   filename:            IPA 文件名（在 ImportedIPAs 目录搜索，支持模糊匹配）
+//   clone_number:        分身编号（"1","2"等），留空或 "0" 保持原包（自动生成 BundleID/名称）
+//   custom_bundle_id:    [高级] 手动指定完整 BundleID（优先级高于 clone_number）
+//   custom_display_name: [高级] 手动指定桌面显示名称
+//   spoof_config:        伪装参数字典（可选），键值与 ECDeviceInfoManager 一致
+//                        完整键列表：machineModel, deviceModel, deviceName, productName,
+//                        screenWidth, screenHeight, screenScale, nativeBounds, maxFPS,
+//                        systemVersion, systemBuildVersion, kernelVersion, systemName,
+//                        carrierName, mobileCountryCode, mobileNetworkCode, carrierCountry,
+//                        localeIdentifier, timezone, currencyCode, storeRegion, priorityRegion,
+//                        languageCode, preferredLanguage, systemLanguage, btdCurrentLanguage,
+//                        enableNetworkInterception, disableQUIC, networkType, countryCode
+- (NSDictionary *)installIPA:(NSDictionary *)config;
 
 @end
 
@@ -94,6 +127,9 @@ JSExportAs(getRandomComment,
 // Global Log Buffer for Web Server polling
 + (void)addGlobalLog:(NSDictionary *)logDict;
 + (NSArray *)popGlobalLogs;
+
+// 中断当前正在执行的脚本（立即生效）
+- (void)interruptExecution;
 
 @end
 

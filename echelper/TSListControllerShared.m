@@ -1,7 +1,7 @@
-#import <Foundation/Foundation.h>
 #import "TSListControllerShared.h"
 #import "TSPresentationDelegate.h"
 #import "TSUtil.h"
+#import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <dlfcn.h>
 
@@ -42,79 +42,120 @@
 
 - (void)downloadTrollStoreAndRun:
     (void (^)(NSString *localTrollStoreTarPath))doHandler {
-        
+
   // 检测是否有内嵌的原包
   NSString *bundlePath = [NSBundle mainBundle].bundlePath;
-  NSString *localPayloadPath = [bundlePath stringByAppendingPathComponent:@"ecmain.tar"];
+  NSString *localPayloadPath =
+      [bundlePath stringByAppendingPathComponent:@"ecmain.tar"];
 
-  
-  BOOL hasMain = [[NSFileManager defaultManager] fileExistsAtPath:localPayloadPath];
+  BOOL hasMain =
+      [[NSFileManager defaultManager] fileExistsAtPath:localPayloadPath];
 
   if (!hasMain) {
-      // 本地无包，直接走网络下载逻辑
-      [self _showOnlineDownloadPromptWithHandler:doHandler];
-      return;
+    // 本地无包，直接走网络下载逻辑
+    [self _showOnlineDownloadPromptWithHandler:doHandler];
+    return;
   }
 
   // 有本地包，直接走离线安装（不弹任何分享或选择弹窗）
-  dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-      // 不再分享 ecwda.ipa，直接安装 ECMAIN 
-      dispatch_async(dispatch_get_main_queue(), ^{
+  dispatch_async(
+      dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        // 不再分享 ecwda.ipa，直接安装 ECMAIN
+        dispatch_async(dispatch_get_main_queue(), ^{
           [TSPresentationDelegate startActivity:@"正在部署控制核(ECMAIN)..."];
+        });
+        NSString *tarTmpPath = [NSTemporaryDirectory()
+            stringByAppendingPathComponent:@"TrollStore.tar"];
+        [[NSFileManager defaultManager] removeItemAtPath:tarTmpPath error:nil];
+        [[NSFileManager defaultManager] copyItemAtPath:localPayloadPath
+                                                toPath:tarTmpPath
+                                                 error:nil];
+        dispatch_async(dispatch_get_main_queue(), ^{
+          if (doHandler)
+            doHandler(tarTmpPath);
+        });
       });
-      NSString *tarTmpPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"TrollStore.tar"];
-      [[NSFileManager defaultManager] removeItemAtPath:tarTmpPath error:nil];
-      [[NSFileManager defaultManager] copyItemAtPath:localPayloadPath toPath:tarTmpPath error:nil];
-      dispatch_async(dispatch_get_main_queue(), ^{
-          if (doHandler) doHandler(tarTmpPath);
-      });
-  });
 }
 
+- (void)_showOnlineDownloadPromptWithHandler:
+    (void (^)(NSString *localTrollStoreTarPath))doHandler {
 
-- (void)_showOnlineDownloadPromptWithHandler:(void (^)(NSString *localTrollStoreTarPath))doHandler {
-  // 弹出输入框让用户输入 URL
-  UIAlertController *inputAlert = [UIAlertController
+  void (^startDownload)(NSString *) = ^(NSString *urlStr) {
+    if (!urlStr || urlStr.length == 0) return;
+    NSURL *trollStoreURL = [NSURL URLWithString:urlStr];
+
+    [TSPresentationDelegate startActivity:@"准备下载..."];
+
+    self.downloadCompletionHandler = doHandler;
+
+    NSURLSessionConfiguration *configuration =
+        [NSURLSessionConfiguration defaultSessionConfiguration];
+    self.downloadSession =
+        [NSURLSession sessionWithConfiguration:configuration
+                                      delegate:self
+                                 delegateQueue:nil];
+
+    NSURLSessionDownloadTask *downloadTask =
+        [self.downloadSession downloadTaskWithURL:trollStoreURL];
+    [downloadTask resume];
+  };
+
+  UIAlertController *menuAlert = [UIAlertController
       alertControllerWithTitle:@"安装配置"
-                       message:@"请输入 ECMAIN 下载地址 (tar)"
+                       message:@"请选择 ECMAIN 下载地址"
                 preferredStyle:UIAlertControllerStyleAlert];
-  [inputAlert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
-    textField.placeholder = @"https://...";
-    textField.text = @"https://s.ecmain.site/api/ecmain/download"; // Default
-  }];
 
-  UIAlertAction *installAction = [UIAlertAction
-      actionWithTitle:@"安装 (Install)"
+  UIAlertAction *route1 = [UIAlertAction
+      actionWithTitle:@"外网线路: s.ecmain.site"
                 style:UIAlertActionStyleDefault
               handler:^(UIAlertAction *action) {
-                NSString *urlStr = inputAlert.textFields.firstObject.text;
-                if (!urlStr || urlStr.length == 0)
-                  return;
-
-                NSURL *trollStoreURL = [NSURL URLWithString:urlStr];
-
-                [TSPresentationDelegate startActivity:@"准备下载..."];
-
-                self.downloadCompletionHandler = doHandler;
-
-                NSURLSessionConfiguration *configuration =
-                    [NSURLSessionConfiguration defaultSessionConfiguration];
-                self.downloadSession =
-                    [NSURLSession sessionWithConfiguration:configuration
-                                                  delegate:self
-                                             delegateQueue:nil];
-
-                NSURLSessionDownloadTask *downloadTask =
-                    [self.downloadSession downloadTaskWithURL:trollStoreURL];
-                [downloadTask resume];
+                startDownload(@"http://s.ecmain.site:8088/api/ecmain/download");
               }];
 
-  [inputAlert addAction:[UIAlertAction actionWithTitle:@"取消"
-                                                 style:UIAlertActionStyleCancel
-                                               handler:nil]];
-  [inputAlert addAction:installAction];
+  UIAlertAction *route2 = [UIAlertAction
+      actionWithTitle:@"内网线路: l.ecmain.site"
+                style:UIAlertActionStyleDefault
+              handler:^(UIAlertAction *action) {
+                startDownload(@"http://l.ecmain.site:8088/api/ecmain/download");
+              }];
 
-  [TSPresentationDelegate presentViewController:inputAlert
+  UIAlertAction *customInput = [UIAlertAction
+      actionWithTitle:@"手动输入自定义地址..."
+                style:UIAlertActionStyleDefault
+              handler:^(UIAlertAction *action) {
+                UIAlertController *inputAlert = [UIAlertController
+                    alertControllerWithTitle:@"手动输入"
+                                     message:@"请输入 ECMAIN 下载地址 (tar)"
+                              preferredStyle:UIAlertControllerStyleAlert];
+
+                [inputAlert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+                  textField.placeholder = @"http://...";
+                  textField.text = @"http://s.ecmain.site:8088/api/ecmain/download";
+                  textField.clearButtonMode = UITextFieldViewModeAlways;
+                }];
+
+                UIAlertAction *installAction = [UIAlertAction
+                    actionWithTitle:@"安装 (Install)"
+                              style:UIAlertActionStyleDefault
+                            handler:^(UIAlertAction *a) {
+                              NSString *txt = inputAlert.textFields.firstObject.text;
+                              startDownload(txt);
+                            }];
+
+                [inputAlert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+                [inputAlert addAction:installAction];
+
+                [TSPresentationDelegate presentViewController:inputAlert
+                                                     animated:YES
+                                                   completion:nil];
+              }];
+
+  [menuAlert addAction:route1];
+  [menuAlert addAction:route2];
+  [menuAlert addAction:customInput];
+  [menuAlert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+
+  [TSPresentationDelegate presentViewController:menuAlert
                                        animated:YES
                                      completion:nil];
 }

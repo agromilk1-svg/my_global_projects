@@ -43,6 +43,15 @@ NS_ASSUME_NONNULL_BEGIN
 /// 获取指定任务的上次执行日志（含错误信息、最后执行的指令、全部日志等）
 - (nullable NSDictionary *)getTaskExecutionLog:(NSNumber *)taskId;
 
+/// 获取最近一次任务执行的日志摘要 JSON（供心跳上报给控制中心）
+- (NSString *)getLastLogJSON;
+
+/// 提前上报任务完成（用于 airplaneOn 前抢先通知服务器，避免断网后上报失败）
+- (void)preReportTaskCompletion;
+
+/// 中断所有未完成的任务，将其标记为错误（错误日志：人为中断）
+- (void)interruptAllPendingTasks;
+
 @end
 
 NS_ASSUME_NONNULL_END

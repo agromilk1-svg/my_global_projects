@@ -35,8 +35,13 @@
     <key>com.apple.private.security.no-container</key>
     <true/>
     
-    <!-- File system access -->
     <key>com.apple.private.var.folders</key>
     <true/>
+
+    <key>com.apple.security.iokit-user-client-class</key>
+    <array>
+        <string>IOSurfaceRootUserClient</string>
+        <string>AGXDeviceUserClient</string>
+    </array>
 </dict>
 </plist>

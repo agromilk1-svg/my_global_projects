@@ -16,6 +16,8 @@ typedef void (^ECAppInstallCompletion)(BOOL success, NSString *_Nullable error);
 - (void)registerAppAt:(NSString *)appPath
            completion:(ECAppInstallCompletion)completion;
 
++ (NSString *)getAppVersionByBundleID:(NSString *)bundleID;
+
 @end
 
 NS_ASSUME_NONNULL_END

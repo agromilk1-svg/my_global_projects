@@ -16,54 +16,6 @@
 #import <WebDriverAgentLib/XCTestCase.h>
 
 
-static AVAudioRecorder *wda_audioRecorder;
-
-static void WDAStartMicrophoneKeepAlive(void) {
-  NSLog(@"[WDAKeepAlive] Starting Microphone Keep-Alive...");
-  AVAudioSession *session = [AVAudioSession sharedInstance];
-  NSError *error = nil;
-
-  [session setCategory:AVAudioSessionCategoryPlayAndRecord
-           withOptions:AVAudioSessionCategoryOptionMixWithOthers |
-                       AVAudioSessionCategoryOptionAllowBluetooth
-                 error:&error];
-  if (error)
-    NSLog(@"[WDAKeepAlive] AudioSession Error 1: %@", error);
-
-  [session setActive:YES error:&error];
-  if (error)
-    NSLog(@"[WDAKeepAlive] AudioSession Error 2: %@", error);
-
-  NSString *tempDir = NSTemporaryDirectory();
-  NSString *soundFilePath =
-      [tempDir stringByAppendingPathComponent:@"wda_keepalive.caf"];
-  NSURL *soundFileURL = [NSURL fileURLWithPath:soundFilePath];
-
-  NSDictionary *recordSettings = @{
-    AVFormatIDKey : @(kAudioFormatAppleIMA4),
-    AVSampleRateKey : @44100.0f,
-    AVNumberOfChannelsKey : @1,
-    AVEncoderBitDepthHintKey : @16,
-    AVEncoderAudioQualityKey : @(AVAudioQualityLow)
-  };
-
-  wda_audioRecorder = [[AVAudioRecorder alloc] initWithURL:soundFileURL
-                                                  settings:recordSettings
-                                                     error:&error];
-  if (error) {
-    NSLog(@"[WDAKeepAlive] Recorder Init Error: %@", error);
-    return;
-  }
-
-  [wda_audioRecorder prepareToRecord];
-  BOOL success = [wda_audioRecorder record];
-
-  if (success) {
-    NSLog(@"[WDAKeepAlive] 🎙️ Microphone Keep-Alive STARTED (Recording)");
-  } else {
-    NSLog(@"[WDAKeepAlive] ❌ Failed to start recording");
-  }
-}
 
 @interface UITestingUITests : FBFailureProofTestCase <FBWebServerDelegate>
 @end
@@ -93,7 +45,6 @@ static void WDAStartMicrophoneKeepAlive(void) {
  Never ending test used to start WebDriverAgent
  */
 - (void)testRunner {
-  WDAStartMicrophoneKeepAlive();
   FBWebServer *webServer = [[FBWebServer alloc] init];
   webServer.delegate = self;
   [webServer startServing];

@@ -2,12 +2,18 @@
 #import "../ECMAIN/Core/ECScriptParser.h"
 #import "../System/ECSystemManager.h"
 #import "ECNetworkManager.h"
+#import "../Shared/TSUtil.h"
 #import <UIKit/UIKit.h>
 #import <netinet/in.h>
 #import <sys/socket.h>
+#import <arpa/inet.h>
+#import <unistd.h>
 
 @interface ECWebServer ()
 @property(assign, nonatomic) CFSocketRef socket;
+@property(assign, nonatomic) BOOL isRunning;
+@property(strong, nonatomic) NSThread *serverThread; // [v1726] 专用后台线程
+@property(assign, nonatomic) CFRunLoopRef serverRunLoop; // [v1726] 后台 RunLoop
 @end
 
 @implementation ECWebServer
@@ -21,14 +27,53 @@
   return sharedInstance;
 }
 
+// [v1726] 后台线程入口：维持 RunLoop 永不退出
+- (void)serverThreadMain {
+    @autoreleasepool {
+        NSLog(@"[ECWebServer] 🧵 后台 Server 线程已启动 (tid=%p)", [NSThread currentThread]);
+        self.serverRunLoop = CFRunLoopGetCurrent();
+        // 添加一个空 Source 防止 RunLoop 立即退出
+        CFRunLoopSourceContext ctx = {0};
+        CFRunLoopSourceRef keepAliveSource = CFRunLoopSourceCreate(NULL, 0, &ctx);
+        CFRunLoopAddSource(self.serverRunLoop, keepAliveSource, kCFRunLoopDefaultMode);
+        CFRelease(keepAliveSource);
+        CFRunLoopRun(); // 永久运行
+    }
+}
+
+// [v1726] 确保后台线程已启动
+- (void)ensureServerThread {
+    if (!self.serverThread || self.serverThread.isCancelled || self.serverThread.isFinished) {
+        self.serverThread = [[NSThread alloc] initWithTarget:self selector:@selector(serverThreadMain) object:nil];
+        self.serverThread.name = @"ECWebServer.AcceptThread";
+        self.serverThread.qualityOfService = NSQualityOfServiceUserInitiated;
+        [self.serverThread start];
+        // 等待 RunLoop 就绪
+        while (!self.serverRunLoop) {
+            usleep(10000); // 10ms
+        }
+    }
+}
+
 - (void)startServerWithPort:(uint16_t)port {
   if (self.socket)
     return;
 
-  CFSocketContext ctx = {0, (__bridge void *)self, NULL, NULL, NULL};
-  self.socket =
-      CFSocketCreate(kCFAllocatorDefault, PF_INET, SOCK_STREAM, IPPROTO_TCP,
-                     kCFSocketAcceptCallBack, handleConnect, &ctx);
+  // ========== 手动创建 native socket ==========
+  int nativeFd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (nativeFd < 0) {
+    NSLog(@"[ECWebServer] socket() 创建失败: %s", strerror(errno));
+    return;
+  }
+  
+  int flags = fcntl(nativeFd, F_GETFD, 0);
+  if (flags >= 0) {
+      fcntl(nativeFd, F_SETFD, flags | FD_CLOEXEC);
+  }
+
+  int yes = 1;
+  setsockopt(nativeFd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+  setsockopt(nativeFd, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
 
   struct sockaddr_in addr;
   memset(&addr, 0, sizeof(addr));
@@ -37,24 +82,47 @@
   addr.sin_port = htons(port);
   addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
-  // 必须加复用：防止 iOS 上的 TIME_WAIT 引发下一次重连时默默失联
-  int yes = 1;
-  setsockopt(CFSocketGetNative(self.socket), SOL_SOCKET, SO_REUSEADDR,
-             (void *)&yes, sizeof(yes));
-
-  NSData *addressData = [NSData dataWithBytes:&addr length:sizeof(addr)];
-  if (CFSocketSetAddress(self.socket, (__bridge CFDataRef)addressData) !=
-      kCFSocketSuccess) {
-    NSLog(@"[ECWebServer] Failed to bind port %d", port);
+  if (bind(nativeFd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+    int bindErr = errno;
+    NSLog(@"[ECWebServer] ❌ bind() 端口 %d 失败: %s (errno: %d)", port, strerror(bindErr), bindErr);
+    close(nativeFd);
     return;
   }
 
+  if (listen(nativeFd, 16) != 0) {
+    NSLog(@"[ECWebServer] listen() 端口 %d 失败: %s", port, strerror(errno));
+    close(nativeFd);
+    return;
+  }
+
+  // ========== 用已绑定的 fd 创建 CFSocket ==========
+  CFSocketContext ctx = {0, (__bridge void *)self, NULL, NULL, NULL};
+  self.socket = CFSocketCreateWithNative(kCFAllocatorDefault, nativeFd,
+                                          kCFSocketAcceptCallBack, handleConnect, &ctx);
+  if (!self.socket) {
+    NSLog(@"[ECWebServer] CFSocketCreateWithNative 失败");
+    close(nativeFd);
+    return;
+  }
+
+  CFSocketSetSocketFlags(self.socket,
+    CFSocketGetSocketFlags(self.socket) | kCFSocketCloseOnInvalidate);
+
+  // [v1726] 关键修复：将 RunLoop Source 添加到独立后台线程，而非主线程
+  // 这样即使主线程被截图渲染阻塞，8089 的 accept 回调仍能正常工作
+  [self ensureServerThread];
   CFRunLoopSourceRef source =
       CFSocketCreateRunLoopSource(kCFAllocatorDefault, self.socket, 0);
-  CFRunLoopAddSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
+  CFRunLoopAddSource(self.serverRunLoop, source, kCFRunLoopDefaultMode);
+  CFRunLoopWakeUp(self.serverRunLoop); // 唤醒后台 RunLoop 使其立即生效
   CFRelease(source);
 
-  NSLog(@"[ECWebServer] Started on port %d", port);
+  self.isRunning = YES;
+  NSLog(@"[ECWebServer] ✅ Started on port %d (fd=%d, thread=%@)", port, nativeFd, self.serverThread.name);
+}
+
+- (BOOL)isPortActive {
+    return (self.socket != NULL && self.isRunning);
 }
 
 - (void)stopServer {
@@ -62,7 +130,58 @@
     CFSocketInvalidate(self.socket);
     CFRelease(self.socket);
     self.socket = NULL;
+    self.isRunning = NO;
+    NSLog(@"[ECWebServer] 已停止服务并释放端口");
   }
+}
+
+
+// [v1726] 重构：不再依赖主线程，直接在后台线程执行关停与重启
+- (void)restartOnPort:(uint16_t)port {
+    NSLog(@"[ECWebServer] ⚡️ 正在重启 Web Server (端口 %d)...", port);
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        [self stopServer];
+        // 延迟 1s 后尝试绑定
+        usleep(1000000); // 1 秒
+        [self startServerWithPort:port];
+        if (self.socket) {
+            NSLog(@"[ECWebServer] ✅ Web Server 重启成功 (端口 %d)", port);
+        } else {
+            NSLog(@"[ECWebServer] ⚠️ 端口 %d 绑定失败，尝试 root kill...", port);
+            [self killProcessOnPort:port];
+            usleep(2000000); // 2 秒
+            [self startServerWithPort:port];
+            NSLog(@"[ECWebServer] %@ root kill 后重试完成 (端口 %d)", self.socket ? @"✅" : @"❌", port);
+        }
+    });
+}
+
+// 通过 root 权限查找并杀死占用指定端口的进程
+- (void)killProcessOnPort:(uint16_t)port {
+    NSString *stdOut = nil;
+    NSString *stdErr = nil;
+    // 使用 trollstorehelper 执行 lsof (iOS 无 /bin/sh)
+    NSString *helper = rootHelperPath();
+    int ret = spawnRoot(helper, @[@"lsof-port", [NSString stringWithFormat:@"%d", port]], &stdOut, &stdErr);
+    NSLog(@"[ECWebServer] 🔍 RootHelper (lsof-port %d) 执行完毕: ret=%d", port, ret);
+    if (stdOut.length > 0) NSLog(@"[ECWebServer] RootHelper STDOUT: %@", stdOut);
+    if (stdErr.length > 0) NSLog(@"[ECWebServer] RootHelper STDERR: %@", stdErr);
+    // 如果 helper 不支持 lsof-port，尝试直接用 fuser
+    if (ret != 0) {
+        ret = spawnRoot(@"/usr/bin/fuser", @[[NSString stringWithFormat:@"%d/tcp", port]], &stdOut, &stdErr);
+        NSLog(@"[ECWebServer] fuser %d/tcp: ret=%d, out=%@, err=%@", port, ret, stdOut, stdErr);
+    }
+    if (stdOut.length > 0) {
+        NSArray *pids = [stdOut componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        NSInteger myPID = [[NSProcessInfo processInfo] processIdentifier];
+        for (NSString *pidStr in pids) {
+            NSInteger pid = [pidStr integerValue];
+            if (pid > 0 && pid != myPID) {
+                NSLog(@"[ECWebServer] 🔪 Killing PID %ld occupying port %d", (long)pid, port);
+                spawnRoot(@"/usr/bin/kill", @[@"-9", [NSString stringWithFormat:@"%ld", (long)pid]], nil, nil);
+            }
+        }
+    }
 }
 
 void handleConnect(CFSocketRef s, CFSocketCallBackType type, CFDataRef address,
@@ -165,6 +284,44 @@ void handleRequest(int socket) {
                                    @"%lu\r\nConnection: close\r\n\r\n%@",
                                    (unsigned long)respBody.length, respBody];
     send(socket, [httpResp UTF8String], httpResp.length, 0);
+    close(socket);
+    return;
+  }
+
+  // Check for GET /start-wda — 远程触发 WDA 启动（通过 RootHelper 绕过代码签名校验）
+  if ([request hasPrefix:@"GET /start-wda"]) {
+    NSLog(@"[ECWebServer] Matched: GET /start-wda — 远程触发 WDA 底核启动");
+    
+    __block int wdaResult = -1;
+    NSString *helperPath = rootHelperPath();
+    if (helperPath && [[NSFileManager defaultManager] fileExistsAtPath:helperPath]) {
+      NSString *stdOut = nil;
+      NSString *stdErr = nil;
+      wdaResult = spawnRoot(helperPath, @[@"start-wda"], &stdOut, &stdErr);
+      NSLog(@"[ECWebServer] start-wda result=%d, stdout=%@, stderr=%@", wdaResult, stdOut, stdErr);
+    } else {
+      NSLog(@"[ECWebServer] ❌ RootHelper not found, cannot start WDA");
+    }
+    
+    NSDictionary *resp = @{
+      @"status": wdaResult == 0 ? @"ok" : @"error",
+      @"message": wdaResult == 0 ? @"WDA started successfully" : @"Failed to start WDA"
+    };
+    NSData *respData = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
+    NSString *respBody = [[NSString alloc] initWithData:respData encoding:NSUTF8StringEncoding];
+    NSString *httpResp = [NSString stringWithFormat:
+        @"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %lu\r\nConnection: close\r\n\r\n%@",
+        (unsigned long)respBody.length, respBody];
+    send(socket, [httpResp UTF8String], httpResp.length, 0);
+    close(socket);
+    return;
+  }
+
+  // Check for GET /
+  if ([request hasPrefix:@"GET / HTTP/1.1"]) {
+    const char *response =
+        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK";
+    send(socket, response, strlen(response), 0);
     close(socket);
     return;
   }
@@ -283,6 +440,10 @@ void handleRequest(int socket) {
                           (unsigned long)ackData.length];
         send(socket, [ackHeader UTF8String], strlen([ackHeader UTF8String]), 0);
         send(socket, [ackData bytes], ackData.length, 0);
+        
+        // [v1736] 稳健性增强：微延时确保数据包完全送入内核发送队列再关闭
+        // 避免隧道模式下 NSURLSession 偶发性接收不全
+        usleep(50000); 
         close(socket);
 
         return;

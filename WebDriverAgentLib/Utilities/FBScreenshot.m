@@ -21,10 +21,10 @@
 #import "XCUIScreen.h"
 
 static const NSTimeInterval SCREENSHOT_TIMEOUT = 3.;
-static const CGFloat SCREENSHOT_SCALE =
-    1.0; // Screenshot API should keep the original screen scale
-static const CGFloat HIGH_QUALITY = 0.8;
-static const CGFloat LOW_QUALITY = 0.25;
+// 降低默认分辨率（0.5 = 半分辨率），减轻 HEIF→JPEG 转码内存压力
+static const CGFloat SCREENSHOT_SCALE = 0.5;
+static const CGFloat HIGH_QUALITY = 0.6;
+static const CGFloat LOW_QUALITY = 0.15;
 
 NSString *formatTimeInterval(NSTimeInterval interval) {
   NSUInteger milliseconds = (NSUInteger)(interval * 1000);
@@ -59,12 +59,22 @@ NSString *formatTimeInterval(NSTimeInterval interval) {
 + (NSData *)takeInOriginalResolutionWithQuality:(NSUInteger)quality
                                           error:(NSError **)error {
   XCUIScreen *mainScreen = XCUIScreen.mainScreen;
-  return [self.class takeWithScreenID:mainScreen.displayID
-                                scale:SCREENSHOT_SCALE
-                   compressionQuality:
-                       [self.class compressionQualityWithQuality:quality]
-                            sourceUTI:[self.class imageUtiWithQuality:quality]
-                                error:error];
+  NSData *data = [self.class takeWithScreenID:mainScreen.displayID
+                                 scale:SCREENSHOT_SCALE
+                    compressionQuality:
+                        [self.class compressionQualityWithQuality:quality]
+                             sourceUTI:[self.class imageUtiWithQuality:quality]
+                                 error:error];
+  // [v1737] 如果初始格式失败且不是 PNG，则降级为 PNG 重试，绕过系统转码瓶颈
+  if (data == nil && quality != 0) {
+      [FBLogger logFmt:@"[FBWDA] Screenshot failed with quality %lu, retrying with PNG (Quality 0)...", (unsigned long)quality];
+      data = [self.class takeWithScreenID:mainScreen.displayID
+                                    scale:SCREENSHOT_SCALE
+                       compressionQuality:1.0
+                                sourceUTI:UTTypePNG
+                                    error:error];
+  }
+  return data;
 }
 
 + (NSData *)takeWithScreenID:(long long)screenID
@@ -83,7 +93,7 @@ NSString *formatTimeInterval(NSTimeInterval interval) {
   }
   return [[[FBImageProcessor alloc] init]
       scaledImageWithData:screenshotData
-                      uti:UTTypePNG
+                      uti:uti
             scalingFactor:1.0 / scale
        compressionQuality:FBMaxCompressionQuality
                     error:error];

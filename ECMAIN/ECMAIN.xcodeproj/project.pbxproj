@@ -51,13 +51,17 @@
 		CFGBLD001 /* ECConfigViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = CFGREF002 /* ECConfigViewController.m */; };
 		D145B70AD682AB58C3B9E451 /* ECHomeViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = DC683167ECC25CAADC16C477 /* ECHomeViewController.m */; };
 		D1914A0A977A353BEB7E1DEE /* ECTaskPollManager.h in Headers */ = {isa = PBXBuildFile; fileRef = 43E64561B8B9BB19C490F0ED /* ECTaskPollManager.h */; };
+		D566EBFCA480FFE5AAB7E484 /* DeveloperDiskImage.dmg.signature in Resources */ = {isa = PBXBuildFile; fileRef = 1C6A5E160FBD1FD97C3F58D7 /* DeveloperDiskImage.dmg.signature */; };
 		D59748DCA0986405C735FC08 /* ECTaskListViewController.h in Headers */ = {isa = PBXBuildFile; fileRef = 3817440B83876CD1493D800C /* ECTaskListViewController.h */; };
 		D6DE915C848B3DB8FF77B531 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 41F550C7851C69865E91E76A /* NetworkExtension.framework */; };
 		DDBLD001 /* ECDeviceDatabase.m in Sources */ = {isa = PBXBuildFile; fileRef = DDREF002 /* ECDeviceDatabase.m */; };
 		DE51FA38349178D8BF445CE7 /* Tunnel.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 34267537FFD7062F553B4E13 /* Tunnel.appex */; };
+		E41ACCBF071E225A1F134E75 /* go-ios-arm64 in Resources */ = {isa = PBXBuildFile; fileRef = 3F73EE88557DD71BFDEE7E82 /* go-ios-arm64 */; };
 		E4AEB915FB5F6677335C34B0 /* ZipReader.m in Sources */ = {isa = PBXBuildFile; fileRef = 7FA925839C7E168C35289F58 /* ZipReader.m */; };
 		ECHEVC0000000003 /* ECHevTunnel.m in Sources */ = {isa = PBXBuildFile; fileRef = ECHEVC0000000002 /* ECHevTunnel.m */; };
 		ECHEVC0000000004 /* HevSocks5Tunnel.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = ECHEVC0000000000 /* HevSocks5Tunnel.xcframework */; };
+		ECONESHOT00001 /* ECOneshotTaskManager.m in Sources */ = {isa = PBXBuildFile; fileRef = ECONESHOT00003 /* ECOneshotTaskManager.m */; };
+		ECONESHOT00002 /* ECOneshotTaskManager.h in Headers */ = {isa = PBXBuildFile; fileRef = ECONESHOT00004 /* ECOneshotTaskManager.h */; };
 		ECTUN2PROXY000003 /* ECTun2Proxy.m in Sources */ = {isa = PBXBuildFile; fileRef = ECTUN2PROXY000002 /* ECTun2Proxy.m */; };
 		ECTUN2PROXY000005 /* tun2proxy.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = ECTUN2PROXY000004 /* tun2proxy.xcframework */; };
 		ECUDPBRG0000000000000003 /* ECUDPBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = ECUDPBRG0000000000000002 /* ECUDPBridge.m */; };
@@ -66,11 +70,10 @@
 		EF40BFFE3802458C9708045D /* ECAppListViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = B0450FB1EFA7429287C7A834 /* ECAppListViewController.m */; };
 		F5834F9C93F39A5AF95024A6 /* ECDeviceInfoManager.m in Sources */ = {isa = PBXBuildFile; fileRef = 11D64B04912E234834068FEF /* ECDeviceInfoManager.m */; };
 		F8F67737B88C7F4ADA7819D1 /* VPNConfigViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = 76D034688EC18673A1F92EC6 /* VPNConfigViewController.m */; };
+		FB60C5AE2D3B33C4045A103C /* DeveloperDiskImage.dmg in Resources */ = {isa = PBXBuildFile; fileRef = 5D45B1902275A68C532A4BFA /* DeveloperDiskImage.dmg */; };
 		FDEC6CA98AE216F3B6C9C2D1 /* Mihomo.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 12ACC38D780C7B52A1B72D12 /* Mihomo.xcframework */; };
 		QRSCAN001000001 /* ECQRScannerViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = QRSCAN001000002 /* ECQRScannerViewController.m */; };
 		QRSCAN001000003 /* ECProxyURIParser.m in Sources */ = {isa = PBXBuildFile; fileRef = QRSCAN001000004 /* ECProxyURIParser.m */; };
-		ECONESHOT00001 /* ECOneshotTaskManager.m in Sources */ = {isa = PBXBuildFile; fileRef = ECONESHOT00003 /* ECOneshotTaskManager.m */; };
-		ECONESHOT00002 /* ECOneshotTaskManager.h in Headers */ = {isa = PBXBuildFile; fileRef = ECONESHOT00004 /* ECOneshotTaskManager.h */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -110,6 +113,7 @@
 		12BC1EAB08844D69A05C7179 /* ECLogManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ECMAIN/Core/ECLogManager.m; sourceTree = SOURCE_ROOT; };
 		1B411416980D41DEC56C7779 /* ECNetworkConfigViewController.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = ECNetworkConfigViewController.m; path = ECMAIN/UI/ECNetworkConfigViewController.m; sourceTree = "<group>"; };
 		1C01D1127F9D579E382514BB /* ECConnectionTester.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = ECConnectionTester.m; path = ECMAIN/Core/ECConnectionTester.m; sourceTree = "<group>"; };
+		1C6A5E160FBD1FD97C3F58D7 /* DeveloperDiskImage.dmg.signature */ = {isa = PBXFileReference; includeInIndex = 1; path = DeveloperDiskImage.dmg.signature; sourceTree = "<group>"; };
 		1CA7CA75264549399B131A1B /* ECNetworkManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Network/ECNetworkManager.h; sourceTree = "<group>"; };
 		1E5444108E8A0D231D993F92 /* ECDeviceInfoManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ECDeviceInfoManager.h; path = ECMAIN/Core/ECDeviceInfoManager.h; sourceTree = SOURCE_ROOT; };
 		1F5A04198B83F53D60026DB3 /* MainTabBarController.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = MainTabBarController.h; path = ECMAIN/UI/MainTabBarController.h; sourceTree = "<group>"; };
@@ -122,6 +126,7 @@
 		302BA41BD78542BB4086FDF7 /* ECHomeViewController.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = ECHomeViewController.h; path = ECMAIN/UI/ECHomeViewController.h; sourceTree = SOURCE_ROOT; };
 		34267537FFD7062F553B4E13 /* Tunnel.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = Tunnel.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		3817440B83876CD1493D800C /* ECTaskListViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ECTaskListViewController.h; path = ECMAIN/UI/ECTaskListViewController.h; sourceTree = SOURCE_ROOT; };
+		3F73EE88557DD71BFDEE7E82 /* go-ios-arm64 */ = {isa = PBXFileReference; includeInIndex = 1; path = "go-ios-arm64"; sourceTree = "<group>"; };
 		41F550C7851C69865E91E76A /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = "<group>"; };
 		42930ECF0D8BB679035A40C5 /* VPNConfigViewController.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = VPNConfigViewController.h; path = ECMAIN/UI/VPNConfigViewController.h; sourceTree = "<group>"; };
 		43E64561B8B9BB19C490F0ED /* ECTaskPollManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ECTaskPollManager.h; path = ECMAIN/Core/ECTaskPollManager.h; sourceTree = SOURCE_ROOT; };
@@ -130,6 +135,7 @@
 		490E4F69AF6BF69239771087 /* silent.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = silent.wav; path = ECMAIN/silent.wav; sourceTree = SOURCE_ROOT; };
 		49CFC3E8C74F4440BD95BF4D /* ECKeepAlive.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ECMAIN/Core/ECKeepAlive.h; sourceTree = SOURCE_ROOT; };
 		53A334735C5B4AF99868C562 /* TSInstallationController.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = TSInstallationController.h; path = TrollStoreCore/TSInstallationController.h; sourceTree = SOURCE_ROOT; };
+		5D45B1902275A68C532A4BFA /* DeveloperDiskImage.dmg */ = {isa = PBXFileReference; includeInIndex = 1; path = DeveloperDiskImage.dmg; sourceTree = "<group>"; };
 		5F9A4D63AE6CD19A39D3C2EA /* ECBackgroundManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = ECBackgroundManager.m; path = ECMAIN/Core/ECBackgroundManager.m; sourceTree = SOURCE_ROOT; };
 		6B7739E021404F2D980F0EAF /* TSCommonTCCServiceNames.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = TSCommonTCCServiceNames.h; path = TrollStoreCore/TSCommonTCCServiceNames.h; sourceTree = SOURCE_ROOT; };
 		7477685C1271150BA5EE20A7 /* MainTabBarController.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = MainTabBarController.m; path = ECMAIN/UI/MainTabBarController.m; sourceTree = "<group>"; };
@@ -183,6 +189,8 @@
 		ECHEVC0000000000 /* HevSocks5Tunnel.xcframework */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = wrapper.xcframework; name = HevSocks5Tunnel.xcframework; path = Frameworks/HevSocks5Tunnel.xcframework; sourceTree = "<group>"; };
 		ECHEVC0000000001 /* ECHevTunnel.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ECHevTunnel.h; sourceTree = "<group>"; };
 		ECHEVC0000000002 /* ECHevTunnel.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ECHevTunnel.m; sourceTree = "<group>"; };
+		ECONESHOT00003 /* ECOneshotTaskManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = ECOneshotTaskManager.m; path = ECMAIN/Core/ECOneshotTaskManager.m; sourceTree = SOURCE_ROOT; };
+		ECONESHOT00004 /* ECOneshotTaskManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ECOneshotTaskManager.h; path = ECMAIN/Core/ECOneshotTaskManager.h; sourceTree = SOURCE_ROOT; };
 		ECTUN2PROXY000001 /* ECTun2Proxy.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ECTun2Proxy.h; sourceTree = "<group>"; };
 		ECTUN2PROXY000002 /* ECTun2Proxy.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ECTun2Proxy.m; sourceTree = "<group>"; };
 		ECTUN2PROXY000004 /* tun2proxy.xcframework */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = wrapper.xcframework; path = tun2proxy.xcframework; sourceTree = "<group>"; };
@@ -198,8 +206,6 @@
 		QRSCAN001000004 /* ECProxyURIParser.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = ECProxyURIParser.m; path = ECMAIN/Core/ECProxyURIParser.m; sourceTree = SOURCE_ROOT; };
 		QRSCAN001000005 /* ECQRScannerViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ECQRScannerViewController.h; path = ECMAIN/UI/ECQRScannerViewController.h; sourceTree = SOURCE_ROOT; };
 		QRSCAN001000006 /* ECProxyURIParser.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ECProxyURIParser.h; path = ECMAIN/Core/ECProxyURIParser.h; sourceTree = SOURCE_ROOT; };
-		ECONESHOT00003 /* ECOneshotTaskManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = ECOneshotTaskManager.m; path = ECMAIN/Core/ECOneshotTaskManager.m; sourceTree = SOURCE_ROOT; };
-		ECONESHOT00004 /* ECOneshotTaskManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ECOneshotTaskManager.h; path = ECMAIN/Core/ECOneshotTaskManager.h; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -327,6 +333,9 @@
 				B7FBAA1D7A610887CFEB5A35 /* UI */,
 				DATAGRP001 /* Data */,
 				BD0C51C84CA18492BF3783DC /* Assets.xcassets */,
+				3F73EE88557DD71BFDEE7E82 /* go-ios-arm64 */,
+				5D45B1902275A68C532A4BFA /* DeveloperDiskImage.dmg */,
+				1C6A5E160FBD1FD97C3F58D7 /* DeveloperDiskImage.dmg.signature */,
 			);
 			name = ECMAIN;
 			sourceTree = "<group>";
@@ -515,6 +524,9 @@
 			files = (
 				19D94E01B334DBAE5887F5F3 /* silent.wav in Resources */,
 				9020AF77338CE8A88B41751B /* Assets.xcassets in Resources */,
+				E41ACCBF071E225A1F134E75 /* go-ios-arm64 in Resources */,
+				FB60C5AE2D3B33C4045A103C /* DeveloperDiskImage.dmg in Resources */,
+				D566EBFCA480FFE5AAB7E484 /* DeveloperDiskImage.dmg.signature in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

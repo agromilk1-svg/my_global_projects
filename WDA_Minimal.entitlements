@@ -42,5 +42,11 @@
     <true/>
     <key>com.apple.private.hid.client.event-dispatch</key>
     <true/>
+    
+    <!-- XCTest Standalone Permissions -->
+    <key>com.apple.private.testmanagerd.client</key>
+    <true/>
+    <key>com.apple.private.xpc.service-attach</key>
+    <true/>
 </dict>
 </plist>

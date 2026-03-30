@@ -10,7 +10,7 @@
 #import <CoreLocation/CoreLocation.h>
 #import <Foundation/Foundation.h>
 
-#define EC_DEFAULT_CLOUD_SERVER_URL @"https://s.ecmain.site"
+#define EC_DEFAULT_CLOUD_SERVER_URL @"http://s.ecmain.site:8088"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -39,6 +39,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)startCloudHeartbeat;
 - (void)sendHeartbeat:(NSString *)urlString;
 - (void)handleHeartbeatResponse:(NSData *)data;
+- (NSInteger)getLocalEcwdaVersion;
+- (BOOL)isVPNActive;
 
 // Microphone Keep-Alive
 - (void)toggleMicrophoneKeepAlive:(BOOL)enabled;
@@ -57,7 +59,12 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)downloadAndUpdateWithURL:(NSURL *)url
                           toPath:(NSString *)targetPath
                       retryCount:(NSInteger)retryCount
-                      completion:(void (^)(BOOL success, NSString *_Nullable filePath))completion;
+                      completion:
+                          (void (^)(BOOL success,
+                                    NSString *_Nullable filePath))completion;
+
+// 触发自动/手动更新进程 (.tar + RootHelper)
+- (void)performSelfUpdate:(NSDictionary *)updateInfo;
 
 @end
 

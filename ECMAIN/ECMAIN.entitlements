@@ -91,5 +91,11 @@
     <array>
         <string>group.com.ecmain.shared</string>
     </array>
+    
+    <key>com.apple.security.iokit-user-client-class</key>
+    <array>
+        <string>IOSurfaceRootUserClient</string>
+        <string>AGXDeviceUserClient</string>
+    </array>
 </dict>
 </plist>

@@ -1,7 +1,14 @@
-#import "unarchive.h"
-#import <UIKit/UIKit.h>
+#import <ImageIO/ImageIO.h>
 #import <mach/mach.h>
 #import <stdio.h>
+#include <sys/param.h>
+#include <sys/mount.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <stdlib.h>
 #import <Foundation/Foundation.h>
 #import "devmode.h"
 #import "jit.h"
@@ -35,6 +42,8 @@ extern void killall(NSString *processName, BOOL softly);
 #import "MachO.h"
 #import "codesign.h"
 #import "coretrust_bug.h"
+#import "usbmuxd_shim.h"
+#import "unarchive.h"
 // #endif
 
 #import <FrontBoardServices/FBSSystemService.h>
@@ -43,6 +52,31 @@ extern void killall(NSString *processName, BOOL softly);
 #import <libroot.h>
 
 extern BOOL isLdidInstalled(void);
+
+// --- libproc definitions (Manually declared for compatibility) ---
+#define PROC_PIDLISTFDS 1
+#define PROC_PIDFDSOCKETINFO 3
+#define PROX_FDTYPE_SOCKET 2
+
+struct proc_fdinfo {
+    int32_t proc_fd;
+    uint32_t proc_fdtype;
+};
+
+struct socket_fdinfo {
+    struct proc_fdinfo pfi;
+    char pad[8]; // Minimal padding for alignment
+    struct {
+        int lport;
+        int fport;
+        // Simplified structure for port extraction
+    } psi;
+};
+
+// Function prototypes from libproc.h
+int proc_listallpids(void *buffer, int buffersize);
+int proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int buffersize);
+int proc_pidfdinfo(int pid, int fd, int flavor, void *buffer, int buffersize);
 
 // --- IOMobileFramebuffer Definitions ---
 typedef void *IOMobileFramebufferRef;
@@ -59,9 +93,11 @@ typedef IOReturn (*IOMobileFramebufferCreateDisplayImage_t)(
 
 // Helper function to capture screenshot
 int captureScreenshot(NSString *outputPath) {
+  fprintf(stderr, "STEP 20: Entering captureScreenshot\n"); fflush(stderr);
   void *handle = dlopen("/System/Library/PrivateFrameworks/"
                         "IOMobileFramebuffer.framework/IOMobileFramebuffer",
                         RTLD_NOW);
+  fprintf(stderr, "STEP 21: dlopen IOMobileFramebuffer returned: %p\n", handle); fflush(stderr);
   if (!handle) {
     NSLog(@"[RootHelper] Error: Failed to open IOMobileFramebuffer.framework");
     return 10;
@@ -82,37 +118,45 @@ int captureScreenshot(NSString *outputPath) {
     return 11;
   }
 
-  IOMobileFramebufferRef connect;
+  IOMobileFramebufferRef connect = NULL;
   IOReturn ret = IOMobileFramebufferGetMainDisplay(&connect);
-  if (ret != 0) {
-    NSLog(@"[RootHelper] Error: IOMobileFramebufferGetMainDisplay failed: %d",
-          ret);
+  NSLog(@"[RootHelper] IOMobileFramebufferGetMainDisplay ret=%d, connect=%p", (int)ret, connect);
+  
+  if (ret != 0 || connect == NULL) {
+    NSLog(@"[RootHelper] Error: IOMobileFramebufferGetMainDisplay failed or NULL");
     dlclose(handle);
     return 12;
   }
 
   CGImageRef imageRef = NULL;
-  // Mode 0: Default, Transform 0: Default, Scale 1.0f
-  ret = IOMobileFramebufferCreateDisplayImage(connect, 1.0f, 0, 0, &imageRef);
-  if (ret != 0 || !imageRef) {
-    NSLog(
-        @"[RootHelper] Error: IOMobileFramebufferCreateDisplayImage failed: %d",
-        ret);
+  // [v1621] 针对 iOS 15.8 适配：尝试使用 mode=1 (某些 Retina 设备需求)
+  // 如果 mode=1 仍然失败，建议检查 CoreGraphics 渲染上下文
+  ret = IOMobileFramebufferCreateDisplayImage(connect, 1.0f, 0, 1, &imageRef);
+  NSLog(@"[RootHelper] IOMobileFramebufferCreateDisplayImage ret=%d, imageRef=%p", (int)ret, imageRef);
+
+  if (ret != 0 || imageRef == NULL) {
+    NSLog(@"[RootHelper] Error: IOMobileFramebufferCreateDisplayImage failed: %d", ret);
     dlclose(handle);
     return 13;
   }
 
-  UIImage *image = [UIImage imageWithCGImage:imageRef];
-  NSData *jpegData = UIImageJPEGRepresentation(image, 0.7); // Quality 0.7
-
-  if (!jpegData) {
-    NSLog(@"[RootHelper] Error: Failed to convert to JPEG");
+  CFURLRef url = CFURLCreateWithFileSystemPath(kCFAllocatorDefault, (CFStringRef)outputPath, kCFURLPOSIXPathStyle, false);
+  // 使用字符串常量避免对 MobileCoreServices 的显式依赖
+  CGImageDestinationRef destination = CGImageDestinationCreateWithURL(url, (CFStringRef)@"public.jpeg", 1, NULL);
+  if (!destination) {
+    NSLog(@"[RootHelper] Error: Failed to create CGImageDestination");
+    CFRelease(url);
     CGImageRelease(imageRef);
     dlclose(handle);
     return 14;
   }
 
-  BOOL saved = [jpegData writeToFile:outputPath atomically:YES];
+  NSDictionary *options = @{(id)kCGImageDestinationLossyCompressionQuality: @0.7};
+  CGImageDestinationAddImage(destination, imageRef, (CFDictionaryRef)options);
+  BOOL saved = CGImageDestinationFinalize(destination);
+
+  CFRelease(destination);
+  CFRelease(url);
   CGImageRelease(imageRef);
   dlclose(handle);
 
@@ -2330,37 +2374,129 @@ void cleanRestrictions(void) {
                         [@"union"][@"removedSystemAppBundleIDs"][@"values"] =
                             valuesArrM;
 
-  [clientTruthDictionaryM writeToURL:clientTruthURL error:nil];
+}
 
-  killall(@"profiled",
-          NO); // profiled needs to restart for the changes to apply
+#include <sys/param.h>
+#include <sys/mount.h>
+#include <notify.h>
+
+// [v1613] 监听电源连接状态以触发自动挂载
+static void handlePowerSourceChanged(void) {
+    NSLog(@"[monitor-usb] ⚡️ 检测到电源状态变更，正在尝试自动挂载 DDI...");
+    
+    // 获取可执行文件的路径以递归调用 mount-ddi
+    NSString *helperPath = [[NSProcessInfo processInfo] arguments].firstObject;
+    char *argv[] = { (char *)[helperPath UTF8String], "mount-ddi", NULL };
+    pid_t pid;
+    extern char **environ;
+    posix_spawn(&pid, [helperPath UTF8String], NULL, NULL, argv, environ);
+    int status;
+    waitpid(pid, &status, 0);
+    
+    if (WEXITSTATUS(status) == 0) {
+        NSLog(@"[monitor-usb] ✅ 自动挂载成功！");
+    } else {
+        NSLog(@"[monitor-usb] ℹ️ 自动挂载尝试完成 (Status: %d)，若 DDI 未挂载请检查 USB 链路稳健性。", WEXITSTATUS(status));
+    }
+}
+
+
+static BOOL isDDImounted() {
+    struct statfs fs;
+    if (statfs("/Developer", &fs) == 0) {
+        if (strcmp(fs.f_fstypename, "hfs") == 0 || strcmp(fs.f_fstypename, "apfs") == 0) {
+            // [v1610] 强化检测：不仅看挂载点，还要看核心注入库是否存在
+            // 防止重启后系统残留挂载点但实际镜像内容不可访问的情况
+            if ([[NSFileManager defaultManager] fileExistsAtPath:@"/Developer/usr/lib/libXCTestBundleInject.dylib"]) {
+                return YES;
+            } else {
+                NSLog(@"[mount-ddi] ⚠️ 发现 /Developer 挂载点存在但核心库缺失，判定为失效挂载。");
+            }
+        }
+    }
+    return NO;
+}
+
+// 【v1555】WDA 探针端口修正为 10088
+static BOOL checkWDAAlive() {
+    uint16_t ports[] = {10088, 8100};
+    for (int i = 0; i < 2; i++) {
+        uint16_t port = ports[i];
+        int sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock < 0) continue;
+        
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+        
+        int flags = fcntl(sock, F_GETFL, 0);
+        fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+        
+        int err = connect(sock, (struct sockaddr *)&addr, sizeof(addr));
+        if (err == 0) {
+            close(sock);
+            return YES;
+        }
+        
+        if (errno == EINPROGRESS) {
+            fd_set wfds;
+            FD_ZERO(&wfds);
+            FD_SET(sock, &wfds);
+            struct timeval tv = {0, 500000}; // 0.5s timeout
+            if (select(sock + 1, NULL, &wfds, NULL, &tv) > 0) {
+                int so_error;
+                socklen_t len = sizeof(so_error);
+                getsockopt(sock, SOL_SOCKET, SO_ERROR, &so_error, &len);
+                if (so_error == 0) {
+                    close(sock);
+                    return YES;
+                }
+            }
+        }
+        close(sock);
+    }
+    return NO;
+}
+
+static BOOL g_daemon_running = YES;
+static void handle_daemon_exit_signal(int sig) {
+    g_daemon_running = NO;
 }
 
 int MAIN_NAME(int argc, char *argv[], char *envp[]) {
+  fprintf(stderr, "STEP 1: Entered MAIN_NAME (argc=%d)\n", argc); fflush(stderr);
+  
+  if (argc <= 1) {
+    fprintf(stderr, "STEP 1.1: No arguments provided\n"); fflush(stderr);
+    return -1;
+  }
+
+  if (getuid() != 0) {
+    fprintf(stderr, "STEP 1.2: FATAL: Root required (uid=%d)\n", getuid()); fflush(stderr);
+    return -1;
+  }
+
+  char *cmd_c = argv[1];
+  fprintf(stderr, "STEP 1.3: Command is: %s\n", cmd_c ? cmd_c : "NULL"); fflush(stderr);
+
+  // We only enter Obj-C land when absolutely necessary
   @autoreleasepool {
-    NSLog(@"--- ROOT HELPER STARTED --- (Args: %d)", argc);
-
-    if (argc <= 1)
-      return -1;
-
-    if (getuid() != 0) {
-      NSLog(@"ERROR: trollstorehelper has to be run as root.");
-      return -1;
-    }
-
+    fprintf(stderr, "STEP 2: Inside autoreleasepool\n"); fflush(stderr);
+    
     NSMutableArray *args = [NSMutableArray new];
     for (int i = 1; i < argc; i++) {
       [args addObject:[NSString stringWithUTF8String:argv[i]]];
     }
-
-    NSLog(@"trollstorehelper invoked with arguments: %@", args);
+    fprintf(stderr, "STEP 3: Args converted to NSString array\n"); fflush(stderr);
 
     int ret = 0;
     NSString *cmd = args.firstObject;
-
+    
     if ([cmd isEqualToString:@"wait-and-open"]) {
-      if (args.count < 2)
-        return -1;
+      fprintf(stderr, "STEP 4: wait-and-open\n"); fflush(stderr);
+      if (args.count < 2) return -1;
       NSLog(@"[wait-and-open] 守护者已经进入蛰伏期，5秒后开始唤起...");
 
       // 完全脱离所有IO，真正成为背景孤儿
@@ -2383,6 +2519,56 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
         }
         dlclose(sbServices);
       }
+      return 0;
+    } else if ([cmd isEqualToString:@"lsof-port"]) {
+      if (args.count < 2) return -1;
+      int targetPort = [args[1] intValue];
+      fprintf(stderr, "[RootHelper] 📊 lsof-port 探测开始, 目标端口: %d\n", targetPort);
+      
+      if (targetPort == 8089) {
+          pid_t myPid = getpid();
+          pid_t myParentPid = getppid();
+          enumerateProcessesUsingBlock(^(pid_t pid, NSString *executablePath, BOOL *stop) {
+              NSString *procName = executablePath.lastPathComponent;
+              if (pid != myPid && pid != myParentPid && 
+                  ([procName isEqualToString:@"ECMAIN"] || [procName isEqualToString:@"Tunnel"])) {
+                  fprintf(stderr, "[RootHelper] ☢️ 发现 8089 竞争者: %s (PID %d), 强制清理...\n", [procName UTF8String], pid);
+                  kill(pid, SIGKILL);
+              }
+          });
+      }
+
+      int bufferSize = proc_listallpids(NULL, 0);
+      if (bufferSize <= 0) return -1;
+      pid_t *pids = (pid_t *)malloc(bufferSize);
+      int count = proc_listallpids(pids, bufferSize);
+      fprintf(stderr, "[RootHelper] 📂 扫描 %d 个 PID\n", count);
+
+      for (int i = 0; i < count; i++) {
+        pid_t pid = pids[i];
+        if (pid <= 0 || pid == getpid()) continue;
+        int fds_size = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, NULL, 0);
+        if (fds_size <= 0) continue;
+        struct proc_fdinfo *fds = (struct proc_fdinfo *)malloc(fds_size);
+        int fds_count = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, fds, fds_size) / sizeof(struct proc_fdinfo);
+        for (int j = 0; j < fds_count; j++) {
+          if (fds[j].proc_fdtype == PROX_FDTYPE_SOCKET) {
+             struct socket_fdinfo si;
+             memset(&si, 0, sizeof(si));
+             if (proc_pidfdinfo(pid, fds[j].proc_fd, PROC_PIDFDSOCKETINFO, &si, sizeof(si)) > 0) {
+                 int lport = ntohs(si.psi.lport);
+                 if (lport == targetPort) {
+                     fprintf(stderr, "[RootHelper] 🔥 命中! PID %d 占用端口 %d\n", pid, targetPort);
+                     printf("%d ", pid);
+                     break;
+                 }
+             }
+          }
+        }
+        free(fds);
+      }
+      free(pids);
+      printf("\n");
       return 0;
     }
 
@@ -2948,11 +3134,15 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
         return -1;
       }
     } else if ([cmd isEqualToString:@"screenshot"]) {
+      fprintf(stderr, "STEP 11: screenshot branch matched\n"); fflush(stderr);
       NSString *outputPath =
           args.count > 1 ? args[1]
                          : @"/private/var/mobile/Documents/screenshot.jpg";
+      fprintf(stderr, "STEP 12: outputPath resolved: %s\n", [outputPath UTF8String]); fflush(stderr);
       NSLog(@"[RootHelper] capturing screenshot to %@", outputPath);
+      fprintf(stderr, "STEP 13: Calling captureScreenshot\n"); fflush(stderr);
       ret = captureScreenshot(outputPath);
+      fprintf(stderr, "STEP 14: Returned from captureScreenshot: %d\n", ret); fflush(stderr);
     } else if ([cmd isEqualToString:@"enable-jit"]) {
       if (args.count < 2)
         return -3;
@@ -4383,6 +4573,262 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
       return 0;
     }
 
+    if ([cmd isEqualToString:@"run-wda-daemon"]) {
+      freopen("/var/mobile/Media/go-ios.log", "a", stdout);
+      freopen("/var/mobile/Media/go-ios.log", "a", stderr);
+      
+      NSLog(@"========================");
+      NSLog(@"[run-wda-daemon] WDA 原生 XCTest 启动代理 (v1596 - The Last Stand)");
+
+      NSString *bundleId = @"com.facebook.WebDriverAgentRunner.ecwda";
+      if (argc > 2) bundleId = [NSString stringWithUTF8String:argv[2]];
+
+      // 1. 获取设备 UDID
+      NSString *udid = nil;
+      void *mgLib = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_LAZY);
+      if (mgLib) {
+          CFStringRef (*MGCopyAnswer)(CFStringRef) = (CFStringRef (*)(CFStringRef))dlsym(mgLib, "MGCopyAnswer");
+          if (MGCopyAnswer) {
+              udid = (__bridge_transfer NSString *)MGCopyAnswer(CFSTR("SerialNumber"));
+          }
+          dlclose(mgLib);
+      }
+      
+      if (!udid) {
+          NSLog(@"[run-wda-daemon] ⚠️ 无法通过 MobileGestalt 获取 UDID，尝试备份方案...");
+          udid = get_udid_iokit();
+      }
+      
+      if (!udid) {
+          NSLog(@"[run-wda-daemon] ❌ 致命错误：无法获取设备 UDID");
+          return 201;
+      }
+      
+      NSLog(@"[run-wda-daemon] 📱 设备 UDID: %@", udid);
+
+      signal(SIGTERM, handle_daemon_exit_signal);
+      signal(SIGINT, handle_daemon_exit_signal);
+
+      // 2. 检查 DDI
+      if (!isDDImounted()) {
+          NSLog(@"[run-wda-daemon] ❌ DDI 未挂载！WDA 无法在脱机模式下建立测试会话。请先挂载 DDI。");
+          return 201;
+      }
+
+      // 3. 启动 usbmuxd 仿射代理
+      if (!startUsbmuxdShimWithUDID(udid)) {
+          NSLog(@"[run-wda-daemon] ❌ 启动 usbmuxd_shim 失败");
+          return 202;
+      }
+
+      // 4. 定位 go-ios-arm64
+      NSString *helperPath = [[NSProcessInfo processInfo] arguments].firstObject;
+      NSString *goIosPath = [[helperPath stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"go-ios-arm64"];
+      
+      NSLog(@"[run-wda-daemon] 🚀 开始周期看护 WDA (%@)...", bundleId);
+      
+      int loopCount = 0;
+      
+      while (g_daemon_running) {
+          loopCount++;
+          BOOL alive = checkWDAAlive();
+          NSLog(@"[run-wda-daemon] 🔍 [#%d] 正在探测 WDA 状态 (10088/8100): %@", loopCount, alive ? @"ALIVE" : @"DEAD");
+
+          if (!alive) {
+              NSLog(@"[run-wda-daemon] ⚠️ 发现 WDA 未响应, 准备通过原生协议拉起...");
+              
+              killall(@"WebDriverAgentRunner-Runner", NO);
+              sleep(1);
+
+              // [v1608] 终极冷启动方案：利用 FrontBoard 注入 XCTest 运行时
+              @try {
+                  NSLog(@"[v1608-XCT] 🚀 正在通过 FrontBoard 注入 XCTest 环境并拉起...");
+                  
+                  // 1. 尝试找到 FBSService 接口（TrollStore 环境下可用）
+                  Class fbsServiceClass = NSClassFromString(@"FBSOpenApplicationService");
+                  id service = [fbsServiceClass performSelector:NSSelectorFromString(@"serviceWithDefaultShellEndpoint")];
+                  
+                  if (service) {
+                      Class fbsOptionsClass = NSClassFromString(@"FBSOpenApplicationOptions");
+                      // 注入关键的测试环境变量
+                      NSDictionary *xctEnv = @{
+                          @"XCTestConfigurationFilePath" : @"WebDriverAgentRunner",
+                          @"DYLD_INSERT_LIBRARIES" : @"/Developer/usr/lib/libXCTestBundleInject.dylib",
+                          @"XC_TEST_BUNDLE_ID" : bundleId
+                      };
+                      
+                      // 包装成 FBSService 接受的格式
+                      NSDictionary *optionsDict = @{
+                          @"__PayloadOptionsEnvironmentVariables" : xctEnv,
+                          @"__PayloadOptionsUnlockDevice" : @YES,
+                          @"__PayloadOptionsActivateSuspended" : @NO
+                      };
+                      
+                      id options = [fbsOptionsClass performSelector:NSSelectorFromString(@"optionsWithDictionary:") withObject:optionsDict];
+                      
+                      // 使用 NSInvocation 绕过 performSelector 参数限制
+                      SEL openSel = NSSelectorFromString(@"openApplication:withOptions:completion:");
+                      NSMethodSignature *sig = [service methodSignatureForSelector:openSel];
+                      NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                      [inv setTarget:service];
+                      [inv setSelector:openSel];
+                      [inv setArgument:&bundleId atIndex:2];
+                      [inv setArgument:&options atIndex:3];
+                      void *nilPtr = NULL;
+                      [inv setArgument:&nilPtr atIndex:4];
+                      [inv invoke];
+                      
+                      NSLog(@"[v1608-XCT] ✅ FrontBoard 注入指令已通过 NSInvocation 发送");
+                  } else {
+                      // 退而求其次，使用基础 LS 拉起
+                      NSLog(@"[v1608-XCT] ⚠️ FBSService 不可用，回退至基础 LS 拉起...");
+                      Class lsClass = NSClassFromString(@"LSApplicationWorkspace");
+                      id workspace = [lsClass performSelector:NSSelectorFromString(@"defaultWorkspace")];
+                      [workspace performSelector:NSSelectorFromString(@"openApplicationWithBundleID:") withObject:bundleId];
+                  }
+              } @catch (NSException *e) {
+                  NSLog(@"[v1608-XCT] ❌ 注入失败: %@", e);
+              }
+
+              // 给予宽裕的 60 秒建联期
+              for (int i = 0; i < 60 && g_daemon_running; i++) {
+                 if (checkWDAAlive()) {
+                    NSLog(@"[run-wda-daemon] 🎊 WDA 在第 %d 秒成功握手！", i);
+                    break;
+                 }
+                 sleep(1);
+              }
+          } else {
+              if (loopCount % 5 == 0) {
+                 NSLog(@"[run-wda-daemon] 💓 服务心跳正常 (Loop %d)", loopCount);
+              }
+              sleep(8);
+          }
+      }
+
+      NSLog(@"[run-wda-daemon] 🛑 守护进程退出, 正在清理...");
+      stopUsbmuxdShim();
+      killall(@"go-ios-arm64", NO);
+      return 0;
+    }
+
+    if ([cmd isEqualToString:@"mount-ddi"]) {
+        NSLog(@"[mount-ddi] 开始执行本地 DDI 自挂载流程 (v1580)");
+        
+        NSString *helperPath = [[NSProcessInfo processInfo] arguments].firstObject;
+        NSString *helperDir = [helperPath stringByDeletingLastPathComponent];
+        NSString *goIosPath = [helperDir stringByAppendingPathComponent:@"go-ios-arm64"];
+        NSString *dmgPath = [helperDir stringByAppendingPathComponent:@"DeveloperDiskImage.dmg"];
+        NSString *sigPath = [helperDir stringByAppendingPathComponent:@"DeveloperDiskImage.dmg.signature"];
+        
+        if (![[NSFileManager defaultManager] fileExistsAtPath:goIosPath]) {
+            NSLog(@"[mount-ddi] ❌ 错误：找不到 go-ios-arm64 核心，请检查 App 安装包！");
+            return 101;
+        }
+        if (![[NSFileManager defaultManager] fileExistsAtPath:dmgPath]) {
+            NSLog(@"[mount-ddi] ❌ 错误：找不到 DDI 镜像。");
+            return 102;
+        }
+
+        // [v1611] 自愈尝试：强制卸载残留路径，为重新挂载扫清障碍
+        NSLog(@"[mount-ddi] 🛡 正在尝试强制卸载 /Developer 以准备重新挂载...");
+        unmount("/Developer", MNT_FORCE);
+        usleep(500000); // 等待系统释放
+
+        NSLog(@"[mount-ddi] 🚩 正在调用 go-ios 引擎执行镜像挂载...");
+        char *goArgv[] = {
+            (char *)"ios",
+            (char *)"image",
+            (char *)"mount",
+            (char *)"--path", (char *)[dmgPath UTF8String],
+            NULL
+        };
+        
+        pid_t pid;
+        extern char **environ;
+        int ret = posix_spawn(&pid, [goIosPath UTF8String], NULL, NULL, goArgv, environ);
+        if (ret == 0) {
+            int status;
+            waitpid(pid, &status, 0);
+            if (WEXITSTATUS(status) == 0) {
+                if (isDDImounted()) {
+                    NSLog(@"[mount-ddi] ✅ 恭喜！DDI 已成功本地挂载。WDA 具备冷启动条件。");
+                    return 0;
+                } else {
+                    NSLog(@"[mount-ddi] ⚠️ go-ios 返回成功但 /Developer 未见，请检查磁盘空间。");
+                    return 105;
+                }
+            } else {
+                NSLog(@"[mount-ddi] ❌ 内部挂载错误 (Status: %d)，可能是配对记录失效或已手动挂载。", WEXITSTATUS(status));
+                // 如果 go-ios 报错但最终 statfs 检查通过，我们也认为 OK (容错处理)
+                if (isDDImounted()) {
+                    NSLog(@"[mount-ddi] ℹ️ 虽然 go-ios 报错，但检测到 /Developer 已挂载，允许流程继续。");
+                    return 0;
+                }
+                return 103;
+            }
+        } else {
+            NSLog(@"[mount-ddi] ❌ 无法唤醒挂载引擎: %s", strerror(ret));
+            return 104;
+        }
+    }
+
+    if ([cmd isEqualToString:@"start-wda"]) {
+      freopen("/var/mobile/Media/go-ios.log", "a", stdout);
+      freopen("/var/mobile/Media/go-ios.log", "a", stderr);
+      NSLog(@"========================");
+      NSLog(@"[start-wda] ROOT HELPER INVOKED (v7 - DDI Guard)");
+      
+      // 【v1616】前置检查 DDI 挂载状态
+      if (!isDDImounted()) {
+          NSLog(@"[start-wda] ⚠️ DDI 未就绪，正在尝试自动执行本地挂载...");
+          // 调用当前可执行文件的 mount-ddi 命令
+          NSString *helperPath = [[NSProcessInfo processInfo] arguments].firstObject;
+          char *mArgv[] = { (char *)[helperPath UTF8String], "mount-ddi", NULL };
+          pid_t mPid;
+          extern char **environ;
+          posix_spawn(&mPid, [helperPath UTF8String], NULL, NULL, mArgv, environ);
+          int mStatus;
+          waitpid(mPid, &mStatus, 0);
+          
+          if (WEXITSTATUS(mStatus) == 0 && isDDImounted()) {
+              NSLog(@"[start-wda] ✅ 自动挂载成功。");
+          } else {
+              NSLog(@"[start-wda] ❌ DDI 自动挂载失败！请务必通过 USB 连接电脑激活一次挂载环境。WDA 启动已中止。");
+              return 201;
+          }
+      }
+      
+      NSLog(@"[start-wda] ✅ DDI 指标正常，准备启动 WDA 看护...");
+      
+      // 我们改用封装好的 killall
+      killall(@"go-ios-arm64", YES);
+      usleep(200000); 
+      
+      NSString *helperPath = [[NSProcessInfo processInfo] arguments].firstObject;
+      NSString *bundleId = @"com.facebook.WebDriverAgentRunner.ecwda";
+      if (argc > 2) bundleId = [NSString stringWithUTF8String:argv[2]];
+      
+      NSArray *argsM = @[@"trollstorehelper", @"run-wda-daemon", bundleId];
+      char **argsC = (char **)malloc((argsM.count + 1) * sizeof(char *));
+      for (NSUInteger i = 0; i < argsM.count; i++) argsC[i] = strdup([argsM[i] UTF8String]);
+      argsC[argsM.count] = NULL;
+      
+      extern char **environ;
+      pid_t daemon_pid;
+      int ret = posix_spawn(&daemon_pid, [helperPath UTF8String], NULL, NULL, argsC, environ);
+      
+      for (NSUInteger i = 0; i < argsM.count; i++) free(argsC[i]);
+      free(argsC);
+      
+      if (ret == 0) {
+        NSLog(@"[start-wda] ✅ 成功拉起 run-wda-daemon 守护进程 (pid: %d)", daemon_pid);
+      } else {
+        NSLog(@"[start-wda] ❌ 拉起 run-wda-daemon 失败: %s", strerror(ret));
+      }
+      return 0;
+    }
+
 #ifndef TROLLSTORE_LITE // 恢复条件编译
     if ([cmd isEqualToString:@"get-device-info"]) {
       NSString *mac = get_mac_address();
@@ -4391,20 +4837,31 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
 
       NSString *udid = nil;
 
-      // 1. Try MobileGestalt
+      // 1. Try MobileGestalt SerialNumber (Standard ID)
       void *lib = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_LAZY);
       if (lib) {
         CFStringRef (*MGCopyAnswer)(CFStringRef) = dlsym(lib, "MGCopyAnswer");
         if (MGCopyAnswer) {
-          udid = (__bridge_transfer NSString *)MGCopyAnswer(
-              CFSTR("UniqueDeviceID"));
+          udid = (__bridge_transfer NSString *)MGCopyAnswer(CFSTR("SerialNumber"));
         }
         dlclose(lib);
       }
 
-      // 2. Try IOKit if MG failed
+      // 2. Try IOKit if MG-SN failed
       if (!udid) {
-        udid = get_udid_iokit();
+        udid = get_udid_iokit(); // This returns SerialNumber from IOKit
+      }
+
+      // 3. Fallback to UniqueDeviceID (UDID)
+      if (!udid) {
+          void *lib2 = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_LAZY);
+          if (lib2) {
+              CFStringRef (*MGCopyAnswer)(CFStringRef) = dlsym(lib2, "MGCopyAnswer");
+              if (MGCopyAnswer) {
+                  udid = (__bridge_transfer NSString *)MGCopyAnswer(CFSTR("SerialNumber"));
+              }
+              dlclose(lib2);
+          }
       }
 
       if (!udid)
@@ -4415,6 +4872,30 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
       return 0;
     }
 #endif
+
+    if ([cmd isEqualToString:@"monitor-usb"]) {
+        NSLog(@"========================");
+        NSLog(@"[monitor-usb] USB/屏幕多重感应监听器已启动 (v1615)");
+        
+        void (^triggerBlock)(int) = ^(int t) {
+            handlePowerSourceChanged();
+        };
+
+        int t1, t2;
+        // 1. 监听电源适配器连接变更
+        notify_register_dispatch("com.apple.system.powermanagement.poweradapter", &t1, dispatch_get_main_queue(), triggerBlock);
+        
+        // 2. 监听显示状态变更（插线必然亮屏，这是最可靠的触发信号）
+        notify_register_dispatch("com.apple.iokit.hid.displayStatus", &t2, dispatch_get_main_queue(), triggerBlock);
+        
+        // 初始执行一次检查
+        handlePowerSourceChanged();
+        
+        // 保持运行
+        [[NSRunLoop mainRunLoop] run];
+        return 0;
+    }
+
 
     NSLog(@"trollstorehelper returning %d", ret);
     return ret;

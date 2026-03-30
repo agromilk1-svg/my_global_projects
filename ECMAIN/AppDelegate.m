@@ -7,8 +7,8 @@
 
 #import "ECMAIN/Core/ECBackgroundManager.h"
 #import "ECMAIN/Core/ECLogManager.h"
-#import "ECMAIN/Core/ECTaskPollManager.h"
 #import "ECMAIN/Core/ECOneshotTaskManager.h"
+#import "ECMAIN/Core/ECTaskPollManager.h"
 #import "Shared/TSUtil.h" // for spawnRoot & rootHelperPath
 
 @interface AppDelegate ()
@@ -38,7 +38,7 @@
   // 启动自动动作脚本获取轮询引擎
   [[ECTaskPollManager sharedManager] startPolling];
 
-  // 启动一次性任务轮询 (最高优先级，30 秒周期)
+  // 启动一次性任务轮询 (最高优先级，90 秒周期)
   [[ECOneshotTaskManager sharedManager] startPolling];
 
   // 确保日志文件夹可见
@@ -81,7 +81,7 @@
           [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
       NSString *cloudUrl = [groupDefaults stringForKey:@"EC_CLOUD_SERVER_URL"];
       if (!cloudUrl || cloudUrl.length == 0) {
-        cloudUrl = @"https://s.ecmain.site";
+        cloudUrl = @"http://s.ecmain.site:8088";
         NSLog(@"[ECMAIN_ERR] 未能在组字典读取到有效的 EC_CLOUD_SERVER_URL "
               @"(用户可能尚未按【保存配置】或【连接云控】)"
               @"。本次同步将使用默认域名: %@，可能导致后续网络超时失败！",
@@ -135,18 +135,19 @@
 - (void)registerInfiniteBackgroundTask {
   UIApplication *app = [UIApplication sharedApplication];
   __block UIBackgroundTaskIdentifier oldTask = self.bgTaskId;
-  
+
   self.bgTaskId = [app beginBackgroundTaskWithExpirationHandler:^{
-    NSLog(@"[ECMAIN] Background Task Expiring, re-registering (infinite chain)...");
+    NSLog(@"[ECMAIN] Background Task Expiring, re-registering (infinite "
+          @"chain)...");
     // 递归续命：到期前再申请新 Task
     [self registerInfiniteBackgroundTask];
   }];
-  
+
   // 结束旧 Task（如果存在）
   if (oldTask != UIBackgroundTaskInvalid) {
     [app endBackgroundTask:oldTask];
   }
-  
+
   if (self.bgTaskId == UIBackgroundTaskInvalid) {
     NSLog(@"[ECMAIN] ❌ Failed to start background task!");
   } else {
@@ -157,8 +158,18 @@
 
 - (void)applicationWillEnterForeground:(UIApplication *)application {
   NSLog(@"[ECMAIN] Will Enter Foreground - 触发全链路保活自检");
-  // 【保活加固】切回前台时全面检查保活链是否还活着
-  [[ECBackgroundManager sharedManager] ensureBackgroundNetworkAlive];
+  
+  // 延迟 1s 待 SpringBoard 稳定后操作
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+      // 【保活加固】检查网络和后台保活
+      [[ECBackgroundManager sharedManager] ensureBackgroundNetworkAlive];
+      
+      // [修复端口假死] 通过内存状态判断，避免 connect 导致的沙盒闪退风险
+      if (![[ECWebServer sharedServer] isPortActive]) {
+          NSLog(@"[ECMAIN] ⚠️ 检测到 8089 端口监听已失效，正在为您重启服务...");
+          [[ECWebServer sharedServer] restartOnPort:8089];
+      }
+  });
 }
 
 @end

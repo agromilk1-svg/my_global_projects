@@ -76,6 +76,7 @@ def build_project():
         f"PRODUCT_BUNDLE_IDENTIFIER=\"{FIXED_BUNDLE_ID}\" "
         f"USE_PORT=10088 "
         f"MJPEG_SERVER_PORT=10089 "
+        f"RUN_CLANG_STATIC_ANALYZER=NO "
     )
     
     print(f"正在执行构建...")
@@ -123,6 +124,8 @@ def package_ipa(app_path):
     # 复制 App
     dest_app = os.path.join(payload_dir, "ECWDA.app") # 按要求重命名为 ECWDA
     shutil.copytree(app_path, dest_app)
+    
+    # ====== Standalone 改造结束 =======
     
     # 手动嵌入框架 (参考逻辑)
     print("--- 正在嵌入第三方框架 ---")

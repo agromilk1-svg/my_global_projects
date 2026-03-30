@@ -21,6 +21,12 @@ NS_ASSUME_NONNULL_BEGIN
  */
 + (BOOL)launchAppWithBundleId:(NSString *)bundleId;
 
+/**
+ 锁屏状态下后台启动 App。
+ 优先使用 SpringBoardServices 私有 API，失败则回退到 LSApplicationWorkspace。
+ */
++ (BOOL)launchAppInBackgroundWithBundleId:(NSString *)bundleId;
+
 @end
 
 NS_ASSUME_NONNULL_END

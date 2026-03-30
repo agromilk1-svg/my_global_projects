@@ -3,7 +3,7 @@
 //  ECMAIN
 //
 //  独立的一次性任务轮询管理器。
-//  以 30 秒为周期查询专属于当前设备的一次性任务，
+//  以 90 秒为周期查询专属于当前设备的一次性任务，
 //  执行时抢占所有常规脚本和在线升级逻辑。
 //
 
@@ -51,24 +51,7 @@ BOOL EC_ONESHOT_EXECUTING = NO;
 #pragma mark - 获取设备 UDID
 
 - (NSString *)deviceUDID {
-  NSString *udid = nil;
-  void *lib = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_LAZY);
-  if (lib) {
-    CFTypeRef (*_MGCopyAnswer)(CFStringRef) = dlsym(lib, "MGCopyAnswer");
-    if (_MGCopyAnswer) {
-      CFStringRef uniqueId =
-          (CFStringRef)_MGCopyAnswer(CFSTR("UniqueDeviceID"));
-      if (uniqueId) {
-        udid = [NSString stringWithString:(__bridge NSString *)uniqueId];
-        CFRelease(uniqueId);
-      }
-    }
-    dlclose(lib);
-  }
-  if (!udid) {
-    udid = [[[UIDevice currentDevice] identifierForVendor] UUIDString];
-  }
-  return udid;
+  return [ECBackgroundManager deviceUDID];
 }
 
 #pragma mark - 轮询控制
@@ -80,11 +63,11 @@ BOOL EC_ONESHOT_EXECUTING = NO;
   if (!self.pollTimer) {
     self.pollTimer = dispatch_source_create(
         DISPATCH_SOURCE_TYPE_TIMER, 0, 0, self.pollQueue);
-    // 首次 10 秒后开始，之后每 30 秒一次
+    // 首次 10 秒后开始，之后每 90 秒一次
     dispatch_source_set_timer(
         self.pollTimer,
         dispatch_time(DISPATCH_TIME_NOW, 10.0 * NSEC_PER_SEC),
-        30.0 * NSEC_PER_SEC, 1.0 * NSEC_PER_SEC);
+        90.0 * NSEC_PER_SEC, 1.0 * NSEC_PER_SEC);
     dispatch_source_set_event_handler(self.pollTimer, ^{
       [self fetchOneshotTask];
     });
@@ -92,7 +75,7 @@ BOOL EC_ONESHOT_EXECUTING = NO;
   }
 
   [[ECLogManager sharedManager]
-      log:@"[ECOneshotTask] 一次性任务轮询引擎已启动 (30s)"];
+      log:@"[ECOneshotTask] 一次性任务轮询引擎已启动 (90s)"];
 }
 
 - (void)suspendPolling {

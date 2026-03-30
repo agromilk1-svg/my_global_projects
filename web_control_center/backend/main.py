@@ -1,5 +1,7 @@
+import re
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File as FastAPIFile, Request, Depends
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
+import os
 import asyncio
 import uuid
 import json
@@ -97,17 +99,30 @@ def require_super_admin(user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="权限不足，此操作仅限超级管理员")
     return user
 
-def require_device_permission(user: dict, udid: str):
+# [v1668.24] 权限校验内存缓存：避免高频操作时反复查 DB
+_PERM_CACHE: Dict[str, tuple] = {}  # {"uid:udid": (timestamp, bool)}
+_PERM_CACHE_TTL = 60  # 缓存有效期 60 秒
+
+async def require_device_permission(user: dict, udid: str):
     """
-    内部权限校验逻辑：
-    1. 超级管理员 (super_admin) 拥有全局权限。
-    2. 普通管理员 (admin) 必须被分配了该 UDID 才能操作。
+    内部权限校验逻辑（带缓存加速）：
+    1. 超级管理员 (super_admin) 拥有全局权限，直接放行。
+    2. 普通管理员 (admin) 首次查 DB，结果缓存 60s。
     """
     if user.get("role") == "super_admin":
         return True
     
-    assigned_devices = database.get_admin_devices(user.get("id"))
-    if udid in assigned_devices:
+    cache_key = f"{user.get('id')}:{udid}"
+    cached = _PERM_CACHE.get(cache_key)
+    if cached and (time.time() - cached[0]) < _PERM_CACHE_TTL:
+        if cached[1]:
+            return True
+        raise HTTPException(status_code=403, detail=f"Permission denied: You do not have access to device {udid}")
+    
+    assigned_devices = await asyncio.to_thread(database.get_admin_devices, user.get("id"))
+    has_perm = udid in assigned_devices
+    _PERM_CACHE[cache_key] = (time.time(), has_perm)
+    if has_perm:
         return True
         
     raise HTTPException(status_code=403, detail=f"Permission denied: You do not have access to device {udid}")
@@ -214,6 +229,8 @@ class DeviceConfigRequest(BaseModel):
     apple_account: str = ""
     apple_password: str = ""
     tiktok_accounts: str = "[]"
+    wifi_ssid: str = ""
+    wifi_password: str = ""
 
 @app.get("/api/devices/{udid}/config")
 def get_device_config_api(udid: str):
@@ -221,12 +238,13 @@ def get_device_config_api(udid: str):
     return {"status": "ok", "config": config}
 
 @app.post("/api/devices/{udid}/config")
-def set_device_config(udid: str, req: DeviceConfigRequest, user: dict = Depends(get_current_user)):
-    require_device_permission(user, udid)
+async def set_device_config(udid: str, req: DeviceConfigRequest, user: dict = Depends(get_current_user)):
+    await require_device_permission(user, udid)
     success = database.set_device_config(
         udid, req.config_ip, req.config_vpn, 
         req.device_no, req.country, req.group_name, req.exec_time,
-        req.apple_account, req.apple_password, req.tiktok_accounts
+        req.apple_account, req.apple_password, req.tiktok_accounts,
+        req.wifi_ssid, req.wifi_password
     )
     if success:
         return {"status": "ok", "message": "配置保存成功"}
@@ -238,16 +256,18 @@ class BatchDeviceConfigRequest(BaseModel):
     group_name: str = None
     exec_time: str = None
     config_vpn: str = None
+    wifi_ssid: str = None
+    wifi_password: str = None
 
 @app.post("/api/devices/batch_update")
-def batch_update_devices(req: BatchDeviceConfigRequest, user: dict = Depends(get_current_user)):
+async def batch_update_devices(req: BatchDeviceConfigRequest, user: dict = Depends(get_current_user)):
     """批量更新设备的国家、分组、启动时间、VPN配置"""
     # 权限校验（简单遍历校验，无权限的直接拦截整个请求）
     for udid in req.udids:
-        require_device_permission(user, udid)
+        await require_device_permission(user, udid)
         
     success = database.batch_update_devices_config(
-        req.udids, req.country, req.group_name, req.exec_time, req.config_vpn
+        req.udids, req.country, req.group_name, req.exec_time, req.config_vpn, req.wifi_ssid, req.wifi_password
     )
     if success:
         return {"status": "ok", "message": f"成功更新 {len(req.udids)} 台设备的配置"}
@@ -257,10 +277,10 @@ class BatchDeleteRequest(BaseModel):
     udids: List[str]
 
 @app.delete("/api/devices/batch_delete")
-def batch_delete_devices_api(req: BatchDeleteRequest, user: dict = Depends(get_current_user)):
+async def batch_delete_devices_api(req: BatchDeleteRequest, user: dict = Depends(get_current_user)):
     """批量删除设备"""
     for udid in req.udids:
-        require_device_permission(user, udid)
+        await require_device_permission(user, udid)
         
     success = database.batch_delete_devices(req.udids)
     if success:
@@ -331,8 +351,8 @@ def get_devices():
     return {"devices": device_manager.get_all_devices()}
 
 @app.delete("/api/devices/{udid}")
-def delete_device(udid: str, user: dict = Depends(get_current_user)):
-    require_device_permission(user, udid)
+async def delete_device(udid: str, user: dict = Depends(get_current_user)):
+    await require_device_permission(user, udid)
     database.delete_device(udid)
     return {"status": "ok", "message": f"Device {udid} deleted."}
 
@@ -359,6 +379,8 @@ def get_cloud_devices(request: Request):
         else:
             # 纯 USB 设备（还没发送过心跳）
             d['source'] = 'usb'
+            # [2026-03] 注意：USB 物理连接通常意味着在线，但如果 WDA 没起来，前端可能会显示不可控。
+            # 这里保持 'online'，因为 device_manager 既然能拿到设备，通常物理上是通的。
             d['status'] = 'online'
             merged[udid] = d
             
@@ -480,6 +502,19 @@ class UpdateTikTokAccountReq(BaseModel):
     add_time: str = ""
     window_open_time: str = ""
     sale_time: str = ""
+    is_primary: int = 0
+    password: str = ""
+    email: str = ""
+
+class CreateTikTokAccountReq(BaseModel):
+    device_udid: str
+    account: str
+    password: str = ""
+    email: str = ""
+    country: str = ""
+    fans_count: int = 0
+    is_for_sale: int = 0
+    is_window_opened: int = 0
 
 @app.get("/api/tiktok_accounts")
 async def get_tiktok_accounts_list(request: Request):
@@ -505,11 +540,38 @@ async def update_tiktok_account_info(account_id: int, req: UpdateTikTokAccountRe
         req.is_window_opened, 
         req.add_time, 
         req.window_open_time, 
-        req.sale_time
+        req.sale_time,
+        req.password,
+        req.email
     )
     if success:
         return {"status": "ok"}
     raise HTTPException(status_code=400, detail="Failed to update tiktok account or not found")
+
+@app.post("/api/tiktok_accounts")
+async def create_tiktok_account_api(req: CreateTikTokAccountReq, user: dict = Depends(get_current_user)):
+    """手动创建一条 TikTok 账号记录"""
+    new_id = database.create_tiktok_account(
+        req.device_udid,
+        req.account,
+        req.password,
+        req.email,
+        req.country,
+        req.fans_count,
+        req.is_for_sale,
+        req.is_window_opened
+    )
+    if new_id:
+        return {"status": "ok", "id": new_id}
+    raise HTTPException(status_code=500, detail="Failed to create tiktok account")
+
+@app.put("/api/tiktok_accounts/{account_id}/primary")
+async def set_tiktok_account_primary_api(account_id: int, user: dict = Depends(get_current_user)):
+    """设置某 TikTok 账号为该设备的主号"""
+    success = database.set_tiktok_account_primary(account_id)
+    if success:
+        return {"status": "ok"}
+    raise HTTPException(status_code=400, detail="Failed to set primary account")
 
 @app.delete("/api/tiktok_accounts/{account_id}")
 async def delete_tiktok_account_api(account_id: int, user: dict = Depends(get_current_user)):
@@ -588,6 +650,28 @@ async def complete_device_oneshot_task(req: OneshotCompleteReq):
         return {"status": "ok", "message": "任务已完成并删除"}
     raise HTTPException(status_code=400, detail="任务不存在或已被删除")
 
+class TaskReportRequest(BaseModel):
+    udid: str
+    task_name: str
+    status: str       # "正在执行" | "执行完成"
+    success: bool = False
+    error: str = ""
+    last_command: str = ""
+
+@app.post("/api/device/task_report")
+def api_device_task_report(req: TaskReportRequest):
+    """ECMAIN 在执行任务的不同阶段实时上报状态，从而摆脱原来挂载在心跳的不稳定设计"""
+    payload = {
+        "task_name": req.task_name,
+        "status": req.status,
+        "success": req.success,
+        "error": req.error,
+        "last_command": req.last_command,
+        "time": time.strftime("%H:%M:%S")
+    }
+    database.update_device_task_status(req.udid, json.dumps(payload, ensure_ascii=False))
+    return {"message": "Success"}
+
 # ================= 行动代理服务 =================
 
 class ActionProxyRequest(BaseModel):
@@ -600,16 +684,20 @@ class ActionProxyRequest(BaseModel):
     y1: int = 0
     x2: int = 0
     y2: int = 0
-    img_w: int = 0
-    img_h: int = 0
+    img_w: int = 0   # [v1760] 废弃：前端已直接下发逻辑 Points，无需图像尺寸进行缩放计算
+    img_h: int = 0   # [v1760] 废弃
     text: str = ""
     connection_mode: str = "" # 可选：usb, lan, ws，指示首选控制通路
+    is_normalized: bool = False # [v1760] 废弃：前端已直接下发逻辑 Points，此字段不再使用
+    script_code: str = "" # 脚本下发时的原始 JS 内容
 
 SESSION_CACHE = {}
 SIZE_CACHE = {}
 
 ACTIVE_TUNNELS: Dict[str, WebSocket] = {}
 PENDING_TASKS: Dict[str, asyncio.Future] = {}
+# [v1683] MJPEG 流帧队列：设备端通过 WS 二进制帧推送 JPEG 数据，后端消费并转发给前端
+STREAM_QUEUES: Dict[str, asyncio.Queue] = {}
 
 class WSTunnelManager:
     async def connect(self, ws: WebSocket, device_key: str):
@@ -627,44 +715,82 @@ async def ws_tunnel_endpoint(websocket: WebSocket, device_key: str):
     await tunnel_manager.connect(websocket, device_key)
     try:
         while True:
-            data = await websocket.receive_text()
-            try:
-                msg = json.loads(data)
-                if msg.get("type") == "ping":
-                    await websocket.send_json({"type": "pong"})
-                elif "id" in msg:
-                    # 原生 iOS handleTunnelRequest 会原样弹回 id
-                    reply_id = msg["id"]
-                    if reply_id in PENDING_TASKS:
-                        if not PENDING_TASKS[reply_id].done():
-                            PENDING_TASKS[reply_id].set_result(msg)
-            except Exception as e:
-                logging.error(f"WS Parse error: {e}")
+            # [v1668.28] 关键修复：使用 receive() 兼容文本帧和二进制帧
+            raw = await websocket.receive()
+            
+            if raw.get("type") == "websocket.disconnect":
+                break
+            
+            # 处理文本帧（指令响应、ping/pong）
+            text_data = raw.get("text")
+            if text_data:
+                try:
+                    msg = json.loads(text_data)
+                    if msg.get("type") == "ping":
+                        await websocket.send_json({"type": "pong"})
+                    elif "id" in msg:
+                        reply_id = msg["id"]
+                        if reply_id in PENDING_TASKS:
+                            if not PENDING_TASKS[reply_id].done():
+                                PENDING_TASKS[reply_id].set_result(msg)
+                except Exception as e:
+                    logging.error(f"WS Parse error: {e}")
+            
+            # [v1683] 处理二进制帧（MJPEG 流帧：8 字节时间戳 + JPEG 数据）
+            bytes_data = raw.get("bytes")
+            if bytes_data and len(bytes_data) > 8:
+                jpeg_data = bytes_data[8:]  # 跳过 8 字节大端时间戳头
+                queue = STREAM_QUEUES.get(device_key)
+                if queue:
+                    # 非阻塞放入，队列满时丢弃最旧帧防止背压
+                    if queue.full():
+                        try:
+                            queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            pass
+                    try:
+                        queue.put_nowait(jpeg_data)
+                    except asyncio.QueueFull:
+                        pass
     except WebSocketDisconnect:
         tunnel_manager.disconnect(device_key)
-
-
+        STREAM_QUEUES.pop(device_key, None)  # [v1683] 隧道断开时清理流队列
+    except Exception as e:
+        logging.error(f"WS tunnel error for {device_key}: {e}")
+        tunnel_manager.disconnect(device_key)
+        STREAM_QUEUES.pop(device_key, None)  # [v1683] 隧道异常时清理流队列
 
 @app.post("/api/action_proxy")
 async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_current_user)):
-    require_device_permission(user, req.udid)
-    # 这是一个通用的指令透传代理接口，前端将原本发往本地 8089 的请求包裹后发到这里，由中继后端转发
-    # 实现无视内网环境限制的远程操控能力。
-    with open("api_debug.log", "a") as f:
-        f.write(f"[{req.action_type}] RECVD: {req.dict()}\n")
-        
-    tunnel_ws = ACTIVE_TUNNELS.get(req.udid)
-    
     # 构建一个挂起式异步 HTTP Over WebSocket 代理发射器
-    async def _async_wda_request(method, url, json_body=None, timeout=15.0, force_http=False):
-        # 优化：如果显式要求走 HTTP (如 USB 模式) 或者没有可用隧道，则降级走物理请求
-        if tunnel_ws and not force_http:
-            task_id = str(uuid.uuid4())
+    async def _async_wda_request(method, url, json_body=None, timeout=15.0, force_http=False, fire_forget=False):
+        # [v1682.8] 动态获取隧道对象，解决 initial state 为 None 时的时序竞争
+        # [v1742] 增加模糊匹配回退，与 SCRIPT 处理器对齐
+        _ws = ACTIVE_TUNNELS.get(req.udid)
+        if not _ws:
+            for tk, tw in ACTIVE_TUNNELS.items():
+                if req.udid in tk or tk in req.udid:
+                    _ws = tw
+                    break
+        
+        # [v1684] 判断是否应该走 WS 隧道，加入对于 8089 的白名单
+        should_use_ws = not force_http and (":10088" in url or ":10089" in url or ":8089" in url)
+        
+        if should_use_ws:
+            if not _ws:
+                # 明确快速失败：要求走 WS 但通道未建立
+                return 503, {"error": "云端设备 WebSocket 通道未建立或已断线，请检查手机端代理状态"}
+                
+            task_id = f"{time.monotonic_ns()}"
+            if fire_forget:
+                asyncio.create_task(_ws.send_json({"id": task_id, "method": method, "url": url, "body": json_body}))
+                return 200, {"status": "fire_and_forget"}
+            
             loop = asyncio.get_event_loop()
             future = loop.create_future()
             PENDING_TASKS[task_id] = future
             try:
-                await tunnel_ws.send_json({
+                await _ws.send_json({
                     "id": task_id,
                     "method": method,
                     "url": url,
@@ -680,133 +806,238 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                 PENDING_TASKS.pop(task_id, None)
         else:
             # 降级：走局域网物理 HTTP 请求（通过线程池避免阻塞）
-            # 特别：如果是本地 USB 端口 (127.0.0.1)，这部分逻辑现在能在 force_http=True 时被触发
             def _sync_req():
-                if method.upper() == "GET":
-                    resp = requests.get(url, timeout=timeout)
-                else:
-                    resp = requests.post(url, json=json_body, timeout=timeout)
                 try:
+                    if method.upper() == "GET":
+                        resp = requests.get(url, timeout=timeout)
+                    else:
+                        resp = requests.post(url, json=json_body, timeout=timeout)
                     return resp.status_code, resp.json()
-                except:
-                    return resp.status_code, {"raw_text": resp.text}
+                except Exception as e:
+                    return 500, {"error": str(e)}
             return await asyncio.to_thread(_sync_req)
-            
-    try:
-        # Ping 可以回溯基础测试通道
-        if req.action_type == "ping":
-            base = req.ecmain_url.rstrip('/')
-            # Ping 应该基于提供的 URL 类型决定
-            is_usb = "127.0.0.1" in base
-            status, body = await _async_wda_request("GET", f"{base}/ping", timeout=3.0, force_http=is_usb)
-            if status == 200:
-                 return {"status": "ok", "detail": "ECMAIN Ping Success"}
 
+    try:
+        # [v1682.11] 统合路由准备
         if not req.udid and not req.ecmain_url:
             return {"status": "error", "msg": "Neither UDID nor WLAN IP provided"}
-        
-        import re
+            
         wlan_ip_match = re.search(r"http://([0-9\.]+)", req.ecmain_url)
         wlan_ip = wlan_ip_match.group(1) if wlan_ip_match else None
-        
         dev = device_manager.devices.get(req.udid)
         
+        # 路由策略定义
+        wda_url = ""
         force_http = False
         cache_key = req.udid
         
-        # 依照前端选定的模式进行路由隔离
-        if req.connection_mode == "usb" and dev:
-            wda_url = f"http://127.0.0.1:{dev.wda_port}"
-            force_http = True  # 用户/系统强行锁定为 USB, 必须走 HTTP
-        elif req.connection_mode == "lan" and wlan_ip:
-            wda_url = f"http://{wlan_ip}:10088"
-            cache_key = wlan_ip
-        elif req.connection_mode == "ws" and (req.udid in ACTIVE_TUNNELS):
-            wda_url = f"http://localhost:10088" # 实际上在 WS 中由手机端替换为本地执行, 这里随便填一个占位
-            force_http = False
-        else:
-            # Fallback 策略
-            if dev and dev.wda_ready:
+        if req.connection_mode == "usb":
+            if dev:
                 wda_url = f"http://127.0.0.1:{dev.wda_port}"
                 force_http = True
-            elif wlan_ip:
+            else:
+                return {"status": "error", "msg": "No valid route: USB path selected but device is missing from local DeviceManager."}
+        elif req.connection_mode == "ws":
+            wda_url = "http://127.0.0.1:10088"
+            force_http = False
+        elif req.connection_mode == "lan":
+            if wlan_ip:
                 wda_url = f"http://{wlan_ip}:10088"
                 cache_key = wlan_ip
             else:
-                return {"status": "error", "msg": "Device not found in manager and no valid LAN IP."}
+                return {"status": "error", "msg": "No valid route: LAN path selected but no WLAN IP provided."}
+        else:
+            # Auto探测（按优劣优先级：WLAN >= USB > WS）
+            if wlan_ip:
+                wda_url = f"http://{wlan_ip}:10088"
+                cache_key = wlan_ip
+            elif dev:
+                wda_url = f"http://127.0.0.1:{dev.wda_port}"
+                force_http = True
+            else:
+                wda_url = "http://127.0.0.1:10088"
+                force_http = False
+
+        # [v1682.5] 指令分支：主动查询窗口尺寸
+        if req.action_type == "WDA_WINDOW_SIZE":
+            status, sz_resp = await _async_wda_request("GET", f"{wda_url}/window/size", timeout=3.0, force_http=force_http)
+            if status == 200 and isinstance(sz_resp, dict):
+                sz_val = sz_resp.get("value", {})
+                if "width" in sz_val:
+                    SIZE_CACHE[cache_key] = sz_val
+                    return {"status": "ok", "window_size": sz_val}
+            return {"status": "error", "msg": f"WDA window size failed ({status})", "raw": sz_resp}
+
+        # [v1682.31] 指令分支：获取干净的 base64 截图（用于前端 tainted canvas 裁切）
+        if req.action_type == "WDA_SCREENSHOT":
+            status, sc_resp = await _async_wda_request("GET", f"{wda_url}/screenshot", timeout=5.0, force_http=force_http)
+            if status == 200 and isinstance(sc_resp, dict):
+                b64_val = sc_resp.get("value", "")
+                if b64_val:
+                    return {"status": "ok", "screenshot_b64": b64_val}
+            return {"status": "error", "msg": f"WDA screenshot failed ({status})"}
+
+        # [v1682.13] 指令分支：Ping
+        if req.action_type == "ping":
+            status, body = await _async_wda_request("GET", f"{wda_url}/ping", timeout=3.0, force_http=force_http)
+            return {"status": "ok", "detail": "Ping success"} if status == 200 else {"status": "error", "raw": body}
             
-        # 激活/提取 WDA 通信 Session
+        # [v1668.27] 高频动作极速路径：跳过 Session 校验、Scale 计算，直接发射
+        # [v1742] 将 home/lock/volumeUp/volumeDown 也纳入无 Session 快捷通道，确保群控从机无需预建 Session
+        _no_session_actions = {"home", "lock", "volumeUp", "volumeDown"}
+        if req.action_type in _no_session_actions:
+            # [v1742.1] WS 模式优先走 ECMAIN 8089 脚本通道
+            # 原因：锁屏时 WDA (10088) 可能被 iOS 挂起无法响应，但 ECMAIN 拥有 SpringBoard 直接唤醒能力
+            _action_script_map = {
+                "home": "wda.home();",
+                "lock": "wda.lock();",
+                "volumeUp": "wda.volumeUp();",
+                "volumeDown": "wda.volumeDown();",
+            }
+            
+            # 查找可用的 WS 隧道（含模糊匹配）
+            _btn_ws = ACTIVE_TUNNELS.get(req.udid)
+            if not _btn_ws:
+                for tk, tw in ACTIVE_TUNNELS.items():
+                    if req.udid in tk or tk in req.udid:
+                        _btn_ws = tw
+                        break
+            
+            if _btn_ws and not force_http:
+                # WS 通道可用：通过 ECMAIN 8089 脚本引擎执行（能穿透锁屏）
+                try:
+                    import uuid
+                    task_id = "btn_" + str(uuid.uuid4())[:8]
+                    loop = asyncio.get_event_loop()
+                    future = loop.create_future()
+                    PENDING_TASKS[task_id] = future
+                    await _btn_ws.send_json({
+                        "id": task_id,
+                        "method": "POST",
+                        "url": "http://127.0.0.1:8089/task",
+                        "body": {"type": "SCRIPT", "payload": _action_script_map[req.action_type]}
+                    })
+                    try:
+                        result = await asyncio.wait_for(future, timeout=5.0)
+                        return result.get("body", {"status": "ok", "detail": f"{req.action_type} via ECMAIN"})
+                    except asyncio.TimeoutError:
+                        logging.warning(f"[BTN_WS] {req.action_type} 通过 ECMAIN 超时 ({req.udid})，降级走 WDA")
+                    finally:
+                        PENDING_TASKS.pop(task_id, None)
+                except Exception as e:
+                    logging.warning(f"[BTN_WS] ECMAIN 脚本通道异常: {e}，降级走 WDA")
+            
+            # 降级 / 非 WS 模式：直连 WDA（USB/LAN 物理连接下 WDA 通常可用）
+            if req.action_type == "home":
+                status, res = await _async_wda_request("POST", f"{wda_url}/wda/homescreen", timeout=3.0, force_http=force_http)
+                return {"status": "ok", "detail": "Homescreen triggered"}
+            elif req.action_type == "lock":
+                status, res = await _async_wda_request("POST", f"{wda_url}/wda/lock", timeout=3.0, force_http=force_http)
+                return {"status": "ok", "detail": "Screen locked"}
+            elif req.action_type == "volumeUp":
+                status, res = await _async_wda_request("POST", f"{wda_url}/wda/pressButton", json_body={"name": "volumeUp"}, timeout=3.0, force_http=force_http)
+                return {"status": "ok", "detail": "Volume up pressed"}
+            elif req.action_type == "volumeDown":
+                status, res = await _async_wda_request("POST", f"{wda_url}/wda/pressButton", json_body={"name": "volumeDown"}, timeout=3.0, force_http=force_http)
+                return {"status": "ok", "detail": "Volume down pressed"}
+
+        _fast_actions = {"click", "longPress", "swipe"}
         sid = SESSION_CACHE.get(cache_key)
-        if sid:
-            status, _ = await _async_wda_request("GET", f"{wda_url}/session/{sid}", timeout=2.0, force_http=force_http)
+        
+        if req.action_type in _fast_actions and sid:
+            # [v1760] 前端已直接下发逻辑 Points，无需坐标转换，直接透传给 WDA
+            wda_x, wda_y = req.x, req.y
+            wda_x1, wda_y1 = req.x1, req.y1
+            wda_x2, wda_y2 = req.x2, req.y2
+            sz_val = SIZE_CACHE.get(cache_key)  # 仅用于响应前端更新 deviceSizeMap
+            
+            logging.info(f"[FAST] {req.action_type} ({wda_x},{wda_y}) mode={req.connection_mode}")
+            
+            if req.action_type == "click":
+                asyncio.create_task(_async_wda_request("POST", f"{wda_url}/wda/tapByCoord", json_body={"x": wda_x, "y": wda_y}, timeout=2.0, force_http=force_http, fire_forget=True))
+                return {"status": "ok", "detail": f"Tap at ({wda_x}, {wda_y})", "window_size": sz_val}
+            elif req.action_type == "longPress":
+                asyncio.create_task(_async_wda_request("POST", f"{wda_url}/wda/longPress", json_body={"x": wda_x, "y": wda_y, "duration": 1.0}, timeout=2.0, force_http=force_http, fire_forget=True))
+                return {"status": "ok", "detail": f"LongPress at ({wda_x}, {wda_y})", "window_size": sz_val}
+            elif req.action_type == "swipe":
+                asyncio.create_task(_async_wda_request("POST", f"{wda_url}/wda/swipeByCoord", json_body={"fromX": wda_x1, "fromY": wda_y1, "toX": wda_x2, "toY": wda_y2, "duration": 0.5}, timeout=2.0, force_http=force_http, fire_forget=True))
+                return {"status": "ok", "detail": f"Swipe from ({wda_x1},{wda_y1}) to ({wda_x2},{wda_y2})", "window_size": sz_val}
+        
+        # 非极速路径：需要校验/创建 Session
+        if sid and req.action_type not in _fast_actions:
+            status, _ = await _async_wda_request("GET", f"{wda_url}/session/{sid}", timeout=3.0, force_http=force_http)
             if status != 200:
                 sid = None
             
         if not sid:
-            status, data = await _async_wda_request("POST", f"{wda_url}/session", json_body={"capabilities": {}}, timeout=5.0, force_http=force_http)
-            if status == 200 and isinstance(data, dict):
-                sid = data.get("sessionId") or data.get("value", {}).get("sessionId")
-                SESSION_CACHE[cache_key] = sid
+            # [v1760] WDA 主队列可能被 MJPEG 截屏阻塞，增大超时到 10s 并添加重试
+            _session_attempts = 0
+            while _session_attempts < 3 and not sid:
+                _session_attempts += 1
+                status, data = await _async_wda_request("POST", f"{wda_url}/session", json_body={"capabilities": {}}, timeout=10.0, force_http=force_http)
+                if status == 200 and isinstance(data, dict):
+                    sid = data.get("sessionId") or data.get("value", {}).get("sessionId")
+                    SESSION_CACHE[cache_key] = sid
+                elif _session_attempts < 3:
+                    logging.warning(f"[SESSION] 第{_session_attempts}次创建失败 (status={status})，1秒后重试...")
+                    await asyncio.sleep(1.0)
                 
         if not sid:
-             return {"status": "error", "msg": f"Failed to connect active WDA session at {wda_url}"}
-             
-        # 提取动态屏幕映射比例（如果前端上报了真实图片宽度）
-        scale = 1.0
-        if req.img_w > 0:
-            sz_val = SIZE_CACHE.get(cache_key)
-            if not sz_val:
-                 status, sz_resp = await _async_wda_request("GET", f"{wda_url}/session/{sid}/window/size", timeout=3.0)
-                 if status == 200 and isinstance(sz_resp, dict):
-                     sz_val = sz_resp.get("value", {})
-                     if "width" in sz_val:
-                          SIZE_CACHE[cache_key] = sz_val
-
-            if sz_val and "width" in sz_val and sz_val["width"] > 0:
-                 scale = req.img_w / sz_val["width"]
-                 
-        # 换算最终发向底层的精准 W3C Points 逻辑坐标
-        wda_x = int(req.x / scale)
-        wda_y = int(req.y / scale)
-        wda_x1 = int(req.x1 / scale)
-        wda_y1 = int(req.y1 / scale)
-        wda_x2 = int(req.x2 / scale)
-        wda_y2 = int(req.y2 / scale)
+            # 自愈：如果是有线连接（USB），触发端口重置和隧道重建
+            is_rebuilding = False
+            if dev and req.connection_mode == "usb":
+                loop = asyncio.get_event_loop()
+                loop.run_in_executor(
+                    None, device_manager.rebuild_device_tunnels, req.udid
+                )
+                is_rebuilding = True
+            
+            err_detail = data.get("error", "") if isinstance(data, dict) else str(data)
+            rebuild_msg = "（已触发 USB 隧道自愈重建，请等待 15 秒后重试）" if is_rebuilding else f"（{err_detail or '请检查设备连通性'}）"
+            return {"status": "error", "msg": f"Failed to connect session at {wda_url} {rebuild_msg}"}
+            
+        # [v1760] 前端已直接下发逻辑 Points，无需任何坐标转换
+        wda_x, wda_y = req.x, req.y
+        wda_x1, wda_y1 = req.x1, req.y1
+        wda_x2, wda_y2 = req.x2, req.y2
+        sz_val = SIZE_CACHE.get(cache_key)  # 仅用于响应前端更新 deviceSizeMap
 
         async def _safe_wda_post(target, **kwargs):
-             status, body = await _async_wda_request("POST", target, json_body=kwargs.get("json"), timeout=kwargs.get("timeout", 10.0), force_http=force_http)
-             if status == 200:
-                 return body
-             return {"raw_status": status, "raw_text": body}
+            status, body = await _async_wda_request("POST", target, json_body=kwargs.get("json"), timeout=kwargs.get("timeout", 10.0), force_http=force_http)
+            if status == 200:
+                return body
+            return {"raw_status": status, "raw_text": body}
 
-        # 分发给 WDA 自定义异步动作端点，避雷标准动作的闲置检测死锁霸屏
+        # 非高频动作走普通路径（等待返回）
         if req.action_type == "click":
-             status, res = await _async_wda_request("POST", f"{wda_url}/wda/tapByCoord", json_body={"x": wda_x, "y": wda_y}, timeout=3.0, force_http=force_http)
-             return {"status": "ok", "detail": f"Tap at ({wda_x}, {wda_y})"}
+            asyncio.create_task(_async_wda_request("POST", f"{wda_url}/wda/tapByCoord", json_body={"x": wda_x, "y": wda_y}, timeout=2.0, force_http=force_http, fire_forget=True))
+            return {"status": "ok", "detail": f"Tap at ({wda_x}, {wda_y})", "window_size": sz_val}
             
         elif req.action_type == "longPress":
-             status, res = await _async_wda_request("POST", f"{wda_url}/wda/longPress", json_body={"x": wda_x, "y": wda_y, "duration": 1.0}, timeout=3.0, force_http=force_http)
-             return {"status": "ok", "detail": f"LongPress at ({wda_x}, {wda_y})"}
+            asyncio.create_task(_async_wda_request("POST", f"{wda_url}/wda/longPress", json_body={"x": wda_x, "y": wda_y, "duration": 1.0}, timeout=2.0, force_http=force_http, fire_forget=True))
+            return {"status": "ok", "detail": f"LongPress at ({wda_x}, {wda_y})", "window_size": sz_val}
             
         elif req.action_type == "swipe":
-             status, res = await _async_wda_request("POST", f"{wda_url}/wda/swipeByCoord", json_body={"fromX": wda_x1, "fromY": wda_y1, "toX": wda_x2, "toY": wda_y2, "duration": 0.5}, timeout=3.0, force_http=force_http)
-             return {"status": "ok", "detail": f"Swipe from ({wda_x1},{wda_y1}) to ({wda_x2},{wda_y2})"}
+            asyncio.create_task(_async_wda_request("POST", f"{wda_url}/wda/swipeByCoord", json_body={"fromX": wda_x1, "fromY": wda_y1, "toX": wda_x2, "toY": wda_y2, "duration": 0.5}, timeout=2.0, force_http=force_http, fire_forget=True))
+            return {"status": "ok", "detail": f"Swipe from ({wda_x1},{wda_y1}) to ({wda_x2},{wda_y2})", "window_size": sz_val}
             
-        elif req.action_type == "home":
-             status, res = await _async_wda_request("POST", f"{wda_url}/wda/homescreen", timeout=3.0, force_http=force_http)
-             return {"status": "ok", "detail": "Homescreen triggered"}
-             
-        elif req.action_type == "lock":
-             status, res = await _async_wda_request("POST", f"{wda_url}/session/{sid}/wda/lock", timeout=3.0, force_http=force_http)
-             return {"status": "ok", "detail": "Screen locked"}
-             
-        elif req.action_type == "volumeUp":
-             status, res = await _async_wda_request("POST", f"{wda_url}/session/{sid}/wda/pressButton", json_body={"name": "volumeUp"}, timeout=3.0, force_http=force_http)
-             return {"status": "ok", "detail": "Volume up pressed"}
-             
-        elif req.action_type == "volumeDown":
-             status, res = await _async_wda_request("POST", f"{wda_url}/session/{sid}/wda/pressButton", json_body={"name": "volumeDown"}, timeout=3.0, force_http=force_http)
-             return {"status": "ok", "detail": "Volume down pressed"}
+
+        # [v1742] home/lock/volumeUp/volumeDown 已提升至无 Session 快捷通道处理（见上方 _no_session_actions）
+        # 以下分支仅在极端情况下作为兜底（理论上不会执行到这里）
+        elif req.action_type in ("home", "lock", "volumeUp", "volumeDown"):
+             # 兜底：如果从快捷通道漏掉，使用带 Session 的路径重试
+             if req.action_type == "home":
+                 status, res = await _async_wda_request("POST", f"{wda_url}/wda/homescreen", timeout=3.0, force_http=force_http)
+                 return {"status": "ok", "detail": "Homescreen triggered"}
+             elif req.action_type == "lock":
+                 status, res = await _async_wda_request("POST", f"{wda_url}/wda/lock", timeout=3.0, force_http=force_http)
+                 return {"status": "ok", "detail": "Screen locked"}
+             elif req.action_type == "volumeUp":
+                 status, res = await _async_wda_request("POST", f"{wda_url}/wda/pressButton", json_body={"name": "volumeUp"}, timeout=3.0, force_http=force_http)
+                 return {"status": "ok", "detail": "Volume up pressed"}
+             elif req.action_type == "volumeDown":
+                 status, res = await _async_wda_request("POST", f"{wda_url}/wda/pressButton", json_body={"name": "volumeDown"}, timeout=3.0, force_http=force_http)
+                 return {"status": "ok", "detail": "Volume down pressed"}
              
         elif req.action_type == "launch":
              resp = await _safe_wda_post(f"{wda_url}/session/{sid}/wda/apps/launch", json={"bundleId": req.text}, timeout=10.0)
@@ -814,6 +1045,11 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
              
         elif req.action_type == "terminate":
              resp = await _safe_wda_post(f"{wda_url}/session/{sid}/wda/apps/terminate", json={"bundleId": req.text}, timeout=10.0)
+             return {"status": "ok", "detail": resp}
+             
+        elif req.action_type == "INPUT":
+             # [v1742] 增加原生文本下发支持：直接调用 WDA /keys 接口
+             resp = await _safe_wda_post(f"{wda_url}/session/{sid}/keys", json={"value": list(req.text)}, timeout=5.0)
              return {"status": "ok", "detail": resp}
              
         elif req.action_type == "ocr":
@@ -824,6 +1060,76 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
              resp = await _safe_wda_post(f"{wda_url}/wda/findText", json={"text": req.text}, timeout=15.0)
              return {"status": "ok", "detail": resp}
              
+        elif req.action_type == "probe_size":
+             # [v1682.6] 让 probe_size 真正具备探测功能
+             status, sz_resp = await _async_wda_request("GET", f"{wda_url}/window/size", timeout=3.0, force_http=force_http)
+             if status == 200 and isinstance(sz_resp, dict):
+                 sz_val = sz_resp.get("value", {})
+                 if "width" in sz_val:
+                     SIZE_CACHE[cache_key] = sz_val
+                     return {"status": "ok", "window_size": sz_val}
+             return {"status": "error", "msg": "Probe size failed", "raw": sz_resp}
+
+        elif req.action_type == "SCRIPT":
+             # [v1736] 脚本分发同步化路由：实现从手机端到前端的 logs/return_value 透明传回
+             _script_ws = ACTIVE_TUNNELS.get(req.udid)
+             
+             if not _script_ws:
+                 for tk, tw in ACTIVE_TUNNELS.items():
+                     if req.udid in tk or tk in req.udid:
+                         _script_ws = tw
+                         logging.info(f"[SCRIPT] 模糊匹配隧道成功: req.udid={req.udid} → tunnel_key={tk}")
+                         break
+             
+             if _script_ws:
+                 try:
+                     import uuid
+                     task_id = "proxy_script_" + str(uuid.uuid4())[:8]
+                     loop = asyncio.get_event_loop()
+                     future = loop.create_future()
+                     PENDING_TASKS[task_id] = future
+                     
+                     await _script_ws.send_json({
+                         "id": task_id, 
+                         "method": "POST", 
+                         "url": "http://127.0.0.1:8089/task", 
+                         "body": {"type": "SCRIPT", "payload": req.script_code}
+                     })
+                     
+                     # 同步透传等待（120秒超时）
+                     try:
+                         result = await asyncio.wait_for(future, timeout=120.0)
+                         return result.get("body", {"status": "success", "detail": "WS Dispatch OK"})
+                     except asyncio.TimeoutError:
+                         return {"status": "error", "msg": "Script execution timeout over WS tunnel"}
+                     finally:
+                         PENDING_TASKS.pop(task_id, None)
+                 except Exception as ws_err:
+                     logging.error(f"[SCRIPT] WS 隧道发送失败 ({req.udid}): {ws_err}")
+             
+             # USB 通道：透传原始响应
+             if dev:
+                 try:
+                     script_port = getattr(dev, 'script_port', 8089)
+                     status, resp = await _async_wda_request("POST", f"http://127.0.0.1:{script_port}/task", json_body={"type":"SCRIPT", "payload": req.script_code}, timeout=60.0, force_http=True)
+                     if status == 200:
+                         return resp # 直接透传 iOS 返回的 {"status": "ok", "logs": [...], ...}
+                 except Exception as usb_err:
+                     logging.error(f"[SCRIPT] USB 通道异常: {usb_err}")
+             
+             # LAN 通道：透传原始响应
+             if wlan_ip:
+                 try:
+                     status, resp = await _async_wda_request("POST", f"http://{wlan_ip}:8089/task", json_body={"type":"SCRIPT", "payload": req.script_code}, timeout=60.0, force_http=True)
+                     if status == 200:
+                         return resp
+                 except Exception as lan_err:
+                     logging.error(f"[SCRIPT] LAN 通道异常: {lan_err}")
+             
+             # 三路全挂：输出详细诊断信息
+             logging.error(f"[SCRIPT] 三通道全部失败! udid={req.udid}, tunnels={list(ACTIVE_TUNNELS.keys())}, dev={'exists' if dev else 'None'}, wlan_ip={wlan_ip}")
+             return {"status": "error", "msg": f"No valid channel (WS/USB/LAN) to deliver script payload. Active tunnels: {list(ACTIVE_TUNNELS.keys())}"}
+             
         return {"status": "error", "msg": f"Unsupported action {req.action_type}"}
         
     except Exception as e:
@@ -831,7 +1137,7 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
 
 @app.post("/api/run")
 async def api_run_script(req: RunTaskRequest, user: dict = Depends(get_current_user)):
-    require_device_permission(user, req.udid)
+    await require_device_permission(user, req.udid)
     """
     接收前端生成的脚本指令，并通过双重信道（WS/HTTP）下发至手机。
     """
@@ -857,12 +1163,12 @@ async def api_run_script(req: RunTaskRequest, user: dict = Depends(get_current_u
             future = loop.create_future()
             PENDING_TASKS[task_id] = future
             
-            # 使用手机端已支持的 /api/wakeup_task 拦截器下发脚本
+            # 修正：通过隧道向手机本地的 EC 核心服务发送指令
             await tunnel_ws.send_json({
                 "id": task_id,
                 "method": "POST",
-                "url": "/api/wakeup_task",
-                "body": {"script": js_code}
+                "url": "http://127.0.0.1:8089/task",
+                "body": {"type": "SCRIPT", "payload": js_code}
             })
             
             # 脚本执行可能较长，给予 120 秒宽限期
@@ -941,66 +1247,193 @@ async def api_run_script(req: RunTaskRequest, user: dict = Depends(get_current_u
     return {"status": "error", "message": "连通性瘫痪，ECMAIN 所有寻址信道均不可达", "detail": str(last_error)}
 
 from fastapi.responses import StreamingResponse
+from fastapi import WebSocket, WebSocketDisconnect
+
+@app.websocket("/api/ws_stream/{udid}")
+async def ws_screen_stream(websocket: WebSocket, udid: str, mode: str = 'ws', slave: str = '1', quality: str = 'low'):
+    await websocket.accept()
+    
+    # 鉴权机制：如果是 WebSocket，可以通过子协议或后续第一条消息验证 token，这里简化为默认白名单（前端页面已有鉴权保护）
+    tunnel_wait = 0
+    max_tunnel_wait = 60
+    fps_delay = 1.0 if slave == '1' else 0.2 # [v1720.2] 从机降至 1 FPS，避免压垮 iOS 主线程
+    frame_count = 0
+    empty_streak = 0  # 连续空帧计数器
+    
+    logging.info(f"[WS STREAM] 从属大盘 WebSocket 推流启动: udid={udid}")
+    task_id_prefix = f"ws_snap_{time.monotonic_ns()}"
+    
+    try:
+        while True:
+            tunnel_ws = ACTIVE_TUNNELS.get(udid)
+            if not tunnel_ws:
+                tunnel_wait += 1
+                if tunnel_wait % 10 == 0:
+                    logging.warning(f"[WS STREAM] 设备 {udid} 隧道缺失，已等待 {tunnel_wait/2}s")
+                if tunnel_wait > max_tunnel_wait:
+                    logging.error(f"[WS STREAM] 设备 {udid} 隧道等待超时，流终止")
+                    break
+                await asyncio.sleep(0.5)
+                continue
+            
+            tunnel_wait = 0
+            task_id = f"{task_id_prefix}_{frame_count}"
+            
+            loop = asyncio.get_running_loop()
+            future = loop.create_future()
+            PENDING_TASKS[task_id] = future
+            
+            _start = time.time()
+            try:
+                # 触发底层 ECMAIN 的截图通道
+                if quality == 'high':
+                    req_url = "http://127.0.0.1:10088/screenshot?scale=3"
+                elif quality == 'medium':
+                    req_url = "http://127.0.0.1:10088/screenshot"
+                else:
+                    req_url = "http://127.0.0.1:10088/screenshot?quality=low"
+                await tunnel_ws.send_json({
+                    "id": task_id,
+                    "method": "GET",
+                    "url": req_url,
+                    "body": None
+                })
+                
+                resp = await asyncio.wait_for(future, timeout=2.5)
+                # logging.debug(f"[WS STREAM] {udid} frame fetch cost: {time.time()-_start:.3f}s")
+                
+                if isinstance(resp, dict) and isinstance(resp.get("body"), dict):
+                    b64_val = resp.get("body").get("value")
+                    if b64_val:
+                        try:
+                            # 直接把 Base64 当纯文本推送给浏览器
+                            await websocket.send_text(b64_val)
+                            frame_count += 1
+                            empty_streak = 0  # 成功拿帧，重置退避
+                        except RuntimeError as re:
+                            if "close message has been sent" in str(re):
+                                logging.info(f"[WS STREAM] 客户端已断开 (UDID: {udid})，停止推流")
+                                return # 优雅退出函数
+                            raise re
+                    else:
+                        empty_streak += 1
+                else:
+                    empty_streak += 1
+            except asyncio.TimeoutError:
+                empty_streak += 1
+            except Exception as e:
+                # 过滤掉已知的连接关闭异常，避免日志污染
+                err_str = str(e)
+                if "close message has been sent" in err_str or "WebSocket is closed" in err_str:
+                    logging.info(f"[WS STREAM] 连接已关闭 ({udid})")
+                    return
+                logging.error(f"[WS STREAM] {udid} 运行异常: {e}")
+                empty_streak += 1
+            finally:
+                PENDING_TASKS.pop(task_id, None)
+                
+            # [v1720.2] 动态退避：连续空帧/超时时自动增大间隔，释放设备 CPU 压力
+            backoff = min(fps_delay * (1 + empty_streak * 0.5), 3.0)
+            await asyncio.sleep(backoff)
+    except WebSocketDisconnect:
+        logging.info(f"[WS STREAM] 浏览器主动断开从属推流: {udid}")
+    except Exception as e:
+        logging.error(f"[WS STREAM] 连接意外中断: {e}")
+    finally:
+        try:
+            await websocket.close()
+        except:
+            pass
 
 @app.get("/api/screen/{udid}")
-async def get_screen_stream(udid: str, ip: str = None, usb: str = 'true', mode: str = 'usb', token: str = None, user: dict = Depends(get_current_user)):
-    require_device_permission(user, udid)
+async def get_screen_stream(udid: str, ip: str = None, usb: str = 'true', mode: str = 'usb', token: str = None, user: dict = Depends(get_current_user), slave: str = '0'):
+    await require_device_permission(user, udid)
     
     if mode == 'ws':
-        async def iter_ws_frames():
-            consecutive_errors = 0
-            max_errors = 10  # 连续失败 10 次才放弃（慢速网络友好）
+        # [v1684] WS MJPEG 模式：后端主动通过 WS 发送 /screenshot 轮询请求，利用 iOS 端的极致压缩通道！
+        # 避免让 iOS 端长时间推二进制流导致 NSURLSessionWebSocketTask 内存泄漏或 EXC_BAD_ACCESS
+        async def iter_mjpeg_ws_frames():
+            import base64
+            tunnel_wait = 0
+            max_tunnel_wait = 60  # 等待隧道上限：30 秒（60 * 0.5s）
+            fps_delay = 0.5 if slave == '1' else 0.1 # 从机大幅降帧（2 FPS），主机高帧率（10 FPS）
+            frame_count = 0
             
-            while consecutive_errors < max_errors:
+            logging.info(f"[WS MJPEG] 启动截图轮询: udid={udid}, 当前隧道列表={list(ACTIVE_TUNNELS.keys())}")
+            
+            while True:
                 tunnel_ws = ACTIVE_TUNNELS.get(udid)
                 if not tunnel_ws:
-                    logging.warning(f"WS tunnel for {udid} not active, waiting...")
-                    await asyncio.sleep(3.0)
-                    consecutive_errors += 1
+                    tunnel_wait += 1
+                    if tunnel_wait % 10 == 1:
+                        logging.warning(f"[WS MJPEG] 设备 {udid} 隧道未找到 (第{tunnel_wait}次), 当前隧道keys={list(ACTIVE_TUNNELS.keys())}")
+                    if tunnel_wait > max_tunnel_wait:
+                        logging.warning(f"[WS MJPEG] 设备 {udid} 隧道等待超时，流终止")
+                        break
+                    await asyncio.sleep(0.5)
                     continue
-
-                task_id = str(uuid.uuid4())
-                loop = asyncio.get_event_loop()
+                
+                tunnel_wait = 0
+                task_id = f"snap_{time.monotonic_ns()}"
+                
+                # 创建回调 Future 用于等 WS Response
+                loop = asyncio.get_running_loop()
                 future = loop.create_future()
                 PENDING_TASKS[task_id] = future
+                
                 try:
+                    # [v1714] 修正 iOS 本地 WDA 截图路径。WDA 在手机上原生路径是 /screenshot，不要加 /wda 前缀，否则会导致 NSURLSession 请求卡死。
+                    # ECMAIN 的隧道代理会自动拦截含 "screenshot" 的 URL 并走极致压缩通道
+                    req_url = "http://127.0.0.1:10088/screenshot" + ("?quality=low" if slave == '1' else "")
                     await tunnel_ws.send_json({
                         "id": task_id,
                         "method": "GET",
-                        "url": "http://127.0.0.1:10088/screenshot"
+                        "url": req_url,
+                        "body": None
                     })
-                    # 慢速网络给 15 秒超时（VPN + Cloudflare 穿透链路较长）
-                    result = await asyncio.wait_for(future, timeout=15.0)
-                    body = result.get("body", {})
-                    b64 = body.get("value")
-                    if b64:
-                        import base64
-                        frame = base64.b64decode(b64)
-                        yield (
-                            b"--myboundary\r\n"
-                            b"Content-Type: image/jpeg\r\n"
-                            b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + 
-                            frame + b"\r\n"
-                        )
-                        consecutive_errors = 0  # 成功一次就重置计数
-                    else:
-                        consecutive_errors += 1
+                    
+                    # 等待截图响应，由于网络波动，给个稍微宽裕的时间
+                    resp = await asyncio.wait_for(future, timeout=2.0)
+                    
+                    if isinstance(resp, dict):
+                        body = resp.get("body", {})
+                        if frame_count < 3:
+                            # 前几帧打印结构信息用于诊断
+                            body_keys = list(body.keys()) if isinstance(body, dict) else type(body).__name__
+                            logging.info(f"[WS MJPEG] 帧#{frame_count} 响应结构: status={resp.get('status')}, body_keys={body_keys}")
+                        if isinstance(body, dict):
+                            b64_val = body.get("value")
+                            if b64_val:
+                                # iOS 端返回的可能是带头部或纯净 base64 的 JPG/PNG，尝试解码
+                                try:
+                                    jpeg_bytes = base64.b64decode(b64_val)
+                                    if jpeg_bytes and len(jpeg_bytes) > 100:
+                                        frame_count += 1
+                                        yield (
+                                            b"--myboundary\r\n"
+                                            b"Content-Type: image/jpeg\r\n"
+                                            b"Content-Length: " + str(len(jpeg_bytes)).encode() + b"\r\n\r\n" +
+                                            jpeg_bytes + b"\r\n"
+                                        )
+                                except Exception as dec_err:
+                                    logging.warning(f"[WS MJPEG] base64 dec 异常: {dec_err}")
+                                    pass
+                            elif frame_count < 3:
+                                logging.warning(f"[WS MJPEG] 帧#{frame_count} body 中无 value 字段, body={str(body)[:200]}")
                 except asyncio.TimeoutError:
-                    logging.warning(f"WS screenshot timeout for {udid} ({consecutive_errors+1}/{max_errors})")
-                    consecutive_errors += 1
+                    if frame_count < 3:
+                        logging.warning(f"[WS MJPEG] 截图请求超时 (已产出 {frame_count} 帧)")
+                    pass
                 except Exception as e:
-                    logging.warning(f"WS screenshot stream error: {e}")
-                    consecutive_errors += 1
+                    logging.warning(f"[WS MJPEG] 截图轮询异常: {e}")
+                    await asyncio.sleep(0.5)
                 finally:
                     PENDING_TASKS.pop(task_id, None)
                     
-                # 慢速网络下每 2 秒轮询一次（避免堆积请求导致阻塞）
-                await asyncio.sleep(2.0)
-            
-            logging.error(f"WS screenshot stream gave up after {max_errors} consecutive errors for {udid}")
+                await asyncio.sleep(fps_delay)
 
         return StreamingResponse(
-            iter_ws_frames(), 
+            iter_mjpeg_ws_frames(), 
             media_type="multipart/x-mixed-replace; boundary=myboundary"
         )
 
@@ -1054,6 +1487,12 @@ async def get_screen_stream(udid: str, ip: str = None, usb: str = 'true', mode: 
                         frame = buffer[start_idx:end_idx + 2]
                         buffer = buffer[end_idx + 2:]
                         
+                        frames_yielded += 1
+                        
+                        # [v1716] 从机在原生 USB MJPEG 下通过暴降 FPS 节省后端与浏览器间带宽负担 (保留1/15)
+                        if slave == '1' and frames_yielded % 15 != 0:
+                            continue
+                            
                         # Yield standard multipart chunk
                         yield (
                             b"--myboundary\r\n"
@@ -1074,12 +1513,37 @@ async def get_screen_stream(udid: str, ip: str = None, usb: str = 'true', mode: 
             except Exception as e:
                 logging.warning(f"MJPEG stream broken: {e}")
             finally:
-                writer.close()
-                await writer.wait_closed()
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except Exception:
+                    pass  # 连接已断开，忽略清理异常
             
             # If we reach here, stream collapsed.
             retries += 1
             await asyncio.sleep(1.0)
+            
+        # [v1672.11] 容灾回退：当物理 USB 的 MJPEG 流不工作时，切换到 WDA 端口阻塞拉取
+        wda_port = getattr(dev, "wda_port", 0) if getattr(dev, "wda_port", 0) > 0 else 8100
+        if retries >= 3 and dev:
+            logging.info(f"[容灾介入] 设备 {udid} 的 MJPEG {target_port} 拒绝服务，切换为 WDA-HTTP 直拉 (端口 {wda_port})")
+            import base64
+            import requests
+            def _fetch_tcp_fallback():
+                try:
+                    r = requests.get(f"http://127.0.0.1:{wda_port}/screenshot", timeout=2.0)
+                    return r.json().get("value") if r.status_code == 200 else None
+                except:
+                    return None
+            while True:
+                b64 = await asyncio.to_thread(_fetch_tcp_fallback)
+                if b64:
+                    try:
+                        frame = base64.b64decode(b64)
+                        yield (b"--myboundary\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n")
+                    except:
+                        pass
+                await asyncio.sleep(0.3)
             
     return StreamingResponse(
         iter_tcp_frames(), 
@@ -1099,27 +1563,39 @@ def api_probe(ip: str):
     msg_8089 = ""
     msg_10088 = ""
     
-    # 探活 8089 (ECMAIN - 模拟下发空指令)
-    try:
-        r1 = requests.post(
-            f"http://{target_ip}:8089/task", 
-            json={"type":"SCRIPT", "payload":"console.log('Probe ping');"}, 
-            timeout=2.5
-        )
-        status_8089 = (r1.status_code == 200)
-        msg_8089 = "通畅" if status_8089 else f"异常 ({r1.status_code})"
-    except requests.exceptions.Timeout:
-        msg_8089 = "超时未响应"
-    except Exception as e:
-        msg_8089 = "离线阻断"
-        
-    # 探活 10088 (WDA / Status)
-    try:
-        r2 = requests.get(f"http://{target_ip}:10088/status", timeout=1.5)
-        status_10088 = (r2.status_code == 200)
-        msg_10088 = "通畅" if status_10088 else f"异常 ({r2.status_code})"
-    except Exception as e:
-        msg_10088 = "离线阻断"
+    # [v1684] 兼容 WS 隧道模式下的存活探测
+    if "ws" in mode.lower() and ip:
+        udid_match = next((d["udid"] for d in device_manager.get_all_devices() if d.get("local_ip") == ip or d.get("ip") == ip), None)
+        if udid_match and udid_match in ACTIVE_TUNNELS:
+            status_8089 = True
+            status_10088 = True
+            msg_8089 = "通畅 (WS中转)"
+            msg_10088 = "通畅 (WS中转)"
+        else:
+            msg_8089 = "离线 (WS未建)"
+            msg_10088 = "离线 (WS未建)"
+    else:
+        # 探活 8089 (ECMAIN - 模拟下发空指令)
+        try:
+            r1 = requests.post(
+                f"http://{target_ip}:8089/task", 
+                json={"type":"SCRIPT", "payload":"console.log('Probe ping');"}, 
+                timeout=2.5
+            )
+            status_8089 = (r1.status_code == 200)
+            msg_8089 = "通畅" if status_8089 else f"异常 ({r1.status_code})"
+        except requests.exceptions.Timeout:
+            msg_8089 = "超时未响应"
+        except Exception as e:
+            msg_8089 = "离线阻断"
+            
+        # 探活 10088 (WDA / Status)
+        try:
+            r2 = requests.get(f"http://{target_ip}:10088/status", timeout=1.5)
+            status_10088 = (r2.status_code == 200)
+            msg_10088 = "通畅" if status_10088 else f"异常 ({r2.status_code})"
+        except Exception as e:
+            msg_10088 = "离线阻断"
         
     return {
         "status": "ok",
@@ -1150,8 +1626,8 @@ class LaunchReq(BaseModel):
     udid: str
 
 @app.post("/api/launch_ecwda")
-def api_launch_ecwda(req: LaunchReq, user: dict = Depends(get_current_user)):
-    require_device_permission(user, req.udid)
+async def api_launch_ecwda(req: LaunchReq, user: dict = Depends(get_current_user)):
+    await require_device_permission(user, req.udid)
     import subprocess
     
     try:
@@ -1225,6 +1701,16 @@ class HeartbeatRequest(BaseModel):
     config_checksum: str = ""
     task_status: str = ""  # 任务状态 JSON 数组，如 [{"name":"xxx","time":"HH:mm:ss"}]
     admin_username: str = "" # iOS 仪表盘手动输入的所属管理员账号
+    tiktok_version: str = "" # TikTok 版本号
+    vpn_node: str = "" # VPN 节点名称
+
+class TaskReportRequest(BaseModel):
+    udid: str
+    task_name: str
+    status: str       # "正在执行" | "执行完成"
+    success: bool = False
+    error: str = ""
+    last_command: str = ""
 
 # ECMAIN / ECWDA 编译后输出的更新包存放目录
 ECMAIN_BUILD_OUTPUT = os.path.join(os.path.dirname(__file__), "updates")
@@ -1270,7 +1756,9 @@ def handle_heartbeat(req: HeartbeatRequest):
         "vpn_active": 1 if req.vpn_active else 0,
         "vpn_ip": req.vpn_ip,
         "ecwda_status": req.ecwda_status,
-        "task_status": req.task_status
+        "task_status": req.task_status,
+        "tiktok_version": req.tiktok_version,
+        "vpn_node": req.vpn_node
     })
     
     # 【自动绑定逻辑】如果心跳携带了管理员账号，则自动建立归属关系
@@ -1293,17 +1781,21 @@ def handle_heartbeat(req: HeartbeatRequest):
     
     # 获取此手机全局的配置档案，计算 MD5 若不一致，要求客户端下发更新
     device_conf = database.get_device_config(req.udid)
-    raw_hash_str = (
-        device_conf.get("config_ip", "") + 
-        device_conf.get("config_vpn", "") +
-        device_conf.get("country", "") +
-        device_conf.get("group_name", "") +
-        device_conf.get("exec_time", "") +
-        device_conf.get("apple_account", "") +
-        device_conf.get("apple_password", "") +
-        device_conf.get("tiktok_accounts", "[]")
-    )
+    # 使用分隔符拼接，防止字段合并导致的哈希碰撞
+    raw_hash_str = "|".join([
+        str(device_conf.get("config_ip", "")),
+        str(device_conf.get("config_vpn", "")),
+        str(device_conf.get("country", "")),
+        str(device_conf.get("group_name", "")),
+        str(device_conf.get("exec_time", "")),
+        str(device_conf.get("apple_account", "")),
+        str(device_conf.get("apple_password", "")),
+        str(device_conf.get("tiktok_accounts", "[]"))
+    ])
     server_checksum = hashlib.md5(raw_hash_str.encode('utf-8')).hexdigest()
+    
+    if req.config_checksum != server_checksum:
+        logging.info(f"[Heartbeat] Config mismatch for {req.udid}: client={req.config_checksum}, server={server_checksum}")
     
     if req.config_checksum != server_checksum:
         response["push_config"] = {
@@ -1374,7 +1866,7 @@ class CreateTaskRequest(BaseModel):
 
 @app.post("/api/tasks/create")
 async def api_create_task(req: CreateTaskRequest, user: dict = Depends(get_current_user)):
-    require_device_permission(user, req.udid)
+    await require_device_permission(user, req.udid)
     # 前端网页调用此接口向目标存入指令
     
     # 强力优先通道：如果设备当前有活跃的 WebSocket 隧道，直接下发实现毫秒级响应
@@ -1425,15 +1917,26 @@ def api_ecmain_version():
     return {"status": "error", "msg": "暂无版本文件，请先编译生成 ecmain.tar"}
 
 @app.get("/api/ecmain/download")
-def api_ecmain_download():
-    """下载最新的 ecmain.tar 更新包（直接从编译输出目录读取）"""
+async def api_ecmain_download():
+    """下载最新的 ecmain.tar 更新包（改用流式分块读取，防止协议报错）"""
     tar_path = os.path.join(ECMAIN_BUILD_OUTPUT, "ecmain.tar")
     if not os.path.exists(tar_path):
         raise HTTPException(status_code=404, detail="更新包不存在，请先运行 build_full.py 编译")
-    return FileResponse(
-        tar_path,
+    
+    file_size = os.path.getsize(tar_path)
+    
+    def iterfile():
+        with open(tar_path, mode="rb") as f:
+            while chunk := f.read(1024 * 1024): # 1MB chunks
+                yield chunk
+
+    return StreamingResponse(
+        iterfile(),
         media_type="application/x-tar",
-        filename="ecmain.tar"
+        headers={
+            "Content-Disposition": 'attachment; filename="ecmain.tar"',
+            "Content-Length": str(file_size)
+        }
     )
 
 # ==================== ECWDA 自动更新系统 ====================
@@ -1447,16 +1950,87 @@ def api_ecwda_version():
     return {"status": "error", "msg": "暂无 ECWDA 版本文件，请先编译生成 ecwda.ipa"}
 
 @app.get("/api/ecwda/download")
-def api_ecwda_download():
+async def api_ecwda_download():
     """下载最新的 ecwda.ipa 更新包"""
     ipa_path = os.path.join(ECMAIN_BUILD_OUTPUT, "ecwda.ipa")
     if not os.path.exists(ipa_path):
         raise HTTPException(status_code=404, detail="ECWDA 更新包不存在，请先运行 build_wda.py 编译")
-    return FileResponse(
-        ipa_path,
+    
+    file_size = os.path.getsize(ipa_path)
+
+    def iterfile():
+        with open(ipa_path, mode="rb") as f:
+            while chunk := f.read(1024 * 1024):
+                yield chunk
+
+    return StreamingResponse(
+        iterfile(),
         media_type="application/octet-stream",
-        filename="ecwda.ipa"
+        headers={
+            "Content-Disposition": 'attachment; filename="ecwda.ipa"',
+            "Content-Length": str(file_size)
+        }
     )
+
+# ================= 文件管理 =================
+
+# 共享文件存储目录
+SHARED_FILES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shared_files")
+os.makedirs(SHARED_FILES_DIR, exist_ok=True)
+
+@app.get("/api/files")
+async def list_shared_files(user: dict = Depends(get_current_user)):
+    """列出所有共享文件（所有已登录用户可访问）"""
+    files = []
+    for filename in os.listdir(SHARED_FILES_DIR):
+        filepath = os.path.join(SHARED_FILES_DIR, filename)
+        if os.path.isfile(filepath):
+            stat = os.stat(filepath)
+            files.append({
+                "name": filename,
+                "size": stat.st_size,
+                "upload_time": stat.st_mtime,
+            })
+    # 按上传时间倒序
+    files.sort(key=lambda f: f["upload_time"], reverse=True)
+    return {"files": files}
+
+@app.post("/api/files/upload")
+async def upload_shared_file(file: UploadFile = FastAPIFile(...), user: dict = Depends(require_super_admin)):
+    """上传文件（仅超级管理员）"""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="文件名不能为空")
+    
+    # 安全文件名：移除路径分隔符
+    safe_name = os.path.basename(file.filename)
+    dest_path = os.path.join(SHARED_FILES_DIR, safe_name)
+    
+    # 同名自动覆盖
+    content = await file.read()
+    with open(dest_path, "wb") as f:
+        f.write(content)
+    
+    file_size = os.path.getsize(dest_path)
+    return {"ok": True, "filename": safe_name, "size": file_size}
+
+@app.get("/api/files/download/{filename}")
+async def download_shared_file(filename: str):
+    """下载共享文件（无需认证，支持直链下载）"""
+    safe_name = os.path.basename(filename)
+    filepath = os.path.join(SHARED_FILES_DIR, safe_name)
+    if not os.path.isfile(filepath):
+        raise HTTPException(status_code=404, detail="文件不存在")
+    return FileResponse(filepath, filename=safe_name, media_type="application/octet-stream")
+
+@app.delete("/api/files/{filename}")
+async def delete_shared_file(filename: str, user: dict = Depends(require_super_admin)):
+    """删除共享文件（仅超级管理员）"""
+    safe_name = os.path.basename(filename)
+    filepath = os.path.join(SHARED_FILES_DIR, safe_name)
+    if not os.path.isfile(filepath):
+        raise HTTPException(status_code=404, detail="文件不存在")
+    os.remove(filepath)
+    return {"ok": True}
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8088, reload=True)

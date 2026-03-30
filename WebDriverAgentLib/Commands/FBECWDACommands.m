@@ -30,38 +30,45 @@
 #import "XCUIElement+FBFind.h"
 #import "XCUIElement+FBTyping.h"
 
-
 // ECMAIN 在线状态标志
 static BOOL _isEcmainOnline = YES;
+
+// 上次尝试拉活的时间（避免频繁拉起）
+static NSTimeInterval _lastEcmainLaunchTime = 0;
+
+// 模板图解码缓存（MD5 → UIImage），避免同一模板反复 Base64 解码
+static NSCache *_templateImageCache = nil;
 
 @implementation FBECWDACommands
 
 #pragma mark - 保活探测 (ECWDA → ECMAIN via 8089)
 
 + (void)load {
-  // 延迟 10 秒启动保活定时器，等待网络栈就绪
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10 * NSEC_PER_SEC)),
+  // 初始化模板图缓存
+  _templateImageCache = [[NSCache alloc] init];
+  _templateImageCache.countLimit = 50; // 最多缓存 50 张模板
+
+  // 延迟 5 秒启动保活定时器，等待网络栈就绪 (从 10s 缩减)
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)),
                  dispatch_get_main_queue(), ^{
                    [self startEcmainKeepAliveTimer];
                  });
 }
 
 + (void)startEcmainKeepAliveTimer {
-  // 每 60 秒探测 ECMAIN 的 8089 端口是否存活
   [NSTimer scheduledTimerWithTimeInterval:60.0
                                   repeats:YES
                                     block:^(NSTimer *_Nonnull timer) {
                                       [self checkEcmainAlive];
                                     }];
-  // 首次立即执行一次
   [self checkEcmainAlive];
   NSLog(@"[ECWDA] 保活探测已启动: 每 60 秒检测 ECMAIN (127.0.0.1:8089)");
 }
 
 + (void)checkEcmainAlive {
-  NSURL *url = [NSURL URLWithString:@"http://127.0.0.1:8089/"];
+  NSURL *url = [NSURL URLWithString:@"http://127.0.0.1:8089/ping"];
   NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-  req.timeoutInterval = 60.0;
+  req.timeoutInterval = 30.0;
   req.HTTPMethod = @"GET";
 
   [[NSURLSession.sharedSession
@@ -71,25 +78,26 @@ static BOOL _isEcmainOnline = YES;
                             NSError *_Nullable error) {
           NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
           if (error || httpResp.statusCode == 0) {
-            BOOL wasOnline = _isEcmainOnline;
             _isEcmainOnline = NO;
             NSLog(@"[ECWDA] ⚠️ ECMAIN 进程离线 (8089 端口无响应)");
-            // 如果之前在线，现在离线，则尝试拉起 ECMAIN
-            if (wasOnline) {
+            NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+            if (now - _lastEcmainLaunchTime > 60.0) {
+              _lastEcmainLaunchTime = now;
               dispatch_async(dispatch_get_main_queue(), ^{
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                             (int64_t)(5.0 * NSEC_PER_SEC)),
+                                             (int64_t)(2.0 * NSEC_PER_SEC)),
                                dispatch_get_main_queue(), ^{
                                  NSLog(@"[ECWDA] 🔄 正在尝试拉起 ECMAIN...");
+                                 // 优先使用后台启动方式（支持锁屏状态）
                                  BOOL launched = [FBUnattachedAppLauncher
-                                     launchAppWithBundleId:@"com.ecmain.app"];
-                                 if (launched) {
-                                   NSLog(@"[ECWDA] ✅ ECMAIN 已自动拉起");
-                                 } else {
-                                   NSLog(@"[ECWDA] ❌ ECMAIN 拉起失败");
-                                 }
+                                     launchAppInBackgroundWithBundleId:@"com.ecmain.app"];
+                                 NSLog(@"[ECWDA] %@ ECMAIN 拉起结果",
+                                       launched ? @"✅" : @"❌");
                                });
               });
+            } else {
+              NSLog(@"[ECWDA] ⏳ 拉起冷却中 (距上次 %.0fs，需 60s)",
+                    now - _lastEcmainLaunchTime);
             }
           } else {
             if (!_isEcmainOnline) {
@@ -148,10 +156,15 @@ static BOOL _isEcmainOnline = YES;
         respondWithTarget:self
                    action:@selector(handleFindText:)],
 
-    // 找图
+    // 找图（含截图，可能因 IPC 卡死）
     [[FBRoute POST:@"/wda/findImage"].withoutSession
         respondWithTarget:self
                    action:@selector(handleFindImage:)],
+
+    // 纯匹配（不截图，由调用方提供截图数据，防止 IPC 卡死）
+    [[FBRoute POST:@"/wda/matchImage"].withoutSession
+        respondWithTarget:self
+                   action:@selector(handleMatchImage:)],
 
     // 长按
     [[FBRoute POST:@"/wda/longPress"].withoutSession
@@ -289,12 +302,27 @@ static BOOL _isEcmainOnline = YES;
                               traceback:nil]);
   }
 
-  // 获取截图
-  NSError *error;
-  NSData *screenshotData =
-      [FBScreenshot takeInOriginalResolutionWithQuality:2 error:&error];
+  // [v1738-fix] 防卡死：截图超时保护（与 handleFindImage 一致）
+  __block NSData *screenshotData = nil;
+  __block NSError *screenshotError = nil;
+  dispatch_semaphore_t screenshotSema = dispatch_semaphore_create(0);
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    NSError *error = nil;
+    screenshotData = [FBScreenshot takeInOriginalResolutionWithQuality:2 error:&error];
+    screenshotError = error;
+    dispatch_semaphore_signal(screenshotSema);
+  });
+  long screenshotWait = dispatch_semaphore_wait(
+      screenshotSema,
+      dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)));
+  if (screenshotWait != 0) {
+    NSLog(@"[ECWDA] ⚠️ findColor 截图超时(10s)");
+    return FBResponseWithStatus([FBCommandStatus
+        unknownErrorWithMessage:@"Screenshot timed out (10s)"
+                      traceback:nil]);
+  }
   if (!screenshotData) {
-    return FBResponseWithUnknownError(error);
+    return FBResponseWithUnknownError(screenshotError);
   }
 
   UIImage *screenshot = [UIImage imageWithData:screenshotData];
@@ -364,12 +392,27 @@ static BOOL _isEcmainOnline = YES;
                               traceback:nil]);
   }
 
-  // 获取截图
-  NSError *error;
-  NSData *screenshotData =
-      [FBScreenshot takeInOriginalResolutionWithQuality:2 error:&error];
+  // [v1738-fix] 防卡死：截图超时保护（与 handleFindImage 一致）
+  __block NSData *screenshotData = nil;
+  __block NSError *screenshotError = nil;
+  dispatch_semaphore_t screenshotSema = dispatch_semaphore_create(0);
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    NSError *error = nil;
+    screenshotData = [FBScreenshot takeInOriginalResolutionWithQuality:2 error:&error];
+    screenshotError = error;
+    dispatch_semaphore_signal(screenshotSema);
+  });
+  long screenshotWait = dispatch_semaphore_wait(
+      screenshotSema,
+      dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)));
+  if (screenshotWait != 0) {
+    NSLog(@"[ECWDA] ⚠️ findMultiColor 截图超时(10s)");
+    return FBResponseWithStatus([FBCommandStatus
+        unknownErrorWithMessage:@"Screenshot timed out (10s)"
+                      traceback:nil]);
+  }
   if (!screenshotData) {
-    return FBResponseWithUnknownError(error);
+    return FBResponseWithUnknownError(screenshotError);
   }
 
   UIImage *screenshot = [UIImage imageWithData:screenshotData];
@@ -473,11 +516,27 @@ static BOOL _isEcmainOnline = YES;
                               traceback:nil]);
   }
 
-  NSError *error;
-  NSData *screenshotData =
-      [FBScreenshot takeInOriginalResolutionWithQuality:2 error:&error];
+  // [v1738-fix] 防卡死：截图超时保护
+  __block NSData *screenshotData = nil;
+  __block NSError *screenshotError = nil;
+  dispatch_semaphore_t screenshotSema = dispatch_semaphore_create(0);
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    NSError *error = nil;
+    screenshotData = [FBScreenshot takeInOriginalResolutionWithQuality:2 error:&error];
+    screenshotError = error;
+    dispatch_semaphore_signal(screenshotSema);
+  });
+  long screenshotWait = dispatch_semaphore_wait(
+      screenshotSema,
+      dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)));
+  if (screenshotWait != 0) {
+    NSLog(@"[ECWDA] ⚠️ cmpColor 截图超时(10s)");
+    return FBResponseWithStatus([FBCommandStatus
+        unknownErrorWithMessage:@"Screenshot timed out (10s)"
+                      traceback:nil]);
+  }
   if (!screenshotData) {
-    return FBResponseWithUnknownError(error);
+    return FBResponseWithUnknownError(screenshotError);
   }
 
   UIImage *screenshot = [UIImage imageWithData:screenshotData];
@@ -524,11 +583,27 @@ static BOOL _isEcmainOnline = YES;
                               traceback:nil]);
   }
 
-  NSError *error;
-  NSData *screenshotData =
-      [FBScreenshot takeInOriginalResolutionWithQuality:2 error:&error];
+  // [v1738-fix] 防卡死：截图超时保护
+  __block NSData *screenshotData = nil;
+  __block NSError *screenshotError = nil;
+  dispatch_semaphore_t screenshotSema = dispatch_semaphore_create(0);
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    NSError *error = nil;
+    screenshotData = [FBScreenshot takeInOriginalResolutionWithQuality:2 error:&error];
+    screenshotError = error;
+    dispatch_semaphore_signal(screenshotSema);
+  });
+  long screenshotWait = dispatch_semaphore_wait(
+      screenshotSema,
+      dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)));
+  if (screenshotWait != 0) {
+    NSLog(@"[ECWDA] ⚠️ getPixel 截图超时(10s)");
+    return FBResponseWithStatus([FBCommandStatus
+        unknownErrorWithMessage:@"Screenshot timed out (10s)"
+                      traceback:nil]);
+  }
   if (!screenshotData) {
-    return FBResponseWithUnknownError(error);
+    return FBResponseWithUnknownError(screenshotError);
   }
 
   UIImage *screenshot = [UIImage imageWithData:screenshotData];
@@ -567,12 +642,32 @@ static BOOL _isEcmainOnline = YES;
 #pragma mark - OCR
 
 + (id<FBResponsePayload>)handleOCR:(FBRouteRequest *)request {
-  // Use FBOCREngine (NCNN + OpenCV)
-  NSError *error;
-  NSData *screenshotData =
-      [FBScreenshot takeInOriginalResolutionWithQuality:2 error:&error];
+  // 防卡死：截图超时保护（与 handleFindImage 一致）
+  __block NSData *screenshotData = nil;
+  __block NSError *screenshotError = nil;
+  dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    NSError *error = nil;
+    screenshotData = [FBScreenshot takeInOriginalResolutionWithQuality:2
+                                                                 error:&error];
+    screenshotError = error;
+    dispatch_semaphore_signal(sema);
+  });
+
+  long waitResult = dispatch_semaphore_wait(
+      sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)));
+
+  if (waitResult != 0) {
+    NSLog(@"[ECWDA] ⚠️ OCR 截图超时(10s)，TikTok 等高负载场景可能阻塞了 XCTest "
+          @"IPC");
+    return FBResponseWithStatus([FBCommandStatus
+        unknownErrorWithMessage:@"Screenshot timed out (10s)"
+                      traceback:nil]);
+  }
+
   if (!screenshotData) {
-    return FBResponseWithUnknownError(error);
+    return FBResponseWithUnknownError(screenshotError);
   }
   UIImage *screenshot = [UIImage imageWithData:screenshotData];
 
@@ -609,11 +704,32 @@ static BOOL _isEcmainOnline = YES;
                               traceback:nil]);
   }
 
-  NSError *error;
-  NSData *screenshotData =
-      [FBScreenshot takeInOriginalResolutionWithQuality:2 error:&error];
+  // 防卡死：截图超时保护（与 handleFindImage 一致）
+  __block NSData *screenshotData = nil;
+  __block NSError *screenshotError = nil;
+  dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    NSError *error = nil;
+    screenshotData = [FBScreenshot takeInOriginalResolutionWithQuality:2
+                                                                 error:&error];
+    screenshotError = error;
+    dispatch_semaphore_signal(sema);
+  });
+
+  long waitResult = dispatch_semaphore_wait(
+      sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)));
+
+  if (waitResult != 0) {
+    NSLog(@"[ECWDA] ⚠️ findText 截图超时(10s)，TikTok 等高负载场景可能阻塞了 "
+          @"XCTest IPC");
+    return FBResponseWithStatus([FBCommandStatus
+        unknownErrorWithMessage:@"Screenshot timed out (10s)"
+                      traceback:nil]);
+  }
+
   if (!screenshotData) {
-    return FBResponseWithUnknownError(error);
+    return FBResponseWithUnknownError(screenshotError);
   }
   UIImage *screenshot = [UIImage imageWithData:screenshotData];
 
@@ -632,6 +748,18 @@ static BOOL _isEcmainOnline = YES;
   }
 }
 
+/// 计算 Base64 字符串的 MD5（用于模板缓存 key）
++ (NSString *)md5ForString:(NSString *)input {
+  const char *cStr = [input UTF8String];
+  unsigned char digest[CC_MD5_DIGEST_LENGTH];
+  CC_MD5(cStr, (CC_LONG)strlen(cStr), digest);
+  NSMutableString *output =
+      [NSMutableString stringWithCapacity:CC_MD5_DIGEST_LENGTH * 2];
+  for (int i = 0; i < CC_MD5_DIGEST_LENGTH; i++)
+    [output appendFormat:@"%02x", digest[i]];
+  return output;
+}
+
 + (id<FBResponsePayload>)handleFindImage:(FBRouteRequest *)request {
   NSString *templateBase64 = request.arguments[@"template"];
   NSNumber *threshold = request.arguments[@"threshold"] ?: @(0.8);
@@ -642,28 +770,84 @@ static BOOL _isEcmainOnline = YES;
                               traceback:nil]);
   }
 
-  NSData *templateData = [[NSData alloc]
-      initWithBase64EncodedString:templateBase64
-                          options:NSDataBase64DecodingIgnoreUnknownCharacters];
-  UIImage *templateImage = [UIImage imageWithData:templateData];
+  // ====== 优化 1：模板图缓存（避免同模板重复 Base64 解码） ======
+  NSString *cacheKey = [self md5ForString:templateBase64];
+  UIImage *templateImage = [_templateImageCache objectForKey:cacheKey];
+  if (!templateImage) {
+    NSData *templateData = [[NSData alloc]
+        initWithBase64EncodedString:templateBase64
+                            options:
+                                NSDataBase64DecodingIgnoreUnknownCharacters];
+    templateImage = [UIImage imageWithData:templateData];
+    if (templateImage) {
+      [_templateImageCache setObject:templateImage forKey:cacheKey];
+    }
+  }
   if (!templateImage) {
     return FBResponseWithStatus([FBCommandStatus
         invalidArgumentErrorWithMessage:@"Invalid template image data"
                               traceback:nil]);
   }
 
-  NSError *error;
-  NSData *screenshotData =
-      [FBScreenshot takeInOriginalResolutionWithQuality:2 error:&error];
+  // ====== 优化 2：截图超时保护（防止 XCTest 截图卡死锁住 HTTP 线程） ======
+  __block NSData *screenshotData = nil;
+  __block NSError *screenshotError = nil;
+  dispatch_semaphore_t screenshotSema = dispatch_semaphore_create(0);
+
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    NSError *error = nil;
+    screenshotData = [FBScreenshot takeInOriginalResolutionWithQuality:2
+                                                                 error:&error];
+    screenshotError = error;
+    dispatch_semaphore_signal(screenshotSema);
+  });
+
+  // 最多等待 10 秒，超时则主动返回失败，避免线程永久卡死
+  long waitResult = dispatch_semaphore_wait(
+      screenshotSema,
+      dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)));
+
+  if (waitResult != 0) {
+    NSLog(@"[ECWDA] ⚠️ findImage 截图超时(10s)，可能系统截图 API 被阻塞");
+    return FBResponseWithStatus([FBCommandStatus
+        unknownErrorWithMessage:@"Screenshot timed out (10s)"
+                      traceback:nil]);
+  }
+
   if (!screenshotData) {
-    return FBResponseWithUnknownError(error);
+    return FBResponseWithUnknownError(screenshotError);
   }
   UIImage *screenshot = [UIImage imageWithData:screenshotData];
 
-  NSDictionary *result =
-      [[FBOCREngine sharedEngine] findImage:templateImage
-                                    inImage:screenshot
-                                  threshold:threshold.floatValue];
+  // ====== 优化 3：模板匹配超时保护（防止 OpenCV 卡死阻塞整个 HTTP 服务）
+  // ======
+  __block NSDictionary *result = nil;
+  dispatch_semaphore_t matchSema = dispatch_semaphore_create(0);
+
+  UIImage *capturedTemplate = templateImage;
+  UIImage *capturedScreenshot = screenshot;
+  float capturedThreshold = threshold.floatValue;
+
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    result = [[FBOCREngine sharedEngine] findImage:capturedTemplate
+                                           inImage:capturedScreenshot
+                                         threshold:capturedThreshold];
+    dispatch_semaphore_signal(matchSema);
+  });
+
+  // 最多等待 3 秒，超时则立即释放 HTTP 线程
+  long matchWait = dispatch_semaphore_wait(
+      matchSema,
+      dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)));
+
+  if (matchWait != 0) {
+    NSLog(
+        @"[ECWDA] ⚠️ findImage 模板匹配超时(3s)，OpenCV 可能卡死，跳过本次找图");
+    return FBResponseWithObject(@{
+      @"value" :
+          @{@"found" : @NO, @"error" : @"Template matching timed out (3s)"}
+    });
+  }
 
   if (result && [result[@"found"] boolValue]) {
     CGFloat scale = [UIScreen mainScreen].scale;
@@ -678,6 +862,94 @@ static BOOL _isEcmainOnline = YES;
   } else {
     return FBResponseWithStatus([FBCommandStatus
         unknownErrorWithMessage:@"Find image failed"
+                      traceback:nil]);
+  }
+}
+
+// ====== 纯模板匹配（不截图，由调用方提供截图 base64，防止 XCTest IPC 卡死） ======
++ (id<FBResponsePayload>)handleMatchImage:(FBRouteRequest *)request {
+  NSString *screenshotBase64 = request.arguments[@"screenshot"];
+  NSString *templateBase64 = request.arguments[@"template"];
+  NSNumber *threshold = request.arguments[@"threshold"] ?: @(0.8);
+
+  if (!screenshotBase64 || !templateBase64) {
+    return FBResponseWithStatus([FBCommandStatus
+        invalidArgumentErrorWithMessage:@"Missing 'screenshot' or 'template' parameter (base64)"
+                              traceback:nil]);
+  }
+
+  // 解码截图
+  NSData *screenshotData = [[NSData alloc]
+      initWithBase64EncodedString:screenshotBase64
+                          options:NSDataBase64DecodingIgnoreUnknownCharacters];
+  UIImage *screenshot = [UIImage imageWithData:screenshotData];
+  if (!screenshot) {
+    return FBResponseWithStatus([FBCommandStatus
+        invalidArgumentErrorWithMessage:@"Invalid screenshot image data"
+                              traceback:nil]);
+  }
+
+  // 解码模板（使用缓存）
+  NSString *cacheKey = [self md5ForString:templateBase64];
+  UIImage *templateImage = [_templateImageCache objectForKey:cacheKey];
+  if (!templateImage) {
+    NSData *templateData = [[NSData alloc]
+        initWithBase64EncodedString:templateBase64
+                            options:NSDataBase64DecodingIgnoreUnknownCharacters];
+    templateImage = [UIImage imageWithData:templateData];
+    if (templateImage) {
+      [_templateImageCache setObject:templateImage forKey:cacheKey];
+    }
+  }
+  if (!templateImage) {
+    return FBResponseWithStatus([FBCommandStatus
+        invalidArgumentErrorWithMessage:@"Invalid template image data"
+                              traceback:nil]);
+  }
+
+  // 纯 CPU 模板匹配（带 3 秒超时保护）
+  __block NSDictionary *result = nil;
+  dispatch_semaphore_t matchSema = dispatch_semaphore_create(0);
+
+  float capturedThreshold = threshold.floatValue;
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    result = [[FBOCREngine sharedEngine] findImage:templateImage
+                                           inImage:screenshot
+                                         threshold:capturedThreshold];
+    dispatch_semaphore_signal(matchSema);
+  });
+
+  long matchWait = dispatch_semaphore_wait(
+      matchSema,
+      dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)));
+
+  if (matchWait != 0) {
+    NSLog(@"[ECWDA] ⚠️ matchImage 模板匹配超时(3s)");
+    return FBResponseWithObject(@{
+      @"value" : @{@"found" : @NO, @"error" : @"Template matching timed out (3s)"}
+    });
+  }
+
+  if (result) {
+    NSMutableDictionary *finalRes = [result mutableCopy];
+    finalRes[@"screenshotWidth"] = @(screenshot.size.width * screenshot.scale);
+    finalRes[@"screenshotHeight"] = @(screenshot.size.height * screenshot.scale);
+    finalRes[@"templateWidth"] = @(templateImage.size.width * templateImage.scale);
+    finalRes[@"templateHeight"] = @(templateImage.size.height * templateImage.scale);
+
+    if ([result[@"found"] boolValue]) {
+      CGFloat scale = [UIScreen mainScreen].scale;
+      finalRes[@"x"] = @([result[@"x"] doubleValue] / scale);
+      finalRes[@"y"] = @([result[@"y"] doubleValue] / scale);
+      finalRes[@"width"] = @([result[@"width"] doubleValue] / scale);
+      finalRes[@"height"] = @([result[@"height"] doubleValue] / scale);
+    }
+    return FBResponseWithObject(@{@"value" : finalRes});
+  } else if (result) {
+    return FBResponseWithObject(@{@"value" : result});
+  } else {
+    return FBResponseWithStatus([FBCommandStatus
+        unknownErrorWithMessage:@"Match image failed"
                       traceback:nil]);
   }
 }
@@ -821,21 +1093,68 @@ static BOOL _isEcmainOnline = YES;
                               traceback:nil]);
   }
 
-  XCUIApplication *app = XCUIApplication.fb_activeApplication;
-  NSPredicate *predicate =
-      [NSPredicate predicateWithFormat:@"label CONTAINS[cd] %@", text];
-  NSArray *elements = [app fb_descendantsMatchingPredicate:predicate
-                               shouldReturnAfterFirstMatch:YES];
+  // 防卡死重构：废弃 Accessibility Tree 遍历，改用 OCR 截图路径
+  // 原方案 fb_descendantsMatchingPredicate 在 TikTok 等复杂 UI
+  // 中会遍历数千节点，耗时 10-30s 导致冻屏
+  __block NSData *screenshotData = nil;
+  __block NSError *screenshotError = nil;
+  dispatch_semaphore_t sema = dispatch_semaphore_create(0);
 
-  if (elements.count == 0) {
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    NSError *error = nil;
+    screenshotData = [FBScreenshot takeInOriginalResolutionWithQuality:2
+                                                                 error:&error];
+    screenshotError = error;
+    dispatch_semaphore_signal(sema);
+  });
+
+  long waitResult = dispatch_semaphore_wait(
+      sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)));
+
+  if (waitResult != 0) {
+    NSLog(@"[ECWDA] ⚠️ clickText 截图超时(10s)");
     return FBResponseWithObject(
-        @{@"success" : @NO, @"message" : @"Element not found"});
+        @{@"success" : @NO, @"message" : @"Screenshot timed out (10s)"});
   }
 
-  XCUIElement *element = elements.firstObject;
-  [element tap];
+  if (!screenshotData) {
+    return FBResponseWithObject(
+        @{@"success" : @NO, @"message" : @"Screenshot failed"});
+  }
+  UIImage *screenshot = [UIImage imageWithData:screenshotData];
 
-  return FBResponseWithObject(@{@"success" : @YES});
+  FBOCRTextResult *result = [[FBOCREngine sharedEngine] findText:text
+                                                         inImage:screenshot];
+  if (!result) {
+    return FBResponseWithObject(
+        @{@"success" : @NO, @"message" : @"Text not found via OCR"});
+  }
+
+  // 计算文字中心坐标并点击
+  CGFloat scale = [UIScreen mainScreen].scale;
+  CGFloat centerX =
+      (result.frame.origin.x + result.frame.size.width / 2.0) / scale;
+  CGFloat centerY =
+      (result.frame.origin.y + result.frame.size.height / 2.0) / scale;
+
+  CGPoint targetPoint = CGPointMake(centerX, centerY);
+  XCPointerEventPath *path =
+      [[XCPointerEventPath alloc] initForTouchAtPoint:targetPoint offset:0];
+  [path liftUpAtOffset:0.05];
+
+  XCSynthesizedEventRecord *record =
+      [[XCSynthesizedEventRecord alloc] initWithName:@"clickTextOCR"];
+  [record addPointerEventPath:path];
+
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
+    NSError *error;
+    if (![FBXCTestDaemonsProxy synthesizeEventWithRecord:record error:&error]) {
+      NSLog(@"[ECWDA] clickText tap failed: %@", error.description);
+    }
+  });
+
+  return FBResponseWithObject(
+      @{@"success" : @YES, @"x" : @(centerX), @"y" : @(centerY)});
 }
 
 #pragma mark - Utility Functions
@@ -888,11 +1207,12 @@ static BOOL _isEcmainOnline = YES;
   NSLog(@"[脚本动作] 命令数量: %lu", (unsigned long)commands.count);
   for (NSUInteger i = 0; i < commands.count; i++) {
     NSDictionary *cmd = commands[i];
-    NSLog(@"[脚本动作] 命令[%lu]: action=%@, params=%@",
-          (unsigned long)i, cmd[@"action"], cmd[@"params"] ?: @"{}");
+    NSLog(@"[脚本动作] 命令[%lu]: action=%@, params=%@", (unsigned long)i,
+          cmd[@"action"], cmd[@"params"] ?: @"{}");
   }
 
-  XCUIApplication *app = XCUIApplication.fb_activeApplication;
+  // [v1738-fix] 删除未使用的 fb_activeApplication 调用
+  // 所有 tap/swipe 已改用 XCPointerEventPath 直接坐标操作，不需要 App 引用
   NSMutableArray *results = [NSMutableArray array];
   NSInteger successCount = 0;
   NSInteger failCount = 0;
@@ -1229,42 +1549,60 @@ static BOOL _isEcmainOnline = YES;
                               traceback:nil]);
   }
 
-  XCUIApplication *app = XCUIApplication.fb_activeApplication;
-  NSPredicate *predicate;
+  // [v1738-fix] 超时保护：将 Accessibility 树遍历放入后台线程，最多等待 10 秒
+  __block NSMutableArray *foundResults = [NSMutableArray array];
+  dispatch_semaphore_t sema = dispatch_semaphore_create(0);
 
-  if ([partial boolValue]) {
-    predicate = [NSPredicate
-        predicateWithFormat:@"label CONTAINS[cd] %@ OR value CONTAINS[cd] %@",
-                            text, text];
-  } else {
-    predicate = [NSPredicate
-        predicateWithFormat:@"label == %@ OR value == %@", text, text];
-  }
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    @try {
+      XCUIApplication *app = XCUIApplication.fb_activeApplication;
+      NSPredicate *predicate;
+      if ([partial boolValue]) {
+        predicate = [NSPredicate
+            predicateWithFormat:@"label CONTAINS[cd] %@ OR value CONTAINS[cd] %@",
+                                text, text];
+      } else {
+        predicate = [NSPredicate
+            predicateWithFormat:@"label == %@ OR value == %@", text, text];
+      }
+      NSArray *elements = [app fb_descendantsMatchingPredicate:predicate
+                                   shouldReturnAfterFirstMatch:NO];
+      for (XCUIElement *element in elements) {
+        CGRect frame = element.frame;
+        [foundResults addObject:@{
+          @"type" : element.elementType == XCUIElementTypeButton ? @"Button"
+          : element.elementType == XCUIElementTypeStaticText     ? @"StaticText"
+          : element.elementType == XCUIElementTypeTextField      ? @"TextField"
+                                                                 : @"Other",
+          @"label" : element.label ?: @"",
+          @"value" : element.value ?: [NSNull null],
+          @"x" : @(frame.origin.x),
+          @"y" : @(frame.origin.y),
+          @"width" : @(frame.size.width),
+          @"height" : @(frame.size.height),
+          @"enabled" : @(element.isEnabled),
+          @"identifier" : element.identifier ?: @""
+        }];
+      }
+    } @catch (NSException *e) {
+      NSLog(@"[ECWDA] ⚠️ handleNodeFindByText 异常: %@", e.reason);
+    }
+    dispatch_semaphore_signal(sema);
+  });
 
-  NSArray *elements = [app fb_descendantsMatchingPredicate:predicate
-                               shouldReturnAfterFirstMatch:NO];
-  NSMutableArray *results = [NSMutableArray array];
-
-  for (XCUIElement *element in elements) {
-    CGRect frame = element.frame;
-    [results addObject:@{
-      @"type" : element.elementType == XCUIElementTypeButton ? @"Button"
-      : element.elementType == XCUIElementTypeStaticText     ? @"StaticText"
-      : element.elementType == XCUIElementTypeTextField      ? @"TextField"
-                                                             : @"Other",
-      @"label" : element.label ?: @"",
-      @"value" : element.value ?: [NSNull null],
-      @"x" : @(frame.origin.x),
-      @"y" : @(frame.origin.y),
-      @"width" : @(frame.size.width),
-      @"height" : @(frame.size.height),
-      @"enabled" : @(element.isEnabled),
-      @"identifier" : element.identifier ?: @""
-    }];
+  long waitResult = dispatch_semaphore_wait(
+      sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)));
+  if (waitResult != 0) {
+    NSLog(@"[ECWDA] ⚠️ handleNodeFindByText 超时(10s)");
+    return FBResponseWithObject(@{
+      @"count" : @0,
+      @"elements" : @[],
+      @"error" : @"Accessibility tree query timed out (10s)"
+    });
   }
 
   return FBResponseWithObject(
-      @{@"count" : @(results.count), @"elements" : results});
+      @{@"count" : @(foundResults.count), @"elements" : foundResults});
 }
 
 + (id<FBResponsePayload>)handleNodeFindByType:(FBRouteRequest *)request {
@@ -1276,99 +1614,132 @@ static BOOL _isEcmainOnline = YES;
                               traceback:nil]);
   }
 
-  XCUIApplication *app = XCUIApplication.fb_activeApplication;
-  XCUIElementType elementType = XCUIElementTypeAny;
+  // [v1738-fix] 超时保护：将 Accessibility 树遍历放入后台线程，最多等待 10 秒
+  __block NSMutableArray *foundResults = [NSMutableArray array];
+  dispatch_semaphore_t sema = dispatch_semaphore_create(0);
 
-  if ([typeStr isEqualToString:@"Button"]) {
-    elementType = XCUIElementTypeButton;
-  } else if ([typeStr isEqualToString:@"StaticText"]) {
-    elementType = XCUIElementTypeStaticText;
-  } else if ([typeStr isEqualToString:@"TextField"]) {
-    elementType = XCUIElementTypeTextField;
-  } else if ([typeStr isEqualToString:@"Image"]) {
-    elementType = XCUIElementTypeImage;
-  } else if ([typeStr isEqualToString:@"Cell"]) {
-    elementType = XCUIElementTypeCell;
-  } else if ([typeStr isEqualToString:@"Switch"]) {
-    elementType = XCUIElementTypeSwitch;
-  }
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    @try {
+      XCUIApplication *app = XCUIApplication.fb_activeApplication;
+      XCUIElementType elementType = XCUIElementTypeAny;
 
-  XCUIElementQuery *query = [app descendantsMatchingType:elementType];
-  NSMutableArray *results = [NSMutableArray array];
+      if ([typeStr isEqualToString:@"Button"]) {
+        elementType = XCUIElementTypeButton;
+      } else if ([typeStr isEqualToString:@"StaticText"]) {
+        elementType = XCUIElementTypeStaticText;
+      } else if ([typeStr isEqualToString:@"TextField"]) {
+        elementType = XCUIElementTypeTextField;
+      } else if ([typeStr isEqualToString:@"Image"]) {
+        elementType = XCUIElementTypeImage;
+      } else if ([typeStr isEqualToString:@"Cell"]) {
+        elementType = XCUIElementTypeCell;
+      } else if ([typeStr isEqualToString:@"Switch"]) {
+        elementType = XCUIElementTypeSwitch;
+      }
 
-  for (NSInteger i = 0; i < query.count && i < 100; i++) {
-    XCUIElement *element = [query elementBoundByIndex:i];
-    if (element.exists) {
-      CGRect frame = element.frame;
-      [results addObject:@{
-        @"index" : @(i),
-        @"label" : element.label ?: @"",
-        @"value" : element.value ?: [NSNull null],
-        @"x" : @(frame.origin.x),
-        @"y" : @(frame.origin.y),
-        @"width" : @(frame.size.width),
-        @"height" : @(frame.size.height),
-        @"enabled" : @(element.isEnabled)
-      }];
+      XCUIElementQuery *query = [app descendantsMatchingType:elementType];
+      for (NSInteger i = 0; i < query.count && i < 100; i++) {
+        XCUIElement *element = [query elementBoundByIndex:i];
+        if (element.exists) {
+          CGRect frame = element.frame;
+          [foundResults addObject:@{
+            @"index" : @(i),
+            @"label" : element.label ?: @"",
+            @"value" : element.value ?: [NSNull null],
+            @"x" : @(frame.origin.x),
+            @"y" : @(frame.origin.y),
+            @"width" : @(frame.size.width),
+            @"height" : @(frame.size.height),
+            @"enabled" : @(element.isEnabled)
+          }];
+        }
+      }
+    } @catch (NSException *e) {
+      NSLog(@"[ECWDA] ⚠️ handleNodeFindByType 异常: %@", e.reason);
     }
+    dispatch_semaphore_signal(sema);
+  });
+
+  long waitResult = dispatch_semaphore_wait(
+      sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)));
+  if (waitResult != 0) {
+    NSLog(@"[ECWDA] ⚠️ handleNodeFindByType 超时(10s)");
+    return FBResponseWithObject(@{
+      @"count" : @0,
+      @"elements" : @[],
+      @"error" : @"Accessibility tree query timed out (10s)"
+    });
   }
 
   return FBResponseWithObject(
-      @{@"count" : @(results.count), @"elements" : results});
+      @{@"count" : @(foundResults.count), @"elements" : foundResults});
 }
 
 + (id<FBResponsePayload>)handleNodeGetAll:(FBRouteRequest *)request {
-  XCUIApplication *app = XCUIApplication.fb_activeApplication;
-  NSMutableArray *results = [NSMutableArray array];
+  // [v1738-fix] 超时保护：将 7 种类型遍历放入后台线程，最多等待 10 秒
+  __block NSMutableArray *foundResults = [NSMutableArray array];
+  dispatch_semaphore_t sema = dispatch_semaphore_create(0);
 
-  // 获取常见可交互元素类型
-  NSArray *types = @[
-    @(XCUIElementTypeButton), @(XCUIElementTypeStaticText),
-    @(XCUIElementTypeTextField), @(XCUIElementTypeSecureTextField),
-    @(XCUIElementTypeSwitch), @(XCUIElementTypeImage), @(XCUIElementTypeLink)
-  ];
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    @try {
+      XCUIApplication *app = XCUIApplication.fb_activeApplication;
 
-  for (NSNumber *typeNum in types) {
-    XCUIElementType type = [typeNum integerValue];
-    XCUIElementQuery *query = [app descendantsMatchingType:type];
+      NSArray *types = @[
+        @(XCUIElementTypeButton), @(XCUIElementTypeStaticText),
+        @(XCUIElementTypeTextField), @(XCUIElementTypeSecureTextField),
+        @(XCUIElementTypeSwitch), @(XCUIElementTypeImage), @(XCUIElementTypeLink)
+      ];
 
-    for (NSInteger i = 0; i < query.count && i < 50; i++) {
-      XCUIElement *element = [query elementBoundByIndex:i];
-      if (element.exists && (element.isEnabled || element.label.length > 0)) {
-        CGRect frame = element.frame;
-        NSString *typeStr = @"Unknown";
-        if (type == XCUIElementTypeButton)
-          typeStr = @"Button";
-        else if (type == XCUIElementTypeStaticText)
-          typeStr = @"StaticText";
-        else if (type == XCUIElementTypeTextField)
-          typeStr = @"TextField";
-        else if (type == XCUIElementTypeSecureTextField)
-          typeStr = @"SecureTextField";
-        else if (type == XCUIElementTypeSwitch)
-          typeStr = @"Switch";
-        else if (type == XCUIElementTypeImage)
-          typeStr = @"Image";
-        else if (type == XCUIElementTypeLink)
-          typeStr = @"Link";
+      for (NSNumber *typeNum in types) {
+        XCUIElementType type = [typeNum integerValue];
+        XCUIElementQuery *query = [app descendantsMatchingType:type];
 
-        [results addObject:@{
-          @"type" : typeStr,
-          @"label" : element.label ?: @"",
-          @"value" : element.value ?: [NSNull null],
-          @"x" : @(frame.origin.x),
-          @"y" : @(frame.origin.y),
-          @"width" : @(frame.size.width),
-          @"height" : @(frame.size.height),
-          @"enabled" : @(element.isEnabled),
-          @"identifier" : element.identifier ?: @""
-        }];
+        for (NSInteger i = 0; i < query.count && i < 50; i++) {
+          XCUIElement *element = [query elementBoundByIndex:i];
+          if (element.exists && (element.isEnabled || element.label.length > 0)) {
+            CGRect frame = element.frame;
+            NSString *typeStr = @"Unknown";
+            if (type == XCUIElementTypeButton) typeStr = @"Button";
+            else if (type == XCUIElementTypeStaticText) typeStr = @"StaticText";
+            else if (type == XCUIElementTypeTextField) typeStr = @"TextField";
+            else if (type == XCUIElementTypeSecureTextField) typeStr = @"SecureTextField";
+            else if (type == XCUIElementTypeSwitch) typeStr = @"Switch";
+            else if (type == XCUIElementTypeImage) typeStr = @"Image";
+            else if (type == XCUIElementTypeLink) typeStr = @"Link";
+
+            [foundResults addObject:@{
+              @"type" : typeStr,
+              @"label" : element.label ?: @"",
+              @"value" : element.value ?: [NSNull null],
+              @"x" : @(frame.origin.x),
+              @"y" : @(frame.origin.y),
+              @"width" : @(frame.size.width),
+              @"height" : @(frame.size.height),
+              @"enabled" : @(element.isEnabled),
+              @"identifier" : element.identifier ?: @""
+            }];
+          }
+        }
       }
+    } @catch (NSException *e) {
+      NSLog(@"[ECWDA] ⚠️ handleNodeGetAll 异常: %@", e.reason);
     }
+    dispatch_semaphore_signal(sema);
+  });
+
+  long waitResult = dispatch_semaphore_wait(
+      sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)));
+  if (waitResult != 0) {
+    NSLog(@"[ECWDA] ⚠️ handleNodeGetAll 超时(10s)");
+    return FBResponseWithObject(@{
+      @"count" : @0,
+      @"elements" : @[],
+      @"error" : @"Accessibility tree query timed out (10s)"
+    });
   }
 
   return FBResponseWithObject(
-      @{@"count" : @(results.count), @"elements" : results});
+      @{@"count" : @(foundResults.count), @"elements" : foundResults});
 }
 
 + (id<FBResponsePayload>)handleNodeClick:(FBRouteRequest *)request {
@@ -1381,31 +1752,54 @@ static BOOL _isEcmainOnline = YES;
                               traceback:nil]);
   }
 
-  XCUIApplication *app = XCUIApplication.fb_activeApplication;
-  XCUIElement *element = nil;
+  // [v1738-fix] 超时保护：将元素查找放入后台线程，最多等待 10 秒
+  __block BOOL clicked = NO;
+  dispatch_semaphore_t sema = dispatch_semaphore_create(0);
 
-  if (identifier && identifier.length > 0) {
-    element = app.buttons[identifier];
-    if (!element.exists) {
-      element = app.staticTexts[identifier];
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    @try {
+      XCUIApplication *app = XCUIApplication.fb_activeApplication;
+      XCUIElement *element = nil;
+
+      if (identifier && identifier.length > 0) {
+        element = app.buttons[identifier];
+        if (!element.exists) {
+          element = app.staticTexts[identifier];
+        }
+        if (!element.exists) {
+          element = [[app descendantsMatchingType:XCUIElementTypeAny]
+                        matchingIdentifier:identifier]
+                        .firstMatch;
+        }
+      } else if (text) {
+        NSPredicate *predicate =
+            [NSPredicate predicateWithFormat:@"label CONTAINS[cd] %@", text];
+        NSArray *elements = [app fb_descendantsMatchingPredicate:predicate
+                                     shouldReturnAfterFirstMatch:YES];
+        if (elements.count > 0) {
+          element = elements.firstObject;
+        }
+      }
+
+      if (element && element.exists) {
+        [element tap];
+        clicked = YES;
+      }
+    } @catch (NSException *e) {
+      NSLog(@"[ECWDA] ⚠️ handleNodeClick 异常: %@", e.reason);
     }
-    if (!element.exists) {
-      element = [[app descendantsMatchingType:XCUIElementTypeAny]
-                    matchingIdentifier:identifier]
-                    .firstMatch;
-    }
-  } else if (text) {
-    NSPredicate *predicate =
-        [NSPredicate predicateWithFormat:@"label CONTAINS[cd] %@", text];
-    NSArray *elements = [app fb_descendantsMatchingPredicate:predicate
-                                 shouldReturnAfterFirstMatch:YES];
-    if (elements.count > 0) {
-      element = elements.firstObject;
-    }
+    dispatch_semaphore_signal(sema);
+  });
+
+  long waitResult = dispatch_semaphore_wait(
+      sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)));
+  if (waitResult != 0) {
+    NSLog(@"[ECWDA] ⚠️ handleNodeClick 超时(10s)");
+    return FBResponseWithObject(
+        @{@"success" : @NO, @"message" : @"Element query timed out (10s)"});
   }
 
-  if (element && element.exists) {
-    [element tap];
+  if (clicked) {
     return FBResponseWithObject(@{@"success" : @YES});
   } else {
     return FBResponseWithObject(
@@ -1500,23 +1894,47 @@ static BOOL _isEcmainOnline = YES;
 #pragma mark - App Info
 
 + (id<FBResponsePayload>)handleAppInfo:(FBRouteRequest *)request {
-  XCUIApplication *app = XCUIApplication.fb_activeApplication;
+  // [v1738-fix] 超时保护：fb_activeApplication 可能在复杂 App 场景下耗时
+  __block NSDictionary *appInfo = nil;
+  dispatch_semaphore_t sema = dispatch_semaphore_create(0);
 
-  return FBResponseWithObject(@{
-    @"bundleId" : [app valueForKey:@"bundleID"] ?: @"",
-    @"state" : @(app.state),
-    @"stateDescription" : app.state == XCUIApplicationStateRunningForeground
-        ? @"foreground"
-    : app.state == XCUIApplicationStateRunningBackground ? @"background"
-    : app.state == XCUIApplicationStateNotRunning        ? @"notRunning"
-                                                         : @"unknown",
-    @"frame" : @{
-      @"x" : @(app.frame.origin.x),
-      @"y" : @(app.frame.origin.y),
-      @"width" : @(app.frame.size.width),
-      @"height" : @(app.frame.size.height)
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    @try {
+      XCUIApplication *app = XCUIApplication.fb_activeApplication;
+      appInfo = @{
+        @"bundleId" : [app valueForKey:@"bundleID"] ?: @"",
+        @"state" : @(app.state),
+        @"stateDescription" : app.state == XCUIApplicationStateRunningForeground
+            ? @"foreground"
+        : app.state == XCUIApplicationStateRunningBackground ? @"background"
+        : app.state == XCUIApplicationStateNotRunning        ? @"notRunning"
+                                                             : @"unknown",
+        @"frame" : @{
+          @"x" : @(app.frame.origin.x),
+          @"y" : @(app.frame.origin.y),
+          @"width" : @(app.frame.size.width),
+          @"height" : @(app.frame.size.height)
+        }
+      };
+    } @catch (NSException *e) {
+      NSLog(@"[ECWDA] ⚠️ handleAppInfo 异常: %@", e.reason);
     }
+    dispatch_semaphore_signal(sema);
   });
+
+  long waitResult = dispatch_semaphore_wait(
+      sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)));
+  if (waitResult != 0) {
+    NSLog(@"[ECWDA] ⚠️ handleAppInfo 超时(10s)");
+    return FBResponseWithObject(@{
+      @"bundleId" : @"",
+      @"state" : @(-1),
+      @"stateDescription" : @"timeout",
+      @"error" : @"fb_activeApplication timed out (10s)"
+    });
+  }
+
+  return FBResponseWithObject(appInfo ?: @{@"error" : @"Failed to get app info"});
 }
 
 #pragma mark - Touch Monitoring

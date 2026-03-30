@@ -21,10 +21,46 @@ IS_MAC = platform.system() == "Darwin"
 IS_LINUX = platform.system() == "Linux"
 
 
+def _kill_port_native(port: int):
+    """
+    使用操作系统原生命令清理端口占用（无需 root 权限的 lsof/netstat 兜底）。
+    """
+    import subprocess
+    if not IS_WINDOWS:
+        # macOS / Linux: lsof -ti :PORT 可以在非 root 下找到当前用户的进程
+        try:
+            output = subprocess.check_output(
+                ["lsof", "-ti", f":{port}"],
+                stderr=subprocess.DEVNULL
+            ).decode().strip()
+            if output:
+                for pid_str in output.split("\n"):
+                    pid_str = pid_str.strip()
+                    if pid_str.isdigit() and int(pid_str) != os.getpid():
+                        subprocess.call(["kill", "-9", pid_str], stderr=subprocess.DEVNULL)
+                        logger.info(f"[lsof 兜底] 已杀掉占用端口 {port} 的进程 PID={pid_str}")
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+    else:
+        # Windows: netstat + taskkill
+        try:
+            output = subprocess.getoutput(f"netstat -ano | findstr :{port}")
+            for line in output.splitlines():
+                if "LISTENING" in line:
+                    parts = line.split()
+                    if len(parts) > 4:
+                        pid_str = parts[-1]
+                        if pid_str.isdigit() and int(pid_str) != os.getpid():
+                            subprocess.call(["taskkill", "/F", "/PID", pid_str], stderr=subprocess.DEVNULL)
+                            logger.info(f"[netstat 兜底] 已杀掉占用端口 {port} 的进程 PID={pid_str}")
+        except Exception:
+            pass
+
+
 def kill_port(port: int):
     """
     杀掉占用指定端口的所有进程（跨平台）。
-    使用 psutil 遍历网络连接，无需 lsof / netstat。
+    优先使用 psutil，权限不足时降级为系统原生命令。
     """
     killed = set()
     try:
@@ -39,8 +75,9 @@ def kill_port(port: int):
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
                         pass
     except psutil.AccessDenied:
-        # 在某些系统上，列举所有连接需要 root 权限；降级为静默忽略
-        logger.warning(f"无权限枚举端口 {port}，跳过清理")
+        # psutil 无权限，降级为系统原生命令兜底
+        logger.info(f"psutil 无权限枚举端口 {port}，启用原生命令兜底...")
+        _kill_port_native(port)
 
 
 def kill_process_by_keyword(keyword: str):

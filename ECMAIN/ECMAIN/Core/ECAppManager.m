@@ -2,6 +2,8 @@
 #import "ECLogManager.h"
 #import <spawn.h>
 #import <sys/stat.h>
+#import "TSApplicationsManager.h"
+#import "TSAppInfo.h"
 
 @implementation ECAppManager
 
@@ -211,6 +213,43 @@
     return WEXITSTATUS(status);
   }
   return result;
+}
+
++ (NSString *)getAppVersionByBundleID:(NSString *)bundleID {
+  if (!bundleID || bundleID.length == 0) return @"";
+  
+  @try {
+    // 使用 iOS 私有 API LSApplicationProxy 查询任意已安装应用（含 App Store 应用）
+    // TSApplicationsManager.installedAppPaths 仅返回 TrollStore 安装的应用，无法覆盖 App Store 应用
+    Class LSAppProxy = NSClassFromString(@"LSApplicationProxy");
+    if (!LSAppProxy) {
+      NSLog(@"[ECAppManager] ⚠️ LSApplicationProxy 类不可用");
+      return @"";
+    }
+    
+    // +[LSApplicationProxy applicationProxyForIdentifier:]
+    id proxy = [LSAppProxy performSelector:@selector(applicationProxyForIdentifier:) withObject:bundleID];
+    if (!proxy) {
+      NSLog(@"[ECAppManager] ⚠️ 未找到 bundleID=%@ 的应用", bundleID);
+      return @"";
+    }
+    
+    // 验证 bundleIdentifier 确认应用存在
+    NSString *proxyBundleID = [proxy performSelector:@selector(bundleIdentifier)];
+    if (!proxyBundleID || proxyBundleID.length == 0) {
+      NSLog(@"[ECAppManager] ℹ️ %@ 未安装（bundleIdentifier 为空）", bundleID);
+      return @"";
+    }
+    
+    // 获取短版本号 (CFBundleShortVersionString)
+    NSString *version = [proxy performSelector:@selector(shortVersionString)];
+    NSLog(@"[ECAppManager] ✅ %@ 版本号: %@", bundleID, version ?: @"(nil)");
+    return version ?: @"";
+    
+  } @catch (NSException *e) {
+    NSLog(@"[ECAppManager] ❌ getAppVersionByBundleID 异常: %@", e);
+    return @"";
+  }
 }
 
 @end

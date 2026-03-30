@@ -1,0 +1,1948 @@
+<html xmlns="http://www.w3.org/1999/xhtml"><head>
+<meta http-equiv="pragma" content="no-cache">
+<meta http-equiv="Cache-Control" content="no-cache, must-revalidate">
+<meta http-equiv="Content-Type" content="text/html; charset=gb2312">
+<title>ZXEN G100P-17N6</title>
+<script type="text/javascript" src="js/jquery.min.js"></script>
+
+<style>
+.LocationDisplay {
+	font-family: "宋体";
+	font-size: 35px;
+	font-weight: bold;
+	color: #FFFFFF;
+	background-color: #EF8218;
+    float: left;
+    height: 43px;
+    left: 0;
+    text-align: center;
+    width: 163px;
+}
+
+#GatewayName, #GatewayType {
+	font-family: "宋体";
+	font-size: 12px;
+	font-weight: bold;
+	color: #FFFFFF;
+}
+
+#container {
+    margin: 0 auto;
+    width: 100%;
+    text-align: left;
+    position: relative;
+    min-height: 100%; /* For Modern Browsers */
+    height: auto !important; /* For Modern Browsers */
+    height: 100%; /* For IE */ 
+}
+
+.main_content
+{
+    float: left;
+    width: 150px;
+    margin: 0;
+    margin-right: 0px;
+    padding: 0px;
+}
+
+#content {
+    width:100%;
+    padding-bottom:0px;
+    min-height: 270px; /* For Modern Browsers */
+    height: auto !important; /* For Modern Browsers */
+    height: 50%; /* For IE */
+}
+
+#content:after {
+    clear: both;
+    display: block;
+    font: 1px/0px serif;
+    content: ".";
+    height: 0;
+    visibility: hidden;
+}
+
+.Menu_L1_Link {
+	font-family: "宋体";
+	font-size: 14px;
+	font-weight: bold;
+	color: #000000;
+	text-decoration: none;
+	text-align: center;
+}
+
+.Menu_L1_Active {
+	font-family: "宋体";
+    line-height: 23px;
+	font-size: 12px;
+	color: #FFFFFF;
+	text-decoration: none;
+	text-align: center;
+}
+
+#MenuArea_L2 ul{margin: 0;padding: 0;border: 0;}
+#MenuArea_L2 li{margin: 0;padding: 0;border: 0;}
+
+.Menu_L2_Active{color:#fff;background:url(img/left_light.gif) no-repeat left;line-height:25px;height:25px;}
+.Menu_L2_Link{color:#fff;background:url(img/left_deep.gif) no-repeat left;line-height:25px;height:25px;}
+
+.Menu_L3_Active{color:#fff;background:url(img/left_light.gif) no-repeat right;line-height:25px;height:25px;}
+.Menu_L3_Link{color:#fff;background:url(img/left_deep.gif) no-repeat right;line-height:25px;height:25px;}
+
+
+.content {
+font-size: 12px;
+font-family: Verdana, Geneva, Arial, Helvetica, sans-serif;
+}
+
+.note{
+	font-size: 12px;
+	font-family: Verdana, Geneva, Arial, Helvetica, sans-serif;
+	color:#FFFF00;
+}
+
+.notecontent{
+	font-size: 12px;
+	font-family: Verdana, Geneva, Arial, Helvetica, sans-serif;
+	color:#000000;
+}
+
+.dragAble {position:relative;cursor:move;}
+
+.help  {
+    left: 700px;
+    position: absolute;
+    top: 130px;
+}
+
+.help_button  {
+    height: 23px;
+    text-align: center;
+    vertical-align: middle;
+    width: 47px;
+}
+
+.Item_L2 {
+	font-family: "宋体";
+	font-size: 12px;
+	font-weight: bold;
+	color: #000000;
+	text-decoration: none;
+	text-align: right;
+}
+
+.Item_L1 {
+	font-family: "宋体";
+	font-size: 12px;
+	font-weight: bold;
+	color: #FFFFFF;
+	text-decoration: none;
+	text-align: right;
+}
+
+.class3_div {
+    float: left;
+    height: 100%;
+    width: 155px;
+    z-index: 999;
+}
+
+.class3_table {
+	text-align:right;
+}
+
+table.item_3 {
+     width:450px;
+}
+
+#e8_div1 {
+    width:99%;
+    height: auto !important; /* For Modern Browsers */
+    /*float:right;*/
+    z-index:999;
+	margin-left:10px;
+}
+
+#div4 {
+     height:30px;
+     width:450px;    
+}
+
+.bottom_div { 
+	float:left; 
+	height:35px;
+	display:block;
+}
+
+.bottom_table { width: 100%; height: 35px;}
+.bottom_td1 { width:164px; }
+.bottom_td2 { width:278px; }
+.bottom_td3 { width:196px;  text-align:center;}
+.bottom_td3 img { cursor:pointer; }
+.bottom_td4 { width:170px;}
+.copyright {
+	font-size:12px;
+	font-family:Arial;
+	float:left;
+	display:block;
+	height:16px;
+	width:776px; 
+	padding-top:10px; 
+	border-left:1px solid #B1B1B1; 
+	border-right:1px solid #B1B1B1; 
+	text-align:center;
+}
+.bottom_line {float:left;display:block;background-color:#5aa929;height:8px; width:778px;}
+
+.submit {padding-top:2px;}
+.bottomx {
+    width: 100%;
+    bottom: 0 !important;
+    bottom: -1px; /* For Certain IE widths */
+    height: 1px;
+}
+
+
+/*帮助页面*/
+.CNLTreeMenu img.s {cursor:pointer;vertical-align:middle;}
+.CNLTreeMenuLink {color:#407090; cursor:pointer}
+.CNLTreeMenu ul {padding:0;}
+.CNLTreeMenu li {list-style:none;padding:0;}
+.CNLTreeMenuAddMinus {font-size:8.0pt; font-weight:900; font-family:Arial; color:#407090; cursor:pointer;}
+.CNLTreeMenuDot {font-size:7.0pt; color:#407090;}
+.CNLTreeMenuLink {color:#407090; cursor:pointer}
+.CNLTreeMenuLinkBlack {color:black; cursor:pointer}
+.Closed ul {display:none;}
+.Child img.s {background:none;cursor:default;}
+#CNLTreeMenu1 ul {margin:0 0 0 17px;}
+#CNLTreeMenu1 img.s {width:20px;height:15px;}
+#CNLTreeMenu1 .Opened img.s {background:url(../img/opened.gif) no-repeat 0 0;}
+#CNLTreeMenu1 .Closed img.s {background:url(../img/closed.gif) no-repeat 0 0;}
+#CNLTreeMenu1 .Child img.s {background:url(../img/child.gif) no-repeat 3px 5px;}
+#CNLTreeMenu1{float:left;width:249px;border:1px solid #FFFFFF;background:#FFFFFF;color:inherit;margin:3px;padding:3px;}
+#CNLTreeMenu1 {padding-bottom:15px;}
+
+
+/*配置页面的通用表格*/
+#e8_div1 .table_title {
+	 background-color: #E7E7E7;
+	 font-weight: bold;
+	 line-height: 22px;
+}
+
+#e8_div1 table{
+	 font-family: Tahoma, Arial, Helvertica, sans-serif,arial;
+	 font-size: 12px;
+	 color: #000;
+}
+
+#e8_div1 table td.td1 {
+    width:30%;
+    height:24px;
+    text-align:left;	
+}
+
+#e8_div1 table td.td11 {
+    width:40%;
+    height:24px;
+    text-align:left;	
+}
+
+#e8_div1 table td.td12 {
+    width:22%;
+    height:24px;
+    text-align:left;	
+}
+
+#e8_div1 table td.td2 {
+    text-align:left;
+    padding-left:5px;
+}
+
+#Table_wan,#Table_lan td {
+	height:24px;
+	text-align:left;
+}
+
+.list_1,.list_2,.list_3{
+	height:20px;
+	border:1px solid #7F9DB7;
+	font-size: 12px;
+	font-family: Verdana, Geneva, Arial, Helvetica, sans-serif;
+	vertical-align:middle;
+	text-align:left;
+}
+.list_1 {
+    width:220px;	
+}
+
+.list_2 {
+    width:80px;	
+}
+
+.list_3 {
+    width:150px;	
+}
+
+.inputId,.inputId2,.inputId3,.inputId4,.inputId5 {
+height:17px;
+border:1px solid #7F9DB7;
+font-size: 12px;
+font-family: Verdana, Geneva, Arial, Helvetica, sans-serif;
+vertical-align:middle;
+text-align:left;
+}
+
+.inputId {
+    width:120px;
+}
+
+.inputId2 {
+    width:240px;
+}
+
+.inputId3 {
+    width:320px;
+}
+
+.inputId4 {
+    width:60px;
+}
+
+.inputId5 {
+    width: 18px;
+}
+
+.button2,.button3{
+    height:20px;
+    vertical-align:middle;
+    text-align:center;
+    font-size: 12px;
+    font-family: Verdana, Geneva, Arial, Helvetica, sans-serif;
+}
+
+.button2 {
+    width:61px;
+}
+
+.button3 {
+    width:105px;
+}
+
+
+.uiNoBorder {
+BORDER-RIGHT: 0px;
+BORDER-TOP: 0px;
+BORDER-LEFT: 0px;
+BORDER-BOTTOM: 0px;
+background:transparent;
+TEXT-ALIGN: left;
+font-size: 12px;
+font-family: Verdana, Geneva, Arial, Helvetica, sans-serif;
+}
+
+.msgtb {
+	width:355px; 
+	height:127px; 
+	border:2px solid #FDFCF3; 
+	font:14px Verdana, Geneva, Arial, Helvetica, sans-serif;
+}
+
+.msgtr1{
+	background-color:#DDDDDD;
+	padding-left:10px;
+	padding-top:2px;
+	font-weight:bold;
+}
+
+.msgtr2{
+	background-color:#F1F1F1;
+	padding-left:10px;
+	padding-right:2px;
+	padding-bottom:10px;
+	vertical-align:middle;
+}
+
+.msgtr3{
+	background-color:#F1F1F1;
+}
+
+.msgtr4{
+	background-color:#F1F1F1;
+}
+
+.msgbutton{
+	background-color:#F1F1F1;
+	width:60px;
+}
+.textarea_1 {
+height:200px;
+width:440px;
+border:1px solid #7F9DB7;
+font-size: 12px;
+font-family: Verdana, Geneva, Arial, Helvetica, sans-serif;
+text-align:left;
+resize: none; /* to fix border for google safari */
+}
+
+.textarea_2 {
+font-size: 12px;
+font-family: Verdana, Geneva, Arial, Helvetica, sans-serif;
+text-align:left;
+background:transparent;
+border-style:none;
+overflow-x:hidden;
+overflow-y:scroll;
+}
+
+.textarea_3 {
+font-size: 12px;
+font-family: "宋体",Verdana,Geneva,Arial,Helvetica,sans-serif;
+text-align:left;
+}
+
+
+.white {
+    background-color:#FFFFFF; 
+    height:25px;
+}
+.blue {
+    background-color:#f7f7f7; 
+    text-align:center;   
+    height:25px;
+}
+
+
+.QoSmoduSeleButton_blue{ 
+    width:100%; 
+    height:26px!important;    
+    height:24px; 
+    border:1px solid #B1B1B1; 
+    background-color:#F7F7F7;
+    font-size:11px;
+}
+
+.QoSmoduSeleButton_white{ 
+    width:100%; 
+    height:28px!important;    
+    height:24px;     
+    border:1px solid #B1B1B1; 
+    background-color:#FFFFFF;
+    font-size:11px;
+}
+
+.QoSmoduSeleTD_left{ 
+    height:24px; 
+    text-align:center;
+}
+
+.QoSmoduSeleTD_middle{ 
+    height:24px; 
+    text-align:center;
+}
+
+.QoSmoduSeleTD_right{ 
+    height:24px; 
+    text-align:center;
+}
+
+.QoSmoduSeleButton_left{ 
+    width:100%; 
+    height:24px; 
+    border:0px solid #B1B1B1; 
+    background-color:#F7F7F7;
+    font-size:11px;
+}
+
+.space_0 {
+    padding-left:40px!important; /* IE7+FF */
+    padding-left:20px;
+}
+
+@font-face {
+    font-family: 'HYCuSong-CAICT';
+    src: url('../fonts/HYCuSong-CAICT.ttf');
+}
+.HYCuSong {
+    font-family: HYCuSong-CAICT;
+}
+body {
+    font-family:"宋体", Verdana, Geneva, Arial, Helvetica, sans-serif;
+    font-size: 12px;
+}
+
+.content {
+font-family:"宋体", Verdana, Geneva, Arial, Helvetica, sans-serif;
+font-size: 12px;
+}
+
+.note{
+font-family: "宋体", Verdana, Geneva, Arial, Helvetica, sans-serif;
+font-size: 12px;
+}
+
+.notecontent{
+font-family: "宋体", Verdana, Geneva, Arial, Helvetica, sans-serif;
+font-size: 12px;
+}
+
+#header_logo {
+    position: absolute; 
+    left: 0px;
+    top: 0px;                                                                    
+    width: 100%;
+    height: 117px;                                                                     
+    background: url("img/framelogo.jpg") no-repeat scroll 0% 0% transparent;
+}
+
+#header_logogd {
+    position: absolute; 
+    left: 0px;
+    top: 0px;                                                                    
+    width: 100%;
+    height: 117px;                                                                     
+    background: url("img/framelogogd.jpg") no-repeat scroll 0% 0% transparent;
+}
+#header_logoscgd {
+    position: absolute; 
+    left: 0px;
+    top: 0px;                                                                    
+    width: 100%;
+    height: 117px;                                                                     
+    background: url("img/framelogoscgd.gif") no-repeat scroll 0% 0% transparent;
+}
+
+#header_logoxjgd {
+    position: absolute; 
+    left: 0px;
+    top: 0px;                                                                    
+    width: 100%;
+    height: 117px;                                                                     
+    background: url("img/framelogoxjgd.jpg") no-repeat scroll 0% 0% transparent;
+}
+
+#header_logojilinyiqi {
+    position: absolute; 
+    left: 0px;
+    top: 0px;                                                                    
+    width: 100%;
+    height: 117px;                                                                     
+    background: url("img/framelogojilinyiqi.jpg") no-repeat scroll 0% 0% transparent;
+}
+
+#header_logohljgd {
+    position: absolute; 
+    left: 0px;
+    top: 0px;                                                                    
+    width: 100%;
+    height: 117px;                                                                     
+    background: url("img/framelogogd_hlj.jpg") no-repeat scroll 0% 0% transparent;
+}
+
+#header_logochangqing {
+    position: absolute; 
+    left: 0px;
+    top: 0px;                                                                    
+    width: 100%;
+    height: 117px;                                                                     
+    background: url("img/framelogogd_changqing.jpg") no-repeat scroll 0% 0% transparent;
+}
+
+#header_logozq {
+    position: absolute; 
+    left: 0px;
+    top: 0px;                                                                    
+    width: 100%;
+    height: 60px;                                                                     
+    background: url("img/logo.jpg") no-repeat scroll 0% 0% transparent;
+}
+
+#welcom {
+    position: relative;
+    right: 20px;
+    font-family: "宋体";
+    font-size: 12px;
+    font-weight: bold;
+    color: #00399E;
+}
+
+#buttonLogout {
+    font-family: "宋体";
+    line-height: 26px;
+    font-size: 12px;
+    color: #FFFFFF;
+    text-align: center;
+    text-decoration: none;
+    cursor:pointer;
+}
+
+.uiNoBorder {
+font-family: "宋体", Verdana, Geneva, Arial, Helvetica, sans-serif;
+}
+h1{
+	margin:10px 6px 10px 10px;
+	height:25px;
+	line-height:25px;
+	font-size:18px;
+}
+
+h2,h3{position:relative;z-index:2;margin:0;font-size:0.96em;border-bottom:3px solid #1871b0;}
+h2{margin-bottom:8px;font-family:Tahoma, Arial, Helvertica, sans-serif,arial;}
+
+#content .settings {margin-top:4px;margin-bottom:4px; border:1px solid #1063a3;padding:4px;}
+#content .settings h3{
+position:relative;
+z-index:2;
+margin:0 0 .906em 0;
+background:#1871b0;
+padding:.181em .725em;
+font-size:1em;
+border-style:solid;
+border-color:#FFF;
+border-width:0;
+color:#fff;
+}
+
+#content .settings .clearfix {
+	display:none;
+}
+
+#content .settings-content {
+	position: relative;
+	margin-left: 2%;
+}
+
+#content select, #content input { margin-top: 0.1em; }
+/* settings help */
+#content .settings-help {position: relative;margin-left: 50%;display:none;}
+#content .settings-help h3 { display: none; }
+#content .settings-help h4 {font-weight: bold;font-size: 1em;margin-bottom: 0.2em;}
+#content .settings-help p {margin-bottom: 0.6em;font-size: 1em;padding-right: 1em;}
+.more-help {margin-right: 10%;text-align: right;}
+
+.warning,
+.update-available,
+.warning-light {
+	color: #9A2C2C;
+	display: inline;
+}
+
+table tr th {color:#666;}
+table tr td {padding:0;}
+
+hr {height:.09em;border:none;text-align:center;color:#ccc;background:#ccc;width:100%;}
+input{color:#000;font-size:12px;font-family:Tahoma, Arial, Helvertica, sans-serif,arial;line-height:120%}
+select{color:#000;font-size:12px;font-family:Tahoma, Arial, Helvertica, sans-serif,arial;line-height:120%}
+
+div.settings ol{
+	margin-left:24px;
+}
+
+#ProgressBar {
+	width:100%;
+	height:15px !important;
+	border:1px solid #1871b0;
+	text-align:center;
+	position:relative;
+	font-size:12px;
+	_height:7px;
+	float:left;
+}
+#ProgressBar, #ProgressBar * {
+	padding:0;
+	margin:0;
+}
+
+#ProgressBarnum {
+	height:16px;
+	line-height:16px;
+	font-size:12px;
+}
+#ProgressBarstep {
+	background:#1871b0;
+	width:1%;
+	overflow:hidden;
+	position:absolute;
+	left:0;
+	top:0;
+	height:15px;
+	z-index:1000;
+}
+</style>
+<script language="javascript">
+var g_errorInfo = "错误信息";
+var timeid;
+function getObj(id){return(document.getElementById(id));}function jslSetValue(dst, src, action){var src_o = getObj(src);var dst_o = getObj(dst);dst_o.value= String(src_o.value);switch (action){case "GET":if (dst_o.setAttribute){dst_o.setAttribute("_initValue", dst_o.value)}break;case "SET":if (src_o.getAttribute){var initValue = src_o.getAttribute("_initValue");if (initValue == src_o.value){dst_o.value = "NULL";}}break;default:break;}}function jslSetPostEncode(dst, src, action){var src_o = getObj(src);var dst_o = getObj(dst);var value = encodeStr(src_o.value);dst_o.value= String(value);switch (action){case "SET":if (src_o.getAttribute){var initValue = src_o.getAttribute("_initValue");if (initValue == src_o.value){dst_o.value = "NULL";}}break;default:break;}}function jslSetViewDecode(dst, src, action){var src_o = getObj(src);var dst_o = getObj(dst);var value = decodeStr(src_o.value);dst_o.value= String(value);switch (action){case "GET":if (dst_o.setAttribute){dst_o.setAttribute("_initValue", dst_o.value)}break;default:break;}}function setValue(id,value){getObj(id).value = value;}function getValue(id){return(getObj(id).value);}function setHTML(id, html){getObj(id).innerHTML = html;}function getHTML(id){return (getObj(id).innerHTML);}function getDisabled(id){return(getObj(id).disabled);}function getDisplay(id){if(getObj(id).style.display == "none")return false;else return true;}function getChecked(id){return(getObj(id).checked);}function setChecked(id,value){getObj(id).checked = value;}function jslDiDisplay(id){var i;var num=arguments.length;if(num==0) return;for(i=0;i < num; i++){if ( getObj(arguments[i]) != null ){getObj(arguments[i]).style.display = "none";}}}function jslEnDisplay(id){var i;var num=arguments.length;if(num==0) return;for(i=0;i < num; i++){if ( getObj(arguments[i]) != null ){getObj(arguments[i]).style.display = "";}}}function jslDisable(id){var i;var num=arguments.length;if(num==0) return;for(i=0;i < num; i++){getObj(arguments[i]).disabled=true;}}function jslEnable(id){var i = 0;var num=arguments.length;if(num==0)return;for(i=0;i < num; i++){getObj(arguments[i]).disabled=false;}}function jslClearValue(id){var i = 0;var num=arguments.length;if(num==0)return;for(i=0;i < num; i++){if ( getObj(arguments[i]) != null ){getObj(arguments[i]).setAttribute("_selfValue", getObj(arguments[i]).value);setValue(arguments[i],"");}}}function jslRetrieveValueIfNull(id){var i = 0;var num=arguments.length;if(num==0)return;for(i=0;i < num; i++){if ( getObj(arguments[i]) != null && getValue(arguments[i]) == ""){setValue(arguments[i],getObj(arguments[i]).getAttribute("_selfValue"));}}}function jslViewToPostCheckBox(PostId, ViewId){if (getObj(ViewId).checked)getObj(PostId).value = "1";else getObj(PostId).value = "0";}function jslPostToViewCheckBox(ViewId, PostId){if (getObj(PostId).value == "1")getObj(ViewId).checked = true;else getObj(ViewId).checked = false;}function jslGetRadioValue(radioObject){if (radioObject){if (radioObject.length){for (var i = 0; i < radioObject.length; i++){if (radioObject[i].checked){return radioObject[i].value;}}}else if (radioObject.checked){return radioObject.value;}}return -1;}function jslSetRadioValue(radioObject, value){if(radioObject){if(radioObject.length){for(var i=0;i<radioObject.length; i++){if(radioObject[i].value == value){radioObject[i].checked = true;return true;}}}else if (radioObject.value == value){radioObject.checked = true;}}return false;}function jslDoShowComboBox(viewid,postid){var i;var selector = getObj(viewid);var value=getObj(postid).value;if(selector==null) return;for(i=0; i < selector.length; i++){if(selector.options[i].value == value){selector.selectedIndex = i;return;}}selector.selectedIndex = -1;}function addSelectOption(id, val, txt){var f = 0;var o = getObj(id);for (var i=0; i<o.options.length; i++){var v = o.options[i].value;if (val == v){f = 1;break;}}if (f == 0){var op = document.createElement('option');op.text = txt;op.value = val;try{o.add(op,null); }catch(ex){o.add(op); }}}function deleteSelectOption(id, val){var o = getObj(id);for (var i=0; i<o.options.length; i++){var v = o.options[i].value;if (val == v){o.remove(i);break;}}}function deleteSelectOptions(selectID, keyWord){var obj = getObj(selectID);for ( var i=0; i<obj.options.length; ){if ( obj.options[i].value.match(keyWord) != null ){obj.remove(i);}else {i++;}}}function clearSelect(id){var o = getObj(id);while(o.options.length > 0){o.remove(0);}}function isValInSelect(val, sid){var sObj = getObj(sid);for ( var i=0; i<sObj.length; i++ ){if ( val == sObj.options[i].value ){return 1;}}return 0;}function getOptionIndexByValue(sid, val){var sObj = getObj(sid);for ( var i=0; i<sObj.length; i++ ){if ( val == sObj.options[i].value ){return i;}}return -1;}function colorizeInfoTbl(id){var objTrSet = getObj(id).getElementsByTagName("tr");var j = 0;var clasName;for (var i=0; i<objTrSet.length; i++){if ( objTrSet[i].style.display != "none"){j++;if ( j%2 == 1 ){clasName = "white_1";}else {clasName = "blue_1";}objTrSet[i].setAttribute("class", clasName);objTrSet[i].setAttribute("className", clasName);}}}function RmZero(str){while(str.indexOf("0") == 0 && str.length > 1){str = str.substr(1);}return str;}function IpRmZero(IpAddrValue){var IpAddr = IpAddrValue;var addrParts = IpAddr.split('.');IpAddr = "";for (var i = 0; i < 4; i++){addrParts[i]=RmZero(addrParts[i]);IpAddr = addrParts.join(".");}return IpAddr;}function ReSetIpRmZero(ID){var num = arguments.length;var re = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;var obj;if(num == 0) return;for(i = 0;i < num; i++){obj = getObj(arguments[i]);if((obj != null && obj.value != ""&& obj.value != null )&&(re.test(obj.value) == true)){obj.value = IpRmZero(obj.value);}}}function ReSetValueRmZero(ID){var num = arguments.length;var obj;if(num == 0) return;for(i = 0;i < num; i++){obj = getObj(arguments[i]);if(obj != null && obj.value != null && obj.value != ""){if(obj.value.length > 10){return false;}obj.value = RmZero(obj.value);}}}function Transfer_meaning(id,value){getObj(id).value=value;}function HiddenParaInit(arr){var val;for(var i=0; i<arr.length; i++){val = arr[i];arr[i] = "NULL";setValue(val, "NULL");}}function HiddenMultiInstParaInit(arr, index){var val;for(var i=0; i<arr.length; i++){val = arr[i];setValue(val+index, "NULL");}}function setNULLToSepPort(Port, Val){var portvalue=Port;if(portvalue==""){portvalue = Val;}return portvalue;}function getSepPortToNULL(Port, Val){var portvalue=Port;if(portvalue==Val){portvalue="";}return portvalue;}function setNULLToPort(Port){var portvalue=Port;if(portvalue==""){portvalue = "-1";}return portvalue;}function getPortToNULL(Port){var portvalue=Port;if(portvalue=="-1"){portvalue="";}return portvalue;}function setNULLToMAC(MAC){var macaddr=MAC;if(macaddr==""){macaddr="00:00:00:00:00:00";}return macaddr;}function getMACToNULL(MAC){var macaddr=MAC;if(macaddr=="00:00:00:00:00:00"){macaddr="";}return macaddr;}function setNULLToIP(IP){var ipvalue=IP;if(ipvalue==""){ipvalue="0.0.0.0";}return ipvalue;}function getIPToNULL(IP){var ipvalue=IP;if(ipvalue=="0.0.0.0"){ipvalue="";}return ipvalue;}function encode64(input){var keyStr = "ABCDEFGHIJKLMNOP"+ "QRSTUVWXYZabcdef"+ "ghijklmnopqrstuv"+ "wxyz0123456789+/"+ "=";input = escape(input);var output = "";var chr1, chr2, chr3 = "";var enc1, enc2, enc3, enc4 = "";var i = 0;do {chr1 = input.charCodeAt(i++);chr2 = input.charCodeAt(i++);chr3 = input.charCodeAt(i++);enc1 = chr1 >> 2;enc2 = ((chr1 & 3) << 4) | (chr2 >> 4);enc3 = ((chr2 & 15) << 2) | (chr3 >> 6);enc4 = chr3 & 63;if (isNaN(chr2)){enc3 = enc4 = 64;}else if (isNaN(chr3)){enc4 = 64;}output = output +keyStr.charAt(enc1) +keyStr.charAt(enc2) +keyStr.charAt(enc3) +keyStr.charAt(enc4);chr1 = chr2 = chr3 = "";enc1 = enc2 = enc3 = enc4 = "";} while (i < input.length);return output;}function decode64(input){var output = "";var chr1, chr2, chr3 = "";var enc1, enc2, enc3, enc4 = "";var i = 0;var base64test = /[^A-Za-z0-9\+\/\=]/g;var keyStr = "ABCDEFGHIJKLMNOP"+ "QRSTUVWXYZabcdef"+ "ghijklmnopqrstuv"+ "wxyz0123456789+/"+ "=";if (base64test.exec(input)) {alert("There were invalid base64 characters in the input text.\n"+"Valid base64 characters are A-Z, a-z, 0-9, '+', '/', and '='\n"+"Expect errors in decoding.");}input = input.replace(/[^A-Za-z0-9\+\/\=]/g, "");do {enc1 = keyStr.indexOf(input.charAt(i++));enc2 = keyStr.indexOf(input.charAt(i++));enc3 = keyStr.indexOf(input.charAt(i++));enc4 = keyStr.indexOf(input.charAt(i++));chr1 = (enc1 << 2) | (enc2 >> 4);chr2 = ((enc2 & 15) << 4) | (enc3 >> 2);chr3 = ((enc3 & 3) << 6) | enc4;output = output + String.fromCharCode(chr1);if (enc3 != 64) {output = output + String.fromCharCode(chr2);}if (enc4 != 64) {output = output + String.fromCharCode(chr3);}chr1 = chr2 = chr3 = "";enc1 = enc2 = enc3 = enc4 = "";} while (i < input.length);return unescape(output);}function HtmlShowSpace(value,id){var temp="";for(var i=0;i<value.length;i++){var part=value.substring(i,i+1);if(" "== part){temp=temp+"&nbsp;";}else {temp=temp+part;}}getObj(id).innerHTML=temp;}function trimLSpaces(str){return str.replace(/(^\s*)/g, "");}function trimRSpaces(str){return str.replace(/(\s*$)/g, "");}function trimAllSpaces(str){for(var i = 0; i < str.length; i++){if(str.charAt(i) == " "){str = str.substring(0, i) + str.substring(i+1, str.length);i--;}}return str;}function trimLRSpaces(str){str = str.replace(/(^\s*)|(\s*$)/g, "");return str;}function fnBreakWordAll(o) {var o = o || {},iWord = o.word || 13,iRe = o.re || '[a-zA-Z0-9]',bAll = o.all || false,sClassName = o.className || 'word-break-all',aEls = o.els || ( function() {var aEls = [],aAllEls = document.getElementsByTagName( '*' ),re = new RegExp( '(?:^|\\s+)' + sClassName + '(?:\\s+|$)' );for ( var i = 0, iLen = aAllEls.length; i < iLen; ++i ) {if ( re.test( aAllEls[i].className ) ) {aEls[aEls.length] = aAllEls[i];}}return aEls;} )() || [],fnBreakWord = function( oEl ) {if( !oEl || oEl.nodeType !== 1 ) {return false;} else if ( oEl.currentStyle && typeof(oEl.currentStyle.wordWrap) === 'string' ) {breakWord = function( oEl ) {if (oEl.runtimeStyle){oEl.runtimeStyle.wordWrap = 'break-word';}return true;};return breakWord( oEl );} else if ( document.createTreeWalker ) {var trim = function ( str ) {str = str.replace( /^\s\s*/, '' );var ws = /\s/,i = str.length;while ( ws.test( str.charAt( --i ) ) );return str.slice(0, i + 1);};breakWord = function( oEl ) {var dWalker = document.createTreeWalker( oEl, NodeFilter.SHOW_TEXT, null, false );var node, s, c = String.fromCharCode( '8203' ),re = new RegExp( '(' + iRe + '{0,' + iWord + '})' );while ( dWalker.nextNode() ) {node = dWalker.currentNode;s = trim( node.nodeValue ).split( re ).join( c );node.nodeValue = s;}return true;};return breakWord( oEl );}};for( var i=0, n=aEls.length; i<n; ++i ) {var sUa = navigator.userAgent, sTn = aEls[i].tagName.toLowerCase();if ( ( /Opera/ ).test( sUa ) || ( /Firefox/ ).test( sUa ) || ( ( /KHTML/ ).test( sUa ) && ( sTn === 'td' || sTn === 'th') ) || bAll ) {fnBreakWord(aEls[i]);}}}function DisableALL(){var txtArrs = document.getElementsByTagName('input');for(var i=0; i<txtArrs.length; i++){if("hidden"!=txtArrs[i].type){txtArrs[i].disabled = true;}}var selectArrs = document.getElementsByTagName('select');for(var i=0; i<selectArrs.length; i++){selectArrs[i].disabled = true;}}function showIsEnableImage(isEnable, cellId){var strId = "";if(""!= cellId){strId = "id="+ cellId;}if("1"== isEnable){return ("<input type=\"image\" src=\"img/enable.gif\" style=\"cursor:default\" "+ strId + ">");}else {return ("<input type=\"image\" src=\"img/disable.gif\" style=\"cursor:default\" "+ strId + ">");}}function EnableALL(){var txtArrs = document.getElementsByTagName('input');for(var i=0; i<txtArrs.length; i++){if("hidden"!=txtArrs[i].type){txtArrs[i].disabled = false;}}var selectArrs = document.getElementsByTagName('select');for(var i=0; i<selectArrs.length; i++){selectArrs[i].disabled = false;}}function getXMLHTTPObj(){var xmlHttp = null;try{xmlHttp=new XMLHttpRequest();}catch (e){try{xmlHttp=new ActiveXObject("Msxml2.XMLHTTP");}catch (e){try{xmlHttp=new ActiveXObject("Microsoft.XMLHTTP");}catch (e){}}}return xmlHttp;}var xmlHTTPStatus = new Array();xmlHTTPStatus['Uninitialized'] = 0;xmlHTTPStatus['Open'] = 1;xmlHTTPStatus['Sent'] = 2;xmlHTTPStatus['Receiving'] = 3;xmlHTTPStatus['Loaded'] = 4;function AJAXObj(){this.obj = getXMLHTTPObj();this.postStr = "";this.addPostItem = function(name, value){this.postStr += name + "="+ value + "&";};this.post = function(requestURL, responseFunc){this.obj.open("POST", requestURL, true);this.obj.onreadystatechange = responseFunc;this.obj.send(this.postStr);this.postStr = "";};this.getResponseText = function(){return this.obj.responseText;};this.getReadyState = function(){return this.obj.readyState;};this.getStatus = function(){return this.obj.status;};}function getXMLDoc(xmlStr){var xmlDoc;try {xmlDoc=new ActiveXObject("Microsoft.XMLDOM");xmlDoc.async="false";xmlDoc.loadXML(xmlStr);return(xmlDoc);}catch(e){try {parser=new DOMParser();xmlDoc=parser.parseFromString(xmlStr,"text/xml");return(xmlDoc);}catch(e){}}return(null);}function getAJAXResponseXMLDoc(xmlStr){if (xmlStr.match(/^\s*<ajax_response_xml_root>/m) != null){return getXMLDoc(xmlStr);}return null;}function XMLDocObj(xmlStr){this.xmlDoc = getAJAXResponseXMLDoc(xmlStr);this.getXMLNodeValue = function(nodeName){var nodeValue = "";try{nodeValue = this.xmlDoc.getElementsByTagName(nodeName)[0].childNodes[0].nodeValue;}catch(e){}return nodeValue;};this.getXMLNode = function(nodeName){return this.xmlDoc.getElementsByTagName(nodeName)[0];};this.getCMAPIParaValue = function(OBJNAME, instID, paraName){var paraValue = "";var instObj = null;var o = this.getXMLNode(OBJNAME);var insts = o.childNodes;for (var i=0; i<insts.length; i++){var attrs = insts[i].childNodes;for (var j=0; j<attrs.length; j++){if (attrs[j].nodeName=="ID"&& instID==attrs[j].childNodes[0].nodeValue){instObj = insts[i];break;}}}if (null != instObj){var attrs = instObj.childNodes;for (var j=0; j<attrs.length; j++){if (attrs[j].nodeName == "Parameters"){var paras = attrs[j].childNodes;for (var k=0; k<paras.length; k++){if (paras[k].nodeName == paraName){try{paraValue = paras[k].childNodes[0].nodeValue;}catch(e){}break;}}}}}return paraValue;};this.getMIIDListArr = function(OBJNAME){var idListArr = new Array();var arrIndex = 0;var o = this.getXMLNode(OBJNAME);var insts = o.childNodes;for (var i=0; i<insts.length; i++){var attrs = insts[i].childNodes;for (var j=0; j<attrs.length; j++){if (attrs[j].nodeName=="ID"){idListArr[arrIndex++] = attrs[j].childNodes[0].nodeValue;}}}return idListArr;};}function appendHiddenInput(fid, id, value){var o = getObj(fid);var i = document.createElement("input");i.type = "hidden";i.id = id;i.name = id;i.value = value;o.appendChild(i);}function deleteHiddenInput(fid, id){var o = getObj(fid);var t = getObj(id);o.removeChild(t);}function clearfSubmit(fid){var o = getObj(fid);var clds = o.childNodes;while (clds.length > 0){o.removeChild(clds[0]);}}function checkSameInput(fid){var o = getObj(fid);if (o != null){var is = o.getElementsByTagName("input"); var il = is.length;for (var i=0; i<il-1; i++){var sid = is[i].id; for (var j=i+1; j<il; j++){if (sid == is[j].id){alert(fid+" has Same Inputs, ID:"+sid);}}}}}function getCookie(c_name){if (document.cookie.length>0){var c_start=document.cookie.indexOf(c_name + "=");if ( -1 != c_start ){c_start = c_start + c_name.length + 1;var c_end=document.cookie.indexOf(";", c_start);if ( c_end == -1 ){c_end=document.cookie.length;}return unescape( document.cookie.substring(c_start, c_end) );}}return null;}function setCookie(c_name,value,expiredays){var exdate = new Date();exdate.setDate( exdate.getDate() + expiredays );var cookieContent = c_name + "="+ escape(value);if ( null != expiredays ){cookieContent += "; expires="+ exdate.toGMTString();}document.cookie = cookieContent;}function HTMLEnCode(str){str = str.replace(/&/g, "&amp;");str = str.replace(/</g, "&lt;");str = str.replace(/>/g, "&gt;");str = str.replace(/ /g, "&nbsp;");str = str.replace(/\"/g, "&quot;");
+return str;
+}
+function HTMLDeCode(str)
+{
+str = str.replace(/&amp;/g, "&");
+str = str.replace(/&lt;/g, "<");
+str = str.replace(/&gt;/g, ">");
+str = str.replace(/&nbsp;/g, "");
+str = str.replace(/&quot;/g, "\"");return str;}function HTMLAddBr(str, wdth){var str1 = "";for (var i=0; i<Math.ceil(str.length/wdth); i++){str1 += HTMLEnCode( str.substr(i*wdth, wdth) );if ( Math.ceil(str.length/wdth) != i+1 ){str1 += "<br>";}}return str1;}function getAllDeleteIndex(indexPre, indexTail, indexStart, indexEnd, submitId){var checkboxId, len;var MultiInst = "MultiDelInst:";for( var i=0; i<(indexEnd-indexStart)+1; i++){checkboxId = indexPre+(parseInt(indexStart)+i)+indexTail;if( getChecked(checkboxId) == true){MultiInst = MultiInst+i+",";}}len = MultiInst.length;if( MultiInst.substr(len-1, 1) == ","){MultiInst = MultiInst.substring(0, len-1);}appendHiddenInput(submitId, "MultiInstDeleteIndex", MultiInst);}function InitAllHiddenPara(submitId, exceptStr){if( getObj(submitId) == null){return false;}var objs = getObj(submitId).getElementsByTagName("input");var exceptFlag = 0;exceptStr = exceptStr.split(",");for( var i=0; i<objs.length; i++){exceptFlag = 0;for( var j=0; j<exceptStr.length; j++){if( objs[i].id.indexOf(exceptStr[j]) == 0 ) {exceptFlag = 1;break;}}if( exceptFlag == 0){objs[i].value = "NULL";}}return true;}function randomNum(n){var t='';for(var i=0;i<n;i++){t+=Math.floor(Math.random()*10);}return t;}function setEncodePara(){if(typeof(window.parent.EncodeKey) != "function"){return;}var key = randomNum(16);var iv = randomNum(16);var encodeStr = window.parent.EncodeKey(key,iv);if(encodeStr.length == 0 || encodeStr == "false"){return;}var subForm = getObj("fSubmit");var enpaInput = document.createElement("input");enpaInput.setAttribute("id", "IF_ENCODE");enpaInput.setAttribute("name", "IF_ENCODE");enpaInput.setAttribute("type", "hidden");enpaInput.setAttribute("value", encodeStr);if(subForm){subForm.appendChild(enpaInput);}else {if(getObj("IF_ENCODE") != null){setValue("IF_ENCODE",encodeStr);}else {document.body.appendChild(enpaInput);}}document.key = key;document.iv = iv;}function setDecodePara(){var tokenObj = getObj("_SESSION_TOKEN");if(tokenObj == null){document.key = null;document.iv = null;return;}var key = tokenObj.value;var iv = key.substr(5,10);document.key = key;document.iv = iv;}function encodeStr(src){var dst = src;if(document.key && document.iv && src.length > 0)if(typeof(window.parent.EncodePara) == "function")dst = window.parent.EncodePara(src,document.key ,document.iv);return dst;}function getImagefrmClass(ImgClass, strmethod, id){var imageHTML = "<input type=\"button\" id=\""
++ id
++ "\" onclick=\""
++ strmethod
++ "\" class =\""
++ ImgClass
++ "\" >";return (imageHTML);}function createHiddenInput(name,value){var hiddenInput = document.createElement("input");hiddenInput.id=name;hiddenInput.name=name;hiddenInput.value=value;hiddenInput.type="hidden";return hiddenInput;}function decodeStr(src){var dst = src;if(document.key && document.iv && src.length > 0)if(typeof(window.parent.DecodePara) == "function")dst = window.parent.DecodePara(src,document.key ,document.iv);return dst;}function changeinputtype(obj){var tmpid,tmpvalue,tmpdisabled;var parNode,broNode;var newNode;var img=obj.src;var tmp = img.substring(img.length-12,img.length);if(tmp =="sleeping.gif"){obj.src = "img/waking.gif";broNode=obj.previousSibling;while (broNode.nodeType!=1){broNode=broNode.previousSibling;}tmpid=broNode.id;tmpvalue=broNode.value;tmpdisabled=broNode.disabled;newNode = document.createElement("input");newNode.className = "inputId";newNode.type = "text";newNode.id = tmpid;newNode.value = tmpvalue;newNode.disabled = tmpdisabled;parNode=obj.parentNode;parNode.replaceChild(newNode,broNode);}else {obj.src = "img/sleeping.gif";broNode=obj.previousSibling;while (broNode.nodeType!=1){broNode=broNode.previousSibling;}tmpid=broNode.id;tmpvalue=broNode.value;tmpdisabled=broNode.disabled;newNode = document.createElement("input");newNode.className = "inputId";newNode.type = "password";newNode.autocomplete = "off";newNode.id = tmpid;newNode.value = tmpvalue;newNode.disabled = tmpdisabled;parNode=obj.parentNode;parNode.replaceChild(newNode,broNode);}}function getImageButton(ImgClass, StrMethod,id){return ("<input type=\"button\" id=\""+id+"\"  onclick=\""+ StrMethod
++"\" class=\"multiImg_"+ImgClass.toLowerCase()+"\">");}function IEVersion(){var agent = navigator.userAgent;var isIE = agent.indexOf("compatible") > -1 && agent.indexOf("MSIE") > -1;var isEdge = agent.indexOf("Edge") > -1 && !isIE;var isIE11 = agent.indexOf("Trident") > -1 && agent.indexOf("rv:11.0") > -1;if (isIE){var reIE = new RegExp("MSIE (\\d+\\.\\d+);");reIE.test(agent);var fIEVersion = parseFloat(RegExp["$1"]);if (fIEVersion > 6){return "IE"+ fIEVersion;}else {return "IE6";}}else if (isEdge){return "Edge";}else if (isIE11){return "IE11";}else {return "Not IE";}}function getFirstElementChild(element){if (element.firstElementChild){return element.firstElementChild;}else {var node = element.firstChild;while (node && node.nodeType != 1){node = node.nextSibling;}return node;}}function getLastElementChild(element){if (element.lastElementChild){return element.lastElementChild;}else {var node = element.lastChild;while (node && node.nodeType != 1){node = node.previousSibling;}return node;}}function getNextElementSibling(element){if (element.nextElementSibling){return element.nextElementSibling;}else {var node = element.nextSibling;while (node && node.nodeType != 1){node = node.nextSibling;}return node;}}function handleBeforeSubmit(){var form = getObj("fSubmit");if(form == null){return;}var inputParams = "";var childNode = getFirstElementChild(form);while(childNode != getLastElementChild(form)){if(childNode.getAttribute("id") != null){inputParams += childNode.id + "="+ encodeURIComponent(childNode.value) + "&";}childNode = getNextElementSibling(childNode);}inputParams += childNode.id + "="+ encodeURIComponent(childNode.value);form.innerHTML = "";setEncodePara();var enpaInput = document.createElement("input");enpaInput.setAttribute("id", "IF_ENCODEPARAM");enpaInput.setAttribute("name", "IF_ENCODEPARAM");enpaInput.setAttribute("type", "hidden");form.appendChild(enpaInput);enpaInput.setAttribute("value", String(encodeStr(inputParams)));}function formSubmit(){handleBeforeSubmit();getObj("fSubmit").submit();}function getOptionText(id, value){var selectElement = getObj(id);var text = "";if (!selectElement || !selectElement.options){return text;}for (var i = 0; i < selectElement.options.length; i++){var option = selectElement.options[i];if (option.value === value){text = option.text; break;}}return text;}function myTrim(str, chr){var pos = str.lastIndexOf(chr);while(pos != -1){if(pos + chr.length == str.length){str = str.substring(0, pos);pos = str.lastIndexOf(chr);}else {pos = -1;}}return str;}function calcSubNet(ipaddr, netmask){var ips = ipaddr.split(".");var ns = netmask.split(".");var sub = "";if(ips.length != 4 || ns.length != 4)return "0.0.0.0";for(var i = 0; i < 4; i++){sub += ips[i] & ns[i];sub += ".";}sub = myTrim(sub, ".");return sub;}function checkNull(value){if(value == ""|| value == null)return false;else return true;}function checkGenString(sz){if(checkNull(sz) == false)return -1;if (sz.match("[^0-9a-zA-Z_-]") != null)return false;return true;}function checkGenStringForASC(value){var length = value.length;for(var j = 0 ;j < length; j++){var xx = value.charCodeAt(j);if (xx > 0 && xx <= 255){}else {return false;}}return true;}function in_array(needle, haystack){for(var key in haystack){if(needle === haystack[key]){return true;}}return false;}function checkStrLengthRange(value, min, max){if(checkNull(value) == false){return -1;}var cArr = value.match(/[^\x00-\xff]/ig);var len = value.length + (cArr == null ? 0 : cArr.length);if((len < min) || (len > max)){return -3;}return true;}function checkGenStringForChinese(value){var length = value.length;for(var j = 0 ;j < length; j++){var xx = value.charCodeAt(j);if ((xx >= 0x0020 && xx <= 0x007e) || (xx >= 0x4E00 && xx <= 0x9FBF)){}else {return false;}}return true;}function checkInteger(str){if(str.charAt(0) == '-')str = str.substr(1);if(str.match("^[0-9]+\$"))return true;return false;}function checkIntegerRange(value, minValue, maxValue){if(checkNull(value) == false){return -1;}if(checkInteger(value) != true)return -2;if (value < minValue || value > maxValue){return -3;}return true;}function checkGenInt(str){if(checkIntegerRange(str, -2147483648, 2147483647) != true)return false;return true;}function checkUnSingleInt(str){if(checkIntegerRange(str, 0, 4294967295) != true)return false;return true;}function checkHostName(HostName){var len = HostName.length;var firstChar = HostName.substr(0,1);var lastChar = HostName.substr(len-1,1);var leftChar = "";var rightChar = "";var iDotCount = 0;var i = 0;var preDotPos = 0;var statu = checkStrLengthRange(HostName, 1, 256);if(statu != true){return statu;}if (HostName.match("[^0-9a-zA-Z_.-]") != null){return false;}if(firstChar.match("[^0-9a-zA-Z]") != null){return false;}if(lastChar.match("[^0-9a-zA-Z]") != null){return false;}var pos = HostName.lastIndexOf(".");if(pos == -1) {var str = HostName;var len = HostName.length;for(var i=0;i<len;i++){var value = str.substring(i,i+1);if(isNaN(parseInt(value))){return true;}}return false;}else {var str = HostName.substr(pos+1);var len = HostName.length - (pos + 1);for(var i=0;i<len;i++){var value = str.substring(i,i+1);if(isNaN(parseInt(value))){return true;}}return false;}return true;}function checkDomainName(domain_name){var len = domain_name.length;var firstChar = domain_name.substr(0,1);var lastChar = domain_name.substr(len-1,1);var leftChar = "";var rightChar = "";var iDotCount = 0;var i = 0;var preDotPos = 0;var statu = checkStrLengthRange(domain_name, 1, 64);if(statu != true){return statu;}if (domain_name.match("[^0-9a-zA-Z_.-]") != null){return false;}if(firstChar.match("[^0-9a-zA-Z]") != null){return false;}if(lastChar.match("[^0-9a-zA-Z]") != null){return false;}var pos = domain_name.lastIndexOf(".");if(pos == -1) {var str = domain_name;var len = domain_name.length;for(var i=0;i<len;i++){var value = str.substring(i,i+1);if(isNaN(parseInt(value))){return true;}}return false;}else {var str = domain_name.substr(pos+1);var len = domain_name.length - (pos + 1);for(var i=0;i<len;i++){var value = str.substring(i,i+1);if(isNaN(parseInt(value))){return true;}}return false;}return true;}function checkEssid(value){var statu = checkStrLengthRange(value, 1, 32);if(statu != true){return statu;}var length = value.length;for(var j = 0 ;j < length; j++){var xx = value.charCodeAt(j);if (xx > 0 && xx <= 255){}else {return false;}}return true;}function checkEssidNew(value){var statu = checkStrWithChineseLengthRange(value, 1, 32);if(statu != true){return statu;}return checkGenStringForChinese(value);}function checkURL(url){var statu = checkStrLengthRange(url, 1, 256);if(statu != true){return statu;}if (url.match("[^0-9a-zA-Z.:;,!@%#?_/&=+*'$()\\[\\]-]") != null){return false;}return true;}function checkIpAddress(value, num){var ipaddr = value;var c = false;var re = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;if(re.test(ipaddr) == true){var parts = ipaddr.split(".");for(var i=0; i<parts.length; i++){if(parts[i].indexOf("0") == 0 && parts[i].length > 1)return false;if (parseInt((parts[i]),10) > 255 || parseInt((parts[i]),10) < 0){return false;}}if(num == 2){if(parseInt(parts[0],10) == 0 || parseInt(parts[3],10)==0){return false ;}if( parseInt(parts[0],10) == 255 || parseInt(parts[3],10)==255){return false ;}if (parseInt(parts[0],10) > 223)return false ;}if(num == 3){for(var i=0; i<parts.length; i++){if (parseInt((parts[i]),10) == 0)break;}if(i == parts.length){if ( (parseInt(parts[1],10) == 255)&&(parseInt(parts[2],10) == 255)&&(parseInt(parts[3],10) == 255)){c = true;}else {c = false;return c;}}for(var j=i; j < parts.length; j++){if (parseInt((parts[j]),10) == 0)c = true;else {c = false;break;}}return c;}return true;}else {return false;}}function checkIPV6Address(str){if (str.match("[^0-9a-fA-F:.]") != null)return false;addrParts = str.split(':');Doublecolon = str.split('::');ipv4Parts = str.split('.');if(addrParts.length<3||addrParts.length>8){return false;}else if(Doublecolon.length==1&&ipv4Parts.length==1&&addrParts.length!=8){return false;}else if(Doublecolon.length==1&&ipv4Parts.length>1&&addrParts.length!=6){return false;}else if(Doublecolon.length>1&&ipv4Parts.length>1&&addrParts.length>6){return false;}else if(Doublecolon.length>2||str.split(':::').length>1){return false;}else {if(addrParts[0]==""&&addrParts[1]!=""){return false;}for(var i=0;i<addrParts.length;i++){if(i==addrParts.length-1&&addrParts[i]==""&&addrParts[i-1]!=""){return false;}if(addrParts[i].length>4 && addrParts[i].split('.').length<2){return false;}}}var pos = str.lastIndexOf(":");var ipv4Parts = str.split('.');if(ipv4Parts.length>1){var ipv4=str.substring(pos+1,str.length);if(true != checkIpAddress(ipv4,"")){return false;}}return true;}function checkGateway(Address){var address = Address.match("^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$");var digits;var i;if(address == null){return false;}digits = address[0].split(".");if (digits.length != 4 ){return false;}for(i=0; i < 4; i++){if((Number(digits[i]) > 255 ) || (Number(digits[i]) < 0 ) || (Number(digits[0]) > 223)){return false;}}return true;}function checkMACAddress(Addr){var c = '';var i = 0, j = 0;if(Addr=="00:00:00:00:00:00"){return false;}var addrParts = Addr.split(':');if ( addrParts.length != 6 )return false;for (i = 0; i < 6; i++){if (addrParts[i].length != 2)return false;for ( j = 0; j < addrParts[i].length; j++ ){c = addrParts[i].toLowerCase().charAt(j);if ( (c >= '0' && c <= '9') ||(c >= 'a' && c <= 'f') )continue;else return false;}}return true;}function checkMaskAddress(MaskAddr){var mask = MaskAddr.match("^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$");var digits;var bMask = 0;var watch = false;var i;var error=null;if(mask == null){return false;}digits = mask[0].split(".");if (digits.length != 4 ){return false;}for(i=0; i < 4; i++){if((Number(digits[i]) > 255 ) || (Number(digits[i]) < 0 ) ||(digits[i].indexOf("0") == 0 && digits[i].length > 1)){return false;}bMask = (bMask << 8) | Number(digits[i]);}bMask = bMask & 0x0FFFFFFFF;if((bMask & 0x01) == 1)watch = true;for(i=0; i<32; i++){if((watch == true) && ((bMask & 0x1)==0)){return false;}bMask = bMask >> 1;if((bMask & 0x01) == 1)watch=true;}return true;}function checkIPNet(ipaddr, netmask){var ret = checkIpAddress(ipaddr);if(ret != true)return ret;if (netmask == null)return null;ret = checkMaskAddress(netmask);if(ret != null)return ret;var ips = ipaddr.split(".");var subnet = calcSubNet(ipaddr, netmask);var subs = subnet.split(".");var s = "";for(var i = 0; i < 4; i++){s += parseInt(ips[i]) ^ parseInt(subs[i]);s += ".";}if (s == "0.0.0.0.")return true;return false;}function checkPort(port){var value=port;if(port=="-1")return false;else return true;}function valIpMask(ipaddr, netmask){var ss = netmask.split(".");var mac = 0;for(var i = 0; i < 4; i++){mac = mac << 8;mac = mac + parseInt(ss[i]);}var ip = 0;var as=ipaddr.split(".");for(var i = 0; i < 4; i++){ip = ip << 8;ip = ip + parseInt(as[i]);}if(mac && ((ip & mac) == ip)){return false;}if(mac && ((ip & (~mac)) == ~mac)){return false;}return true;}function PasswordStrengthCheck(strPass,strUser){var passwordStrength = 1;var msg = "";var patt1 = /^.{8,}$/;var patt2 = /^(?=.*[0-9])(?=.*[a-zA-Z])(?=.*[~`_!@#$%^&*(){}\[\]'"\|\\\\:;<>=?/,.+-])[0-9a-zA-Z~`_!@#$%^&*(){}\[\]'"\|\\\\:;<>=?/,.+-]{0,}$/;if ( patt1.test(strPass) != true ){passwordStrength = 2;msg = msg + "密码不少于8位，";}if ( patt2.test(strPass) != true ){passwordStrength = 3;msg = msg + "密码由数字、字母和符号三者组成，";}if ( arguments.length > 1 ){if ( strPass == strUser ){passwordStrength = 4;msg = msg + "账号和密码不能相同，";}if ( strPass == strUser.split("").reverse().join("") ){passwordStrength = 5;msg = msg + "密码不能是账号的逆序，";}}if ( msg != ""){msg = "密码强度较弱，建议"+msg.substr(0,msg.length-1);}return {PasswordStrength:passwordStrength,Msg:msg};}function checkStrWithChineseLengthRange(value, min, max){if(checkNull(value) == false){return -1;}var len = 0;for (var i=0; i<value.length; i++){var c = value.charCodeAt(i);if ((c >= 0x0020 && c <= 0x007e)){len++;}else if ((c >= 0x4E00 && c <= 0x9FBF)){len = len + 3;}}if((len < min) || (len > max)){return -3;}return true;}function moveErrLayer(left,top){document.getElementById("myLayer").style.left = left + "px";document.getElementById("myLayer").style.top = top + "px";}function ShowNote(notetitle, msg){document.getElementById("errnote").innerHTML = notetitle;document.getElementById("errmsg").innerHTML = msg;document.getElementById("myLayer").style.visibility = "visible";}function ShowNoteNew(ctl, notetitle, msg){document.getElementById("errnote").innerHTML = notetitle;document.getElementById("errmsg").innerHTML = msg;document.getElementById("myLayer").style.visibility = "visible";if(ctl != null && ctl.disabled == false){ctl.focus();}}function ShowNoteForCom(frmid, fntid, msg){var fntmsg;var strmsg;if(document.getElementById(fntid) == null){if(fntid == null)fntmsg = "";else fntmsg = fntid;}else{fntmsg = document.getElementById(fntid).innerHTML;}strmsg = fntmsg + msg;ShowNoteNew(document.getElementById(frmid), "Note", strmsg);}function ShowError(ctl, msg){var tmpStr = g_errorInfo;if(tmpStr == "undefined"){tmpStr = "Error";}document.getElementById("errnote").innerHTML = tmpStr;document.getElementById("errmsg").innerHTML = msg;document.getElementById("myLayer").style.visibility = "visible";if(ctl != null && ctl.disabled == false){ctl.focus();}}function ShowErrorForCom(frmid, fntid, msg){var fntmsg;var strmsg;if(document.getElementById(fntid) == null){if(fntid == null)fntmsg = "";else fntmsg = fntid;}else{fntmsg = document.getElementById(fntid).innerHTML;}strmsg = fntmsg + msg;ShowError(document.getElementById(frmid),strmsg );}function getMsgFormArray(str, arg){var errid = 0;var min = 0;var max = 0;var param = -1;var msg = "";var num = arg.length;if(num == 1){errid = arg[0];}else if(num == 3){errid = arg[0];min = arg[1];max = arg[2];}else if(num == 2){errid = arg[0];param = arg[1];}else return null;for(var i = 0; i < str.length; i ++){if(typeof(str[i]) == "undefined"){alert("数组初始化有误，请检查代码！i = "+ i);return null;}if(errid == str[i][0]){if(min == max && min == 0){if(param == -1){msg = str[i][1];}else {msg = str[i][1] + param + str[i+1][1];}}else msg = str[i][1] + min + "~"+ max + str[i+1][1];return msg;}}return null;}function getEvent(event) {var ev = event || window.event;if (!ev) {var c = this.getEvent.caller;while (c) {ev = c.arguments[0];if (ev && (Event == ev.constructor || MouseEvent == ev.constructor)) { break;}c = c.caller;}}return ev;}function setTextFocusEnd(){var evt = getEvent();if (evt.srcElement){var elm = evt.srcElement;var textRange = elm.createTextRange();textRange.moveStart('character', elm.value.length);textRange.collapse(true);textRange.select();}}function get_width(){return (document.body.clientWidth+document.body.scrollLeft);}function get_height(){return (document.body.clientHeight+document.body.scrollTop);}function get_left(w){var bw=document.body.clientWidth;w=parseFloat(w);return (bw/2-w/2+document.body.scrollLeft);}function get_top(h){var bh=document.body.clientHeight;h=parseFloat(h);return (bh/2-h/2+document.body.scrollTop);}function create_mask(){var mask=document.createElement("div");mask.id="mask";mask.style.position="absolute";mask.style.filter="progid:DXImageTransform.Microsoft.Alpha(style=4,opacity=25)";mask.style.opacity=0.4;mask.style.zIndex=1000;document.body.appendChild(mask);re_mask();}function create_msgbox(w,h,t){var box=document.createElement("div");box.id="msgbox";box.style.position="absolute";box.style.width=w+"px";box.style.height=h+"px";box.style.overflow="visible";box.innerHTML=t;box.style.zIndex=1001;document.body.appendChild(box);re_pos();}function re_mask(){var mask=document.getElementById("mask");if(null==mask)return;mask.style.background="black";mask.style.top="0px";mask.style.left="0px";mask.style.width=get_width()+"px";mask.style.height=get_height()+"px";}function re_pos(){window.document.onkeydown=showKeyDown;var box=document.getElementById("msgbox");if(null!=box){var w=box.style.width;var h=box.style.height;box.style.left=get_left(w)+"px";box.style.top="100px";}}function remove_msgbox(){var mask=document.getElementById("mask");var msgbox=document.getElementById("msgbox");if(null==mask&&null==msgbox)return;document.body.removeChild(mask);document.body.removeChild(msgbox);}function msgbox(msgJSONData){create_mask();var temp="<table id=\"Tbl_msgbox\" cellpadding=\"0\" cellspacing=\"0\" class=\"msgtb\">";temp+="<tr><td width=\"355\" height=\"22\" class=\"msgtr1\" colspan=2>"+msgJSONData.title+"</td></tr>";temp+="<tr><td width=\"30\" height=\"75\" class=\"msgtr2\">&nbsp;<img src=\"img/infomsg.gif\">&nbsp;&nbsp;</td><td width=\"325\" class=\"msgtr2\"><font face=\"宋体\" size=\"2\">"+msgJSONData.content+"</font></td>";temp+="</tr><tr><td width=\"355\" height=\"22\" align=\"center\" class=\"msgtr3\" colspan=2><input name=\"msgconfirmb\" type=\"button\" class=\"msgbutton\" id=\"msgconfirmb\" value=\"" + msgJSONData.confirmLabel + "\" onclick=\"remove_msgbox();"+msgJSONData.confirmCallback+";\">";if("yes"==msgJSONData.cancelDisplay){temp+="&nbsp;&nbsp;<input name=\"msgcancelb\" type=\"button\" class=\"msgbutton\" id=\"msgcancelb\" value=\"" + msgJSONData.cancelLabel + "\" onclick=\"remove_msgbox();\"></td>";}temp+="</tr><tr><td class=\"msgtr4\" width=\"355\" height=\"8\" colspan=2></td></tr></table>";create_msgbox(400,200,temp);if(msgJSONData.focusButtun=="Confirm"){document.getElementById("msgconfirmb").focus();}else {document.getElementById("msgcancelb").focus();}}function msgbox_extern(msgJSONData){create_mask();var temp="<table id=\"Tbl_msgbox\" cellpadding=\"0\" cellspacing=\"0\" class=\"msgtb\">";temp+="<tr><td width=\"355\" height=\"22\" class=\"msgtr1\" colspan=2>"+msgJSONData.title+"</td></tr>";temp+="<tr><td width=\"30\" height=\"75\" class=\"msgtr2\">&nbsp;<img src=\"img/infomsg.gif\">&nbsp;&nbsp;</td><td width=\"325\" class=\"msgtr2\"><font face=\"宋体\" size=\"2\">"+msgJSONData.content+"</font></td>";temp+="</tr><tr><td width=\"355\" height=\"22\" align=\"center\" class=\"msgtr3\" colspan=2><input name=\"msgconfirmb\" type=\"button\" class=\"msgbutton\" id=\"msgconfirmb\" value=\"" + msgJSONData.confirmLabel + "\" onclick=\"remove_msgbox();"+msgJSONData.confirmCallback+";\">";if("yes"==msgJSONData.cancelDisplay){temp+="&nbsp;&nbsp;<input name=\"msgcancelb\" type=\"button\" class=\"msgbutton\" id=\"msgcancelb\" value=\"" + msgJSONData.cancelLabel + "\" onclick=\"remove_msgbox();"+msgJSONData.cancelCallback+";\"></td>";}temp+="</tr><tr><td class=\"msgtr4\" width=\"355\" height=\"8\" colspan=2></td></tr></table>";create_msgbox(400,200,temp);if(msgJSONData.focusButtun=="Confirm"){document.getElementById("msgconfirmb").focus();}else {document.getElementById("msgcancelb").focus();}}function showKeyDown(e){e=(e)?e:window.event;var box=document.getElementById("msgbox");if(null!=box){if(e.keyCode == 37){document.getElementById("msgconfirmb").focus();}if(e.keyCode == 39){document.getElementById("msgcancelb").focus();}}}function getURL(){var ret = "getpage.gch?pid=1002&nextpage=";var len = arguments.length;if ( 0 != (len-1)%2 ){ShowErrorForCom(null, null, "arguments len err of getURL!");return;}for (var i=0; i<len; i++){if ( i%2 == 1 ){ret += "&"+ arguments[i] + "=";}else {ret += arguments[i];}}return ret;}function menuURLGen(){for ( var supId in meta_menu ){meta_menu[supId]['URL'] = getURL(meta_menu[supId]['page']);for ( var midId in menu_items[supId] ){menu_items[supId][midId]['URL'] = getURL(menu_items[supId][midId]['page']);for ( var subId in menu_subitems[supId][midId] ){menu_subitems[supId][midId][subId]['URL'] = getURL(menu_subitems[supId][midId][subId]['page']);}}}}function menuURLGen_Top(){for ( var supId in meta_menu ){meta_menu[supId]['URL'] = getURL(meta_menu[supId]['page']);}}function menuDisp(){menuURLGen();menuUpdate();}function ReplaceDemo(ss){var r, re; re = / /g; r = ss.replace(re, "&nbsp;"); return r;}function removeAllClick(){var i=0;var ele = document.getElementsByTagName("*");for(i=0; i<ele.length; i++){if(ele[i] && ele[i].getAttribute("onclick") != "")ele[i].setAttribute("onclick","");}}function openLink(pageurl){removeAllClick();var replaceurl = ReplaceDemo(pageurl);var tag = getObj("IF_UPLOADING").value;if (tag == "1"){top.mainFrame.location.href = "#";}else {top.mainFrame.location.href = replaceurl;}}function getMidMenuStat(supId, midId){var len = 0;for ( var i in menu_subitems[supId][midId] ){len++;}if ( 0 == len ){return "single";}for (var subId in menu_subitems[supId][midId] ){if ( selectPage == menu_subitems[supId][midId][subId]['page'] ){return "open";}}return "closed";}function OnMenuItemClick(supId, midId){selectPage = menu_items[supId][midId]['page'];selectSupId = supId;menuUpdate();}function addEvent(element, type, handler) {if(element == null){return;}if (element.addEventListener) {element.addEventListener(type, handler, false);} else {if (!handler.$$guid) handler.$$guid = addEvent.guid++;if (!element.events) element.events = {};var handlers = element.events[type];if (!handlers) {handlers = element.events[type] = {};if (element["on"+ type]) {handlers[0] = element["on"+ type];}}handlers[handler.$$guid] = handler;element["on"+ type] = handleEvent;}};addEvent.guid = 1;function removeEvent(element, type, handler) {if(element == null){return;}if (element.removeEventListener) {element.removeEventListener(type, handler, false);} else {if (element.events && element.events[type]) {delete element.events[type][handler.$$guid];}}};function handleEvent(event) {var returnValue = true;event = event || fixEvent(((this.ownerDocument || this.document || this).parentWindow || window).event);var handlers = this.events[event.type];for (var i in handlers) {this.$$handleEvent = handlers[i];if (this.$$handleEvent(event) === false) {returnValue = false;}}return returnValue;};function fixEvent(event) {event.preventDefault = fixEvent.preventDefault;event.stopPropagation = fixEvent.stopPropagation;return event;};fixEvent.preventDefault = function() {this.returnValue = false;};fixEvent.stopPropagation = function() {this.cancelBubble = true;};/**
+ * @version 0.5.0
+ * @author Chen, Yi-Cyuan [emn178@gmail.com]
+ * @copyright Chen, Yi-Cyuan 2014-2017
+ * @license MIT
+ */
+!function(){"use strict";function t(t,h){h?(c[0]=c[16]=c[1]=c[2]=c[3]=c[4]=c[5]=c[6]=c[7]=c[8]=c[9]=c[10]=c[11]=c[12]=c[13]=c[14]=c[15]=0,this.blocks=c):this.blocks=[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],t?(this.h0=3238371032,this.h1=914150663,this.h2=812702999,this.h3=4144912697,this.h4=4290775857,this.h5=1750603025,this.h6=1694076839,this.h7=3204075428):(this.h0=1779033703,this.h1=3144134277,this.h2=1013904242,this.h3=2773480762,this.h4=1359893119,this.h5=2600822924,this.h6=528734635,this.h7=1541459225),this.block=this.start=this.bytes=0,this.finalized=this.hashed=!1,this.first=!0,this.is224=t}var h="object"==typeof window?window:{},i=!h.JS_SHA256_NO_NODE_JS&&"object"==typeof process&&process.versions&&process.versions.node;i&&(h=global);var s=!h.JS_SHA256_NO_COMMON_JS&&"object"==typeof module&&module.exports,e="function"==typeof define&&define.amd,r="undefined"!=typeof ArrayBuffer,n="0123456789abcdef".split(""),o=[-2147483648,8388608,32768,128],a=[24,16,8,0],f=[1116352408,1899447441,3049323471,3921009573,961987163,1508970993,2453635748,2870763221,3624381080,310598401,607225278,1426881987,1925078388,2162078206,2614888103,3248222580,3835390401,4022224774,264347078,604807628,770255983,1249150122,1555081692,1996064986,2554220882,2821834349,2952996808,3210313671,3336571891,3584528711,113926993,338241895,666307205,773529912,1294757372,1396182291,1695183700,1986661051,2177026350,2456956037,2730485921,2820302411,3259730800,3345764771,3516065817,3600352804,4094571909,275423344,430227734,506948616,659060556,883997877,958139571,1322822218,1537002063,1747873779,1955562222,2024104815,2227730452,2361852424,2428436474,2756734187,3204031479,3329325298],u=["hex","array","digest","arrayBuffer"],c=[],p=function(h,i){return function(s){return new t(i,!0).update(s)[h]()}},d=function(h){var s=p("hex",h);i&&(s=y(s,h)),s.create=function(){return new t(h)},s.update=function(t){return s.create().update(t)};for(var e=0;e<u.length;++e){var r=u[e];s[r]=p(r,h)}return s},y=function(t,h){var i=require("crypto"),s=require("buffer").Buffer,e=h?"sha224":"sha256",n=function(h){if("string"==typeof h)return i.createHash(e).update(h,"utf8").digest("hex");if(r&&h instanceof ArrayBuffer)h=new Uint8Array(h);else if(void 0===h.length)return t(h);return i.createHash(e).update(new s(h)).digest("hex")};return n};t.prototype.update=function(t){if(!this.finalized){var i="string"!=typeof t;i&&r&&t instanceof h.ArrayBuffer&&(t=new Uint8Array(t));for(var s,e,n=0,o=t.length||0,f=this.blocks;o>n;){if(this.hashed&&(this.hashed=!1,f[0]=this.block,f[16]=f[1]=f[2]=f[3]=f[4]=f[5]=f[6]=f[7]=f[8]=f[9]=f[10]=f[11]=f[12]=f[13]=f[14]=f[15]=0),i)for(e=this.start;o>n&&64>e;++n)f[e>>2]|=t[n]<<a[3&e++];else for(e=this.start;o>n&&64>e;++n)s=t.charCodeAt(n),128>s?f[e>>2]|=s<<a[3&e++]:2048>s?(f[e>>2]|=(192|s>>6)<<a[3&e++],f[e>>2]|=(128|63&s)<<a[3&e++]):55296>s||s>=57344?(f[e>>2]|=(224|s>>12)<<a[3&e++],f[e>>2]|=(128|s>>6&63)<<a[3&e++],f[e>>2]|=(128|63&s)<<a[3&e++]):(s=65536+((1023&s)<<10|1023&t.charCodeAt(++n)),f[e>>2]|=(240|s>>18)<<a[3&e++],f[e>>2]|=(128|s>>12&63)<<a[3&e++],f[e>>2]|=(128|s>>6&63)<<a[3&e++],f[e>>2]|=(128|63&s)<<a[3&e++]);this.lastByteIndex=e,this.bytes+=e-this.start,e>=64?(this.block=f[16],this.start=e-64,this.hash(),this.hashed=!0):this.start=e}return this}},t.prototype.finalize=function(){if(!this.finalized){this.finalized=!0;var t=this.blocks,h=this.lastByteIndex;t[16]=this.block,t[h>>2]|=o[3&h],this.block=t[16],h>=56&&(this.hashed||this.hash(),t[0]=this.block,t[16]=t[1]=t[2]=t[3]=t[4]=t[5]=t[6]=t[7]=t[8]=t[9]=t[10]=t[11]=t[12]=t[13]=t[14]=t[15]=0),t[15]=this.bytes<<3,this.hash()}},t.prototype.hash=function(){var t,h,i,s,e,r,n,o,a,u,c,p=this.h0,d=this.h1,y=this.h2,l=this.h3,b=this.h4,v=this.h5,g=this.h6,w=this.h7,k=this.blocks;for(t=16;64>t;++t)e=k[t-15],h=(e>>>7|e<<25)^(e>>>18|e<<14)^e>>>3,e=k[t-2],i=(e>>>17|e<<15)^(e>>>19|e<<13)^e>>>10,k[t]=k[t-16]+h+k[t-7]+i<<0;for(c=d&y,t=0;64>t;t+=4)this.first?(this.is224?(o=300032,e=k[0]-1413257819,w=e-150054599<<0,l=e+24177077<<0):(o=704751109,e=k[0]-210244248,w=e-1521486534<<0,l=e+143694565<<0),this.first=!1):(h=(p>>>2|p<<30)^(p>>>13|p<<19)^(p>>>22|p<<10),i=(b>>>6|b<<26)^(b>>>11|b<<21)^(b>>>25|b<<7),o=p&d,s=o^p&y^c,n=b&v^~b&g,e=w+i+n+f[t]+k[t],r=h+s,w=l+e<<0,l=e+r<<0),h=(l>>>2|l<<30)^(l>>>13|l<<19)^(l>>>22|l<<10),i=(w>>>6|w<<26)^(w>>>11|w<<21)^(w>>>25|w<<7),a=l&p,s=a^l&d^o,n=w&b^~w&v,e=g+i+n+f[t+1]+k[t+1],r=h+s,g=y+e<<0,y=e+r<<0,h=(y>>>2|y<<30)^(y>>>13|y<<19)^(y>>>22|y<<10),i=(g>>>6|g<<26)^(g>>>11|g<<21)^(g>>>25|g<<7),u=y&l,s=u^y&p^a,n=g&w^~g&b,e=v+i+n+f[t+2]+k[t+2],r=h+s,v=d+e<<0,d=e+r<<0,h=(d>>>2|d<<30)^(d>>>13|d<<19)^(d>>>22|d<<10),i=(v>>>6|v<<26)^(v>>>11|v<<21)^(v>>>25|v<<7),c=d&y,s=c^d&l^u,n=v&g^~v&w,e=b+i+n+f[t+3]+k[t+3],r=h+s,b=p+e<<0,p=e+r<<0;this.h0=this.h0+p<<0,this.h1=this.h1+d<<0,this.h2=this.h2+y<<0,this.h3=this.h3+l<<0,this.h4=this.h4+b<<0,this.h5=this.h5+v<<0,this.h6=this.h6+g<<0,this.h7=this.h7+w<<0},t.prototype.hex=function(){this.finalize();var t=this.h0,h=this.h1,i=this.h2,s=this.h3,e=this.h4,r=this.h5,o=this.h6,a=this.h7,f=n[t>>28&15]+n[t>>24&15]+n[t>>20&15]+n[t>>16&15]+n[t>>12&15]+n[t>>8&15]+n[t>>4&15]+n[15&t]+n[h>>28&15]+n[h>>24&15]+n[h>>20&15]+n[h>>16&15]+n[h>>12&15]+n[h>>8&15]+n[h>>4&15]+n[15&h]+n[i>>28&15]+n[i>>24&15]+n[i>>20&15]+n[i>>16&15]+n[i>>12&15]+n[i>>8&15]+n[i>>4&15]+n[15&i]+n[s>>28&15]+n[s>>24&15]+n[s>>20&15]+n[s>>16&15]+n[s>>12&15]+n[s>>8&15]+n[s>>4&15]+n[15&s]+n[e>>28&15]+n[e>>24&15]+n[e>>20&15]+n[e>>16&15]+n[e>>12&15]+n[e>>8&15]+n[e>>4&15]+n[15&e]+n[r>>28&15]+n[r>>24&15]+n[r>>20&15]+n[r>>16&15]+n[r>>12&15]+n[r>>8&15]+n[r>>4&15]+n[15&r]+n[o>>28&15]+n[o>>24&15]+n[o>>20&15]+n[o>>16&15]+n[o>>12&15]+n[o>>8&15]+n[o>>4&15]+n[15&o];return this.is224||(f+=n[a>>28&15]+n[a>>24&15]+n[a>>20&15]+n[a>>16&15]+n[a>>12&15]+n[a>>8&15]+n[a>>4&15]+n[15&a]),f},t.prototype.toString=t.prototype.hex,t.prototype.digest=function(){this.finalize();var t=this.h0,h=this.h1,i=this.h2,s=this.h3,e=this.h4,r=this.h5,n=this.h6,o=this.h7,a=[t>>24&255,t>>16&255,t>>8&255,255&t,h>>24&255,h>>16&255,h>>8&255,255&h,i>>24&255,i>>16&255,i>>8&255,255&i,s>>24&255,s>>16&255,s>>8&255,255&s,e>>24&255,e>>16&255,e>>8&255,255&e,r>>24&255,r>>16&255,r>>8&255,255&r,n>>24&255,n>>16&255,n>>8&255,255&n];return this.is224||a.push(o>>24&255,o>>16&255,o>>8&255,255&o),a},t.prototype.array=t.prototype.digest,t.prototype.arrayBuffer=function(){this.finalize();var t=new ArrayBuffer(this.is224?28:32),h=new DataView(t);return h.setUint32(0,this.h0),h.setUint32(4,this.h1),h.setUint32(8,this.h2),h.setUint32(12,this.h3),h.setUint32(16,this.h4),h.setUint32(20,this.h5),h.setUint32(24,this.h6),this.is224||h.setUint32(28,this.h7),t};var l=d();l.sha256=l,l.sha224=d(!0),s?module.exports=l:(h.sha256=l.sha256,h.sha224=l.sha224,e&&define(function(){return l}))}();
+timeid = setTimeout(function(){relogin();}, 300 * 1000);function callbackfuncReset(){clearTimeout(timeid);timeid = setTimeout(function(){relogin();}, 300 * 1000);}
+function relogin()
+{
+if ("0" == 1)
+{
+document.ftonote.submit();
+}
+else
+{
+alert("页面超时，请重新登录。");
+
+setValue("logout",1);
+timeoutSHA256();
+document.flogout.submit();
+
+}
+}
+function onClickLogout()
+{
+setValue("logout",1);
+document.flogout.submit();
+}
+function setenter(e)
+{
+e = window.event?window.event:e;
+if( e == "[object]")
+{
+if (event.keyCode == 13 && event.srcElement.type == "text")
+{
+event.keyCode = 9;
+}
+}
+}
+</script>
+</head>
+<!--增加iframe使错误提示框不被不被下拉菜单给遮盖-->
+<body id="htmlBody" marginwidth="0" marginheight="0">
+<div id="myLayer" onmousedown="setinner('hidden')" style="position: absolute; width: 185px; height: 91px; z-index: 9; left: 580px; top: 83px; background: url(&quot;img/pop_up.gif&quot;) no-repeat; border: 1px none rgb(0, 0, 0); visibility: hidden;">
+<iframe id="myiframe" style="position: absolute; width: 179px; height: 88px; border: 1px none rgb(0, 0, 0); z-index: -1; display: none;">
+</iframe>
+<div id="Layer3" style="position:absolute; width:30px; height:10px; z-index:11; left: 34px; top: 9px; font-size: 8pt;">
+<table width="140" border="0">
+<tbody><tr>
+<td><font class="note" id="errnote">&nbsp;错误信息</font></td>
+</tr>
+</tbody></table>
+</div>
+<div id="Layer1" style="position:absolute; width:180px; height:45px; z-index:999; left: 2px; top: 28px;">
+<table width="183" border="0" height="60">
+<tbody><tr>
+<td width="183" height="60px" valign="top">&nbsp;<font id="errmsg" class="notecontent"></font></td>
+</tr>
+</tbody></table>
+</div>
+</div>
+<!--help部分结束-->
+<div id="container">
+<!--content部分开始-->
+<div class="main_content" id="content">
+<table width="100%;" border="0" cellpadding="0" cellspacing="0">
+<tbody><tr height="26" style="background-image:url(../img/middle_bg.gif); background-repeat:repeat-x">
+<td width="150"></td>
+<td align="bottom"><div id="MenuArea_L1" class="nMenu" style="/"><table border="0" cellpadding="0" cellspacing="0" style="text-align:center"><tbody><tr><td height="20px" width="91px" style="background-image:url('img/middle_deep.gif'); background-repeat:no-repeat; cursor:pointer;" onclick="javascript:openLink('getpage.gch?pid=1002&amp;nextpage=status_dev_info_t_fj.gch')"><font id="Menu1_Status" class="Menu_L1_Active">设备概览</font></td><td height="20px" width="91px" style="background-image:url('img/middle_deep.gif'); background-repeat:no-repeat; cursor:pointer;" onclick="javascript:openLink('getpage.gch?pid=1002&amp;nextpage=quick_setup_user_t.gch')"><font id="Menu1_Fastconf" class="Menu_L1_Active">快速向导</font></td><td height="20px" width="91px" style="background-image:url('img/middle_light.gif'); background-repeat:no-repeat; cursor:pointer;" onclick="javascript:openLink('getpage.gch?pid=1002&amp;nextpage=net_ipv4_set_t.gch')"><font id="Menu1_Network" class="Menu_L1_Active">网络配置</font></td><td height="20px" width="91px" style="background-image:url('img/middle_deep.gif'); background-repeat:no-repeat; cursor:pointer;" onclick="javascript:openLink('getpage.gch?pid=1002&amp;nextpage=net_ipv6_set_t.gch')"><font id="Menu1_IPV6" class="Menu_L1_Active">IPv6</font></td><td height="20px" width="91px" style="background-image:url('img/middle_deep.gif'); background-repeat:no-repeat; cursor:pointer;" onclick="javascript:openLink('getpage.gch?pid=1002&amp;nextpage=sec_url_filter_t_ty4.gch')"><font id="Menu1_OperationControl" class="Menu_L1_Active">上网行为管理</font></td><td height="20px" width="91px" style="background-image:url('img/middle_deep.gif'); background-repeat:no-repeat; cursor:pointer;" onclick="javascript:openLink('getpage.gch?pid=1002&amp;nextpage=manager_aduser_conf_zq_t.gch')"><font id="Menu1_ObjectManagement" class="Menu_L1_Active">对象管理</font></td><td height="20px" width="91px" style="background-image:url('img/middle_deep.gif'); background-repeat:no-repeat; cursor:pointer;" onclick="javascript:openLink('getpage.gch?pid=1002&amp;nextpage=sec_ArpSpoofing_t.gch')"><font id="Menu1_Secure" class="Menu_L1_Active">网络安全</font></td><td height="20px" width="91px" style="background-image:url('img/middle_deep.gif'); background-repeat:no-repeat; cursor:pointer;" onclick="javascript:openLink('getpage.gch?pid=1002&amp;nextpage=net_family_named_t.gch')"><font id="Menu1_Management" class="Menu_L1_Active">系统管理</font></td><td height="20px" width="91px" style="background-image:url('img/middle_deep.gif'); background-repeat:no-repeat; cursor:pointer;" onclick="javascript:openLink('getpage.gch?pid=1002&amp;nextpage=diagnose_ping_t.gch')"><font id="Menu1_diagnose" class="Menu_L1_Active">系统调试</font></td><td height="20px" width="91px" style="background-image:url('img/middle_deep.gif'); background-repeat:no-repeat; cursor:pointer;" onclick="javascript:openLink('getpage.gch?pid=1002&amp;nextpage=help_t.gch')"><font id="Menu1_Help" class="Menu_L1_Active">帮助</font></td></tr></tbody></table></div></td>
+<td align="right"><a id="buttonLogout" onclick="onClickLogout();return false;">退出</a>&nbsp;&nbsp;&nbsp;&nbsp;</td>
+</tr>
+</tbody></table>
+<!--内容开始-->
+<!--导航条开始-->
+<form name="flogout" id="flogout" method="post" onsubmit="return false;" action="/" target="_top">
+<input type="hidden" name="logout" id="logout" value="">
+<input type="hidden" name="logoutaction" id="logoutaction" value="">
+<input type="hidden" name="timeout" id="timeout" value="">
+<input type="hidden" name="timeoutRandomNum" id="timeoutRandomNum" value="">
+<input id="_SESSION_TOKEN" name="_SESSION_TOKEN" type="hidden" value="8PPOuK7i9oDBhp5H7s4rRmNb"></form>
+
+<!--E8 为满足自动化，不弹出alert对话框，弹出页面显示信息-JJH-201205-->
+<form name="ftonote" id="ftonote" method="post" onsubmit="return false;" action="/" target="_top">
+<input type="hidden" name="logout" id="logout" value="1">
+<input id="_SESSION_TOKEN" name="_SESSION_TOKEN" type="hidden" value="8PPOuK7i9oDBhp5H7s4rRmNb"></form>
+<!--导航条结束-->
+<div class="main_content">
+<!--三级菜单开始-->
+<div id="MenuArea_L2"><div class="Menu_L2_Link" id="Menu2_Net_Network" style="cursor:pointer" onclick="javascript:openLink(&quot;getpage.gch?pid=1002&amp;nextpage=net_ipv4_set_t.gch&quot;)"><font style="color:#FFFFFF"><img border="0" src="/img/more.gif">基础配置</font></div><div class="Menu_L2_Active" id="Menu2_Net_LAN" style="cursor:pointer" onclick="javascript:openLink(&quot;getpage.gch?pid=1002&amp;nextpage=app_virtual_conf_t_zq.gch&quot;)"><font style="color:#FFFFFF"><img border="0" src="/img/new_minus.gif">高级选项</font></div><ul style="margin-left: 14px;list-style:none;"><li class="Menu_L3_Active" id="Menu3_ZQ_AN_VirtualServer" style="width:108px;cursor:pointer" onclick="javascript:openLink('getpage.gch?pid=1002&amp;nextpage=app_virtual_conf_t_zq.gch')"><font><img border="0" src="/img/xian1.gif">NAT</font></li><li class="Menu_L3_Link" id="Menu3_AI_Muticast" style="width:108px;cursor:pointer" onclick="javascript:openLink('getpage.gch?pid=1002&amp;nextpage=app_muticast_set_t.gch')"><font><img border="0" src="/img/xian1.gif">组播设置</font></li></ul><div class="Menu_L2_Link" id="Menu2_Net_WLAN" style="cursor:pointer" onclick="javascript:openLink(&quot;getpage.gch?pid=1002&amp;nextpage=net_wlan_basic_t1.gch&quot;)"><font style="color:#FFFFFF"><img border="0" src="/img/more.gif">WLAN接口设置</font></div></div>
+<!--内容结束-->
+</div>
+<div style="margin-left: 154px;padding:10px;line-height: 150%;">
+<div id="e8_div1">
+<form name="fSubmit" id="fSubmit" method="POST" action="getpage.gch?pid=1002&amp;nextpage=app_virtual_conf_t_zq.gch">
+<input type="hidden" name="ViewName" id="ViewName" value="">
+<script language="javascript">Transfer_meaning('ViewName','');</script>
+<input type="hidden" name="WANCViewName" id="WANCViewName" value="">
+<script language="javascript">Transfer_meaning('WANCViewName','');</script>
+<input type="hidden" name="Enable" id="Enable" value="">
+<script language="javascript">Transfer_meaning('Enable','');</script>
+<input type="hidden" name="WANIpRange" id="WANIpRange" value="">
+<script language="javascript">Transfer_meaning('WANIpRange','');</script>
+<input type="hidden" name="WANIp" id="WANIp" value="">
+<script language="javascript">Transfer_meaning('WANIp','');</script>
+<input type="hidden" name="MinExtPort" id="MinExtPort" value="">
+<script language="javascript">Transfer_meaning('MinExtPort','');</script>
+<input type="hidden" name="InternalHost" id="InternalHost" value="">
+<script language="javascript">Transfer_meaning('InternalHost','');</script>
+<input type="hidden" name="MinIntPort" id="MinIntPort" value="">
+<script language="javascript">Transfer_meaning('MinIntPort','');</script>
+<input type="hidden" name="Protocol" id="Protocol" value="">
+<script language="javascript">Transfer_meaning('Protocol','');</script>
+<input type="hidden" name="IF_ACTION" id="IF_ACTION" value="">
+<script language="javascript">Transfer_meaning('IF_ACTION','');</script>
+<input type="hidden" name="IF_ERRORSTR" id="IF_ERRORSTR" value="SUCC">
+<script language="javascript">Transfer_meaning('IF_ERRORSTR','SUCC');</script>
+<input type="hidden" name="IF_ERRORPARAM" id="IF_ERRORPARAM" value="SUCC">
+<script language="javascript">Transfer_meaning('IF_ERRORPARAM','SUCC');</script>
+<input type="hidden" name="IF_ERRORTYPE" id="IF_ERRORTYPE" value="-1">
+<script language="javascript">Transfer_meaning('IF_ERRORTYPE','\x2d1');</script>
+<input type="hidden" name="IF_INDEX" id="IF_INDEX" value="-1">
+<script language="javascript">Transfer_meaning('IF_INDEX','\x2d1');</script>
+<input type="hidden" name="IF_INSTNUM" id="IF_INSTNUM" value="1">
+<script language="javascript">Transfer_meaning('IF_INSTNUM','');</script>
+<input type="hidden" name="ViewName0" id="ViewName0" value="IGD.WD1.WCD2.WCPPP1.FWMUTIPM1">
+<script language="javascript">Transfer_meaning('ViewName0','IGD\x2eWD1\x2eWCD2\x2eWCPPP1\x2eFWMUTIPM1');</script>
+<input type="hidden" name="WANCViewName0" id="WANCViewName0" value="IGD.WD1.WCD2.WCPPP1">
+<script language="javascript">Transfer_meaning('WANCViewName0','IGD\x2eWD1\x2eWCD2\x2eWCPPP1');</script>
+<input type="hidden" name="Enable0" id="Enable0" value="1">
+<script language="javascript">Transfer_meaning('Enable0','1');</script>
+<input type="hidden" name="WANIpRange0" id="WANIpRange0" value="106.122.241.216-106.122.241.216">
+<script language="javascript">Transfer_meaning('WANIpRange0','106\x2e122\x2e241\x2e216\x2d106\x2e122\x2e241\x2e216');</script>
+<input type="hidden" name="WANIp0" id="WANIp0" value="106.122.241.216,106.122.241.216,106.122.241.216,106.122.241.216">
+<script language="javascript">Transfer_meaning('WANIp0','106\x2e122\x2e241\x2e216\x2c106\x2e122\x2e241\x2e216\x2c106\x2e122\x2e241\x2e216\x2c106\x2e122\x2e241\x2e216');</script>
+<input type="hidden" name="MinExtPort0" id="MinExtPort0" value="8088,5173,8088,5173">
+<script language="javascript">Transfer_meaning('MinExtPort0','8088\x2c5173\x2c8088\x2c5173');</script>
+<input type="hidden" name="InternalHost0" id="InternalHost0" value="192.168.1.250,192.168.1.250,192.168.1.251,192.168.1.251">
+<script language="javascript">Transfer_meaning('InternalHost0','192\x2e168\x2e1\x2e250\x2c192\x2e168\x2e1\x2e250\x2c192\x2e168\x2e1\x2e251\x2c192\x2e168\x2e1\x2e251');</script>
+<input type="hidden" name="MinIntPort0" id="MinIntPort0" value="8088,5173,8088,5173">
+<script language="javascript">Transfer_meaning('MinIntPort0','8088\x2c5173\x2c8088\x2c5173');</script>
+<input type="hidden" name="Protocol0" id="Protocol0" value="TCP,TCP,TCP,TCP">
+<script language="javascript">Transfer_meaning('Protocol0','TCP\x2cTCP\x2cTCP\x2cTCP');</script>
+<input type="hidden" name="WANCName0" id="WANCName0" value="2_INTERNET_R_VID_41">
+<script language="javascript">Transfer_meaning('WANCName0','2\x5fINTERNET\x5fR\x5fVID\x5f41');</script>
+<script language="javascript">Transfer_meaning('IF_ERRORSTR','SUCC');</script>
+<script language="javascript">Transfer_meaning('IF_ERRORPARAM','SUCC');</script>
+<script language="javascript">Transfer_meaning('IF_ERRORTYPE','\x2d1');</script>
+<script language="javascript">Transfer_meaning('IF_INSTNUM','1');</script>
+<input id="_SESSION_TOKEN" name="_SESSION_TOKEN" type="hidden" value="8PPOuK7i9oDBhp5H7s4rRmNb"></form>
+<script language="javascript">
+var FWPMSTATIC_PARA = new Array(
+"ViewName",
+"WANCViewName",
+"Enable",
+"WANIpRange",
+"WANIp",
+"MinExtPort",
+"InternalHost",
+"MinIntPort",
+"Protocol"
+);
+var TABLE_SHOW_PARA =
+{
+"modifyFunc": "VlanItemModify",
+"deleteFunc": "VlanItemDelete"
+};
+var index =-1;
+var instNum = 0;
+var ModifyinstNum = 0;
+function pageLoad(url)
+{
+getObj("fSubmit").action = url;
+var errstr= getValue("IF_ERRORSTR");
+var errpara = getValue("IF_ERRORPARAM");
+OldProcessRet(errstr, errpara);
+moveErrLayer(580,40);
+showTable();
+pageGetValue();
+}
+function DisableAllConf()
+{
+jslDisable("WANselect_select","ExternalIPRange_text","ExternalIP_text","ExternalPort_text","PortMappingProtocol_select","InternalClient_text","InternalPort_text","Btn_Add_fwpm");
+}
+function EnableAllConf()
+{
+jslEnable("WANselect_select","ExternalIPRange_text","ExternalIP_text","ExternalPort_text","PortMappingProtocol_select","InternalClient_text","InternalPort_text","Btn_Add_fwpm");
+}
+function getImage(src, strmethod,Btn_id)
+{
+return ("<input type=\"button\" id=\""+Btn_id+"\"  onclick=\""+ strmethod
++"\" style=\"width:20px;height:20px;border:0px;padding:2px;cursor:pointer;background:url("+src+");\">");
+}
+function setDefault()
+{
+setValue("WANselect_select","");
+setValue("ExternalIPRange_text","");
+setValue("ExternalIP_text","");
+setValue("ExternalPort_text","");
+setValue("PortMappingProtocol_select","");
+setValue("InternalClient_text","");
+setValue("InternalPort_text","");
+for(var n = 0; n < instNum; n++)
+{
+if(getObj(index + "fwpm_line"+ n))
+{
+getObj("fwpm_Tableforwan").deleteRow(getObj(index + "fwpm_line"+ n).rowIndex);
+}
+}
+instNum = 0;
+jslEnDisplay("Btn_Add_fwpm");
+jslDiDisplay("Btn_Edit_fwpm", "Btn_Back_fwpm");
+}
+function setValueById(i)
+{
+jslSetValue("WANselect_select","WANCViewName"+i);
+jslSetValue("ExternalIPRange_text","WANIpRange"+i);
+if(getValue("WANIp"+i) != "")
+{
+var WANIp = getValue("WANIp"+i).split(",");
+var MinExtPort = getValue("MinExtPort"+i).split(",");
+var Protocol = getValue("Protocol"+i).split(",");
+var InternalHost = getValue("InternalHost"+i).split(",");
+var MinIntPort = getValue("MinIntPort"+i).split(",");
+instNum = WANIp.length;
+for(var j = 0; j < instNum; j++)
+{
+var newline,paraObjId,clickFunc;
+newline = getObj("fwpm_Tableforwan").insertRow(-1);
+newline.setAttribute("class", "white");
+newline.setAttribute("className", "white");
+newline.setAttribute("id", i + "fwpm_line"+j);
+newline.insertCell(-1).id = i + "WANIp"+j;
+getObj(i + "WANIp"+j).innerHTML = WANIp[j];
+newline.insertCell(-1).id = i + "MinExtPort"+j;
+getObj(i + "MinExtPort"+j).innerHTML = MinExtPort[j];
+newline.insertCell(-1).id = i + "Protocol"+j;
+getObj(i + "Protocol"+j).innerHTML = Protocol[j];
+newline.insertCell(-1).id = i + "InternalHost"+j;
+getObj(i + "InternalHost"+j).innerHTML = InternalHost[j];
+newline.insertCell(-1).id = i + "MinIntPort"+j;
+getObj(i + "MinIntPort"+j).innerHTML = MinIntPort[j];
+clickFunc = TABLE_SHOW_PARA.modifyFunc + "(" + i+","+j + ")";
+newline.insertCell(-1).innerHTML = getImage("img/button_modify.gif", clickFunc,"Img_Modify"+j);
+clickFunc = TABLE_SHOW_PARA.deleteFunc+ "(" + i+","+ j + ")";
+newline.insertCell(-1).innerHTML = getImage("img/button_delete.gif", clickFunc,"Img_Delete"+j);
+}
+}
+}
+function VlanItemDelete(MODindex , MODinstNUM)
+{
+var rowIndex = getObj(MODindex + "fwpm_line"+ MODinstNUM).rowIndex;
+getObj("fwpm_Tableforwan").deleteRow(rowIndex);
+setValue("ExternalIP_text","");
+setValue("ExternalPort_text","");
+setValue("PortMappingProtocol_select","");
+setValue("InternalClient_text","");
+setValue("InternalPort_text","");
+jslEnDisplay("Btn_Add_fwpm");
+jslDiDisplay("Btn_Edit_fwpm", "Btn_Back_fwpm");
+}
+function VlanItemModify(MODindex , MODinstNUM)
+{
+setValue("ExternalIP_text","");
+setValue("ExternalPort_text","");
+setValue("PortMappingProtocol_select","");
+setValue("InternalClient_text","");
+setValue("InternalPort_text","");
+jslDiDisplay("Btn_Add_fwpm");
+jslEnDisplay("Btn_Edit_fwpm", "Btn_Back_fwpm");
+ModifyinstNum = MODinstNUM ;
+setValue("ExternalIP_text",getObj(MODindex + "WANIp"+MODinstNUM).innerHTML);
+setValue("ExternalPort_text",getObj(MODindex + "MinExtPort"+MODinstNUM).innerHTML);
+setValue("PortMappingProtocol_select",getObj(MODindex + "Protocol"+MODinstNUM).innerHTML);
+setValue("InternalClient_text",getObj(MODindex + "InternalHost"+MODinstNUM).innerHTML);
+setValue("InternalPort_text",getObj(MODindex + "MinIntPort"+MODinstNUM).innerHTML);
+}
+function pageAdd()
+{
+if(pageCheckValue() == true)
+{
+var newline,paraObjId,clickFunc;
+newline = getObj("fwpm_Tableforwan").insertRow(-1);
+newline.setAttribute("class", "white");
+newline.setAttribute("className", "white");
+newline.insertCell(-1).id = index + "WANIp"+instNum;
+getObj(index + "WANIp"+instNum).innerHTML = getValue("ExternalIP_text");
+newline.insertCell(-1).id = index + "MinExtPort"+instNum;
+getObj(index + "MinExtPort"+instNum).innerHTML = getValue("ExternalPort_text");
+newline.insertCell(-1).id = index + "Protocol"+instNum;
+getObj(index + "Protocol"+instNum).innerHTML = getValue("PortMappingProtocol_select");
+newline.insertCell(-1).id = index + "InternalHost"+instNum;
+getObj(index + "InternalHost"+instNum).innerHTML = getValue("InternalClient_text");
+newline.insertCell(-1).id = index + "MinIntPort"+instNum;
+getObj(index + "MinIntPort"+instNum).innerHTML = getValue("InternalPort_text");
+clickFunc = TABLE_SHOW_PARA.modifyFunc + "(" + index+","+instNum + ")";
+newline.insertCell(-1).innerHTML = getImage("img/button_modify.gif", clickFunc,"Img_Modify"+instNum);
+clickFunc = TABLE_SHOW_PARA.deleteFunc+ "(" + index+","+ instNum + ")";
+newline.insertCell(-1).innerHTML = getImage("img/button_delete.gif", clickFunc,"Img_Delete"+instNum);
+instNum ++;
+setValue("ExternalIP_text","");
+setValue("ExternalPort_text","");
+setValue("PortMappingProtocol_select","");
+setValue("InternalClient_text","");
+setValue("InternalPort_text","");
+}
+}
+function back4add()
+{
+setValue("ExternalIP_text","");
+setValue("ExternalPort_text","");
+setValue("PortMappingProtocol_select","");
+setValue("InternalClient_text","");
+setValue("InternalPort_text","");
+jslEnDisplay("Btn_Add_fwpm");
+jslDiDisplay("Btn_Edit_fwpm", "Btn_Back_fwpm");
+}
+function pageMOD()
+{
+if(pageCheckValue() == true)
+{
+getObj(index + "WANIp"+ModifyinstNum).innerHTML = getValue("ExternalIP_text");
+getObj(index + "MinExtPort"+ModifyinstNum).innerHTML = getValue("ExternalPort_text");
+getObj(index + "Protocol"+ModifyinstNum).innerHTML = getValue("PortMappingProtocol_select");
+getObj(index + "InternalHost"+ModifyinstNum).innerHTML = getValue("InternalClient_text");
+getObj(index + "MinIntPort"+ModifyinstNum).innerHTML = getValue("InternalPort_text");
+setValue("ExternalIP_text","");
+setValue("ExternalPort_text","");
+setValue("PortMappingProtocol_select","");
+setValue("InternalClient_text","");
+setValue("InternalPort_text","");
+jslEnDisplay("Btn_Add_fwpm");
+jslDiDisplay("Btn_Edit_fwpm", "Btn_Back_fwpm");
+}
+}
+function ModifyItem(i)
+{
+setDefault();
+index = i;
+jslDisable("Save_button","Del_button");
+DisableAllConf();
+var indexStart = 2;
+var indexEnd = parseInt(getValue("IF_INSTNUM"))+1;
+var checkboxId ="";
+var selectcheckboxId = "VirtualServer_"+parseInt(i+2)+"_3_table";
+for( var j=0; j<(indexEnd-indexStart)+1; j++)
+{
+checkboxId = "VirtualServer_"+(parseInt(indexStart)+j)+"_3_table";
+if(selectcheckboxId != checkboxId)
+{
+setChecked(checkboxId,false);
+}
+}
+if(getChecked(selectcheckboxId) == true)
+{
+EnableAllConf();
+jslEnable("Save_button","Del_button");
+setValueById(i);
+setChecked("VirtualServer_blank_6_table",false);
+}
+}
+function addItem()
+{
+if(getChecked("VirtualServer_blank_6_table") == true)
+{
+var indexStart = 2;
+var indexEnd = parseInt(getValue("IF_INSTNUM"))+1;
+var checkboxId ="";
+for( var j=0; j<(indexEnd-indexStart)+1; j++)
+{
+checkboxId = "VirtualServer_"+(parseInt(indexStart)+j)+"_3_table";
+setChecked(checkboxId,false);
+}
+EnableAllConf();
+jslEnable("Save_button");
+jslDisable("Del_button");
+setDefault();
+index = -1;
+instNum = 0;
+}
+else
+{
+instNum = 0;
+DisableAllConf();
+jslDisable("Save_button","Del_button");
+}
+}
+function getNameValue(id,size, value)
+{
+return ("<input type=\"text\" class=\"uiNoBorder\" size=\"" + size +"\" value=\""
++ value + "\"  id=\"" + id + "\"  readonly>");
+}
+function getCheckbox(id, size,strmethod)
+{
+return ("<input type=\"checkbox\" id=\""+id+"\" size=\""+size+"\" onclick=\""+strmethod+"\">");
+}
+function addline(index)
+{
+var newline  = getObj("fwpm_Table").insertRow(-1);
+var len = getObj("WANselect_select").options.length;
+var WANCViewName = "";
+for (var i=0;i<len;i++)
+{
+if(getValue("WANCViewName" + index) == getObj("WANselect_select").options[i].value)
+{
+WANCViewName = getObj("WANselect_select").options[i].text;
+}
+}
+newline.insertCell(-1).innerHTML = getNameValue("VirtualServer_" + (index+2)+ "_1_table",24,WANCViewName);
+newline.insertCell(-1).innerHTML = getNameValue("VirtualServer_" + (index+2)+ "_2_table",36,getValue("WANIpRange" + index));
+newline.insertCell(-1).innerHTML = getCheckbox("VirtualServer_" + (index+2) + "_3_table", 10,"ModifyItem("+index+")");
+}
+function showTable()
+{
+var num = getValue("IF_INSTNUM");
+if( num > 0)
+{
+for(var i = 0; i < num; i++)
+{
+addline(i);
+}
+}
+var newline = getObj("fwpm_Table").insertRow(-1);
+for(var j = 0;j < 2; j++)
+{
+newline.insertCell(-1).id = "VirtualServer_blank_"+parseInt(j+1)+"_table";
+getObj("VirtualServer_blank_"+parseInt(j+1)+"_table").innerHTML ="&nbsp;";
+}
+newline.insertCell(-1).innerHTML = getCheckbox("VirtualServer_blank_6_table", 2,"addItem()");
+}
+function getmsg(id)
+{
+var str      = new Array();
+str[0]   = new Array(101, "不允许为空，请重新输入。");
+str[1]   = new Array(102, "长度有误，请输入长度为");
+str[2]   = new Array(103, "之间的字符。");
+str[3]   = new Array(114, "有误，请输入合法字符。");
+str[4]   = new Array(115, "有误，请输入整数。");
+str[5]   = new Array(116, "有误，请输入值为");
+str[6]   = new Array(117, "之间的整数。");
+str[7]   = new Array(108, "有误，请输入合法IP地址。");
+str[8]   = new Array(141, "有误，不可输入全0，请重新输入。");
+str[9]   = new Array(1025, "与外部IP范围必须同网段，请检查配置参数。");
+str[10]   = new Array(1026, "必须在外部IP范围内，请检查配置参数。");
+str[11]   = new Array(1027, "必须同网段，请检查配置参数。");
+str[12]   = new Array(1028, "格式IP-IP,起始地址需小于结束地址，请检查配置参数。");
+return getMsgFormArray(str, arguments);
+}
+function pageGetValue()
+{
+DisableAllConf();
+jslDisable("Save_button","Del_button");
+}
+function pageSetValue()
+{
+HiddenParaInit(FWPMSTATIC_PARA);
+jslSetValue("WANCViewName", "WANselect_select");
+jslSetValue("WANIpRange", "ExternalIPRange_text");
+var WANIp = "";
+var MinExtPort = "";
+var Protocol = "";
+var InternalHost = "";
+var MinIntPort = "";
+for(var i = 0; i < instNum; i++)
+{
+if(getObj(index + "WANIp"+i))
+{
+WANIp = WANIp + getObj(index + "WANIp"+i).innerHTML + ",";
+MinExtPort = MinExtPort + getObj(index + "MinExtPort"+i).innerHTML + ",";
+Protocol = Protocol + getObj(index + "Protocol"+i).innerHTML + ",";
+InternalHost = InternalHost + getObj(index + "InternalHost"+i).innerHTML + ",";
+MinIntPort = MinIntPort + getObj(index + "MinIntPort"+i).innerHTML + ",";
+}
+}
+if(WANIp.substr(WANIp.length-1,WANIp.length) == ",")
+{
+WANIp = WANIp.substr(0,WANIp.length-1);
+}
+if(MinExtPort.substr(MinExtPort.length-1,MinExtPort.length) == ",")
+{
+MinExtPort = MinExtPort.substr(0,MinExtPort.length-1);
+}
+if(Protocol.substr(Protocol.length-1,Protocol.length) == ",")
+{
+Protocol = Protocol.substr(0,Protocol.length-1);
+}
+if(InternalHost.substr(InternalHost.length-1,InternalHost.length) == ",")
+{
+InternalHost = InternalHost.substr(0,InternalHost.length-1);
+}
+if(MinIntPort.substr(MinIntPort.length-1,MinIntPort.length) == ",")
+{
+MinIntPort = MinIntPort.substr(0,MinIntPort.length-1);
+}
+setValue("WANIp", WANIp);
+setValue("MinExtPort", MinExtPort);
+setValue("Protocol", Protocol);
+setValue("InternalHost", InternalHost);
+setValue("MinIntPort",MinIntPort);
+}
+function pageSaveCheckValue()
+{
+var WANIpRange = getValue("ExternalIPRange_text");
+var WANIpStart = WANIpRange.split("-")[0];
+var WANIpEnd = WANIpRange.split("-")[1];
+if(checkLanIPAddress(WANIpStart,"ExternalIPRange_text","Fnt_ExternalIPRange") != true)
+{
+return false;
+}
+if(checkLanIPAddress(WANIpEnd,"ExternalIPRange_text","Fnt_ExternalIPRange") != true)
+{
+return false;
+}
+for(var i=0; i<3; i++)
+{
+if(WANIpStart.split('.')[i] != WANIpEnd.split('.')[i])
+{
+var msg = getmsg(1027);
+ShowErrorForCom("ExternalIPRange_text","Fnt_ExternalIPRange",msg);
+return false;
+}
+}
+if(parseInt(WANIpStart.split('.')[3]) > parseInt(WANIpEnd.split('.')[3]))
+{
+var msg = getmsg(1028);
+ShowErrorForCom("ExternalIPRange_text","Fnt_ExternalIPRange",msg);
+return false;
+}
+return true;
+}
+function pageCheckValue()
+{
+var WANIpRange = getValue("ExternalIPRange_text");
+var WANIpStart = WANIpRange.split("-")[0];
+var WANIpEnd = WANIpRange.split("-")[1];
+if(checkLanIPAddress(WANIpStart,"ExternalIPRange_text","Fnt_ExternalIPRange") != true)
+{
+return false;
+}
+if(checkLanIPAddress(WANIpEnd,"ExternalIPRange_text","Fnt_ExternalIPRange") != true)
+{
+return false;
+}
+for(var i=0; i<3; i++)
+{
+if(WANIpStart.split('.')[i] != WANIpEnd.split('.')[i])
+{
+var msg = getmsg(1027);
+ShowErrorForCom("ExternalIPRange_text","Fnt_ExternalIPRange",msg);
+return false;
+}
+}
+if(parseInt(WANIpStart.split('.')[3]) > parseInt(WANIpEnd.split('.')[3]))
+{
+var msg = getmsg(1028);
+ShowErrorForCom("ExternalIPRange_text","Fnt_ExternalIPRange",msg);
+return false;
+}
+var WANIp = getValue("ExternalIP_text");
+if(checkLanIPAddress(WANIp,"ExternalIP_text","Fnt_ExternalIP") != true)
+{
+return false;
+}
+for(var j=0; j<3; j++)
+{
+if(WANIp.split('.')[j] != WANIpStart.split('.')[j] || WANIp.split('.')[j] != WANIpEnd.split('.')[j] || WANIpStart.split('.')[j] != WANIpEnd.split('.')[j])
+{
+var msg = getmsg(1025);
+ShowErrorForCom("ExternalIP_text","Fnt_ExternalIP",msg);
+return false;
+}
+}
+if(parseInt(WANIp.split('.')[3]) < parseInt(WANIpStart.split('.')[3]) || parseInt(WANIp.split('.')[3]) > parseInt(WANIpEnd.split('.')[3]))
+{
+var msg = getmsg(1026);
+ShowErrorForCom("ExternalIP_text","Fnt_ExternalIP",msg);
+return false;
+}
+var MinExtPort = getValue("ExternalPort_text");
+if(Check_IntegerRange(MinExtPort,1,65535,"ExternalPort_text","Fnt_ExternalPort")!=true)
+{
+return false;
+}
+var Protocol = getValue("PortMappingProtocol_select");
+if(checkNull(Protocol) != true)
+{
+msg = getmsg(101);
+ShowErrorForCom("Fnt_PortMappingProtocol","Fnt_PortMappingProtocol",msg);
+return false;
+}
+var InternalHost = getValue("InternalClient_text");
+if(checkLanIPAddress(InternalHost,"InternalClient_text","Fnt_InternalClient") != true)
+{
+return false;
+}
+var MinIntPort = getValue("InternalPort_text");
+if(Check_IntegerRange(MinIntPort,1,65535,"InternalPort_text","Fnt_InternalPort")!=true)
+{
+return false;
+}
+return true;
+}
+function Check_IntegerRange(value,min,max,Frm,Fnt)
+{
+var tem = checkIntegerRange(value,min,max);
+if(tem == -1)
+{
+msg = getmsg(101);
+ShowErrorForCom(Frm,Fnt,msg);
+return false;
+}
+else if(tem == -2)
+{
+msg = getmsg(115);
+ShowErrorForCom(Frm,Fnt,msg);
+return false;
+}
+else if(tem == -3)
+{
+msg = getmsg(116,min,max);
+ShowErrorForCom(Frm,Fnt,msg);
+return false;
+}
+return true;
+}
+function checkLanIPAddress(lanip,Frm,Fnt)
+{
+var msg = "";
+if(checkNull(lanip) != true)
+{
+msg = getmsg(101);
+ShowErrorForCom(Frm,Fnt,msg);
+return false;
+}
+if(checkIpAddress(lanip) != true)
+{
+msg = getmsg(108);
+ShowErrorForCom(Frm,Fnt,msg);
+return false;
+}
+if(lanip == "0.0.0.0")
+{
+msg = getmsg(141);
+ShowErrorForCom(Frm,Fnt,msg);
+return false;
+}
+if(CheckSpecialIp(lanip) != true)
+{
+msg = getmsg(108);
+ShowErrorForCom(Frm,Fnt,msg);
+return false;
+}
+return true;
+}
+function CheckSpecialIp(value)
+{
+var ip;
+ip = value.split('.');
+if(Number(ip[0])==127)
+{
+return false ;
+}
+else if(Number(ip[0])>=224)
+{
+return false ;
+}
+else if(Number(ip[0])<1)
+{
+return false ;
+}
+return true;
+}
+function changeWANselect()
+{
+var WANCViewName = getValue("WANselect_select");
+setValue("ExternalIPRange_text","");
+setValue("ExternalIP_text","");
+setValue("ExternalPort_text","");
+setValue("PortMappingProtocol_select","");
+setValue("InternalClient_text","");
+setValue("InternalPort_text","");
+for(var n = 0; n < instNum; n++)
+{
+if(getObj(index + "fwpm_line"+ n))
+{
+getObj("fwpm_Tableforwan").deleteRow(getObj(index + "fwpm_line"+ n).rowIndex);
+}
+}
+instNum = 0;
+index = -1;
+setChecked("VirtualServer_blank_6_table",false);
+var num = parseInt(getValue("IF_INSTNUM"));
+for (var i=0;i<num;i++)
+{
+setChecked("VirtualServer_"+parseInt(i+2)+"_3_table",false);
+if(getValue("WANCViewName"+i)==WANCViewName)
+{
+setValueById(i);
+index = i;
+setChecked("VirtualServer_blank_6_table",false);
+setChecked("VirtualServer_"+parseInt(i+2)+"_3_table",true);
+jslEnable("Save_button","Del_button");
+}
+}
+if(index==-1)
+{
+jslEnable("Save_button");
+jslDisable("Del_button");
+setChecked("VirtualServer_blank_6_table",true);
+}
+}
+function pageSave()
+{
+if(true == pageSaveCheckValue())
+{
+DisableALL();
+pageSetValue();
+if(index == -1)
+{
+setValue("IF_ACTION", "new");
+}
+else
+{
+setValue("IF_ACTION", "apply");
+}
+setValue("IF_INDEX", index);
+formSubmit();
+}
+else
+{
+}
+}
+function pageDel()
+{
+var num = parseInt(getValue("IF_INSTNUM"))+1;
+DisableALL();
+setValue("IF_ACTION", "MultiDelete");
+getAllDeleteIndex("VirtualServer_", "_3_table","2",num, "fSubmit");
+formSubmit();
+}
+</script>
+
+<h2>
+<table width="98%" cellspacing="0">
+<tbody><tr>
+<td>网络配置  &gt;&gt;  高级选项  &gt;&gt; NAT</td>
+</tr>
+</tbody></table>
+</h2>
+<div class="settings">
+<h3><strong>配置列表</strong></h3>
+<div class="settings-content">
+<table style="width: 98%" border="0" cellpadding="1" cellspacing="1" id="fwpm_Table">
+<tbody><tr>
+<th width="15%" id="VirtualServer_1_1_table"><b>网络接口</b></th>
+<th width="20%" id="VirtualServer_1_2_table"><b>外部IP范围</b></th>
+<th width="8%" id="VirtualServer_1_3_table"><b>选择</b></th>
+</tr>
+<tr><td colspan="3"><hr></td></tr>
+<tr><td><input type="text" class="uiNoBorder" size="24" value="2_INTERNET_R_VID_41" id="VirtualServer_2_1_table" readonly=""></td><td><input type="text" class="uiNoBorder" size="36" value="106.122.241.216-106.122.241.216" id="VirtualServer_2_2_table" readonly=""></td><td><input type="checkbox" id="VirtualServer_2_3_table" size="10" onclick="ModifyItem(0)"></td></tr><tr><td id="VirtualServer_blank_1_table">&nbsp;</td><td id="VirtualServer_blank_2_table">&nbsp;</td><td><input type="checkbox" id="VirtualServer_blank_6_table" size="2" onclick="addItem()"></td></tr></tbody></table>
+</div>
+</div>
+<div class="settings" name="System Information">
+<h3><strong>NAT配置</strong></h3>
+<div class="settings-content">
+<table width="98%" summary="Settings">
+<tbody><tr>
+<td width="20%">选择WAN连接</td>
+<td width="75%">
+<select name="WANselect_select" id="WANselect_select" size="1" class="list_1" onchange="changeWANselect()" disabled="">
+<option value=""></option>
+<option value="IGD.WD1.WCD2.WCPPP1" ipmode="3">2_INTERNET_R_VID_41</option>
+</select>
+</td>
+</tr>
+<tr>
+<td width="20%" name="Fnt_ExternalIPRange" id="Fnt_ExternalIPRange">外部IP范围</td>
+<td width="75%"><input name="ExternalIPRange_text" id="ExternalIPRange_text" type="text" class="inputId2" value="" size="15" disabled="">(格式:IP-IP)</td>
+</tr>
+</tbody></table>
+<h2 style="width: 98%">端口映射配置</h2>
+<table width="98%" summary="Settings">
+<tbody><tr>
+<td width="20%" name="Fnt_ExternalIP" id="Fnt_ExternalIP">外部IP</td>
+<td width="75%"><input name="ExternalIP_text" id="ExternalIP_text" type="text" class="inputId" value="" size="15" disabled=""></td>
+</tr>
+<tr>
+<td width="20%" name="Fnt_ExternalPort" id="Fnt_ExternalPort">外部端口</td>
+<td width="75%"><input name="ExternalPort_text" id="ExternalPort_text" type="text" class="inputId" value="" size="15" disabled="">(1 ~ 65535)</td>
+</tr>
+<tr>
+<td width="20%" name="Fnt_PortMappingProtocol" id="Fnt_PortMappingProtocol">协议</td>
+<td width="75%">
+<select name="" size="1" tabindex="1" class="list_2" id="PortMappingProtocol_select" disabled="">
+<option value="TCP">TCP</option>
+<option value="UDP">UDP</option>
+</select></td>
+</tr>
+<tr>
+<td width="20%" name="Fnt_InternalClient" id="Fnt_InternalClient">客户端IP地址</td>
+<td width="75%"><input name="InternalClient_text" id="InternalClient_text" type="text" class="inputId" value="" size="15" disabled=""></td>
+</tr>
+<tr>
+<td width="20%" name="Fnt_InternalPort" id="Fnt_InternalPort">内部端口</td>
+<td width="75%"><input name="InternalPort_text" id="InternalPort_text" type="text" class="inputId" value="" size="15" disabled="">(1 ~ 65535)</td>
+</tr>
+<tr>
+<td width="20%"></td>
+<td width="75%">
+<input name="Btn_Add_fwpm" type="submit" id="Btn_Add_fwpm" class="button2" value="添 加" onclick="pageAdd()" disabled="">
+<input name="Btn_Edit_fwpm" type="submit" id="Btn_Edit_fwpm" class="button2" value="修 改" onclick="pageMOD()" style="display:none">
+<input name="Btn_Back_fwpm" type="button" id="Btn_Back_fwpm" value="取 消" class="button2" onclick="back4add()" style="display:none">
+</td>
+</tr>
+</tbody></table>
+<h2 style="width: 98%">端口映射列表</h2>
+<table style="width: 98%" border="0" cellpadding="1" cellspacing="1" id="fwpm_Tableforwan">
+<tbody><tr>
+<th width="15%"><b>外部IP</b></th>
+<th width="10%"><b>外部端口</b></th>
+<th width="8%"><b>协议</b></th>
+<th width="15%"><b>客户端IP地址</b></th>
+<th width="10%"><b>内部端口</b></th>
+<th width="8%"><b>修改</b></th>
+<th width="8%"><b>删除</b></th>
+</tr>
+<tr><td colspan="7"><hr></td></tr>
+</tbody></table>
+<h2 style="width: 98%"></h2>
+<div align="center">
+<input type="button" name="Save_button" id="Save_button" class="button2" value="保存" onclick="pageSave()" disabled="">&nbsp;&nbsp;&nbsp;
+<input type="button" name="Del_button" id="Del_button" class="button2" value="删除" onclick="pageDel()" disabled="">
+</div>
+</div>
+</div>  
+</div>
+<!--content部分结束-->
+<!--bottom部分开始-->
+<div align="right" width="99%" id="bottom"></div>
+</div>
+<!--bottom部分结束-->
+<input type="hidden" id="IF_UPLOADING" name="IF_UPLOADING" value="N/A">
+</div>
+</div>
+<script language="javascript">
+var x,y,z,obj;var down=false;var browser=navigator.appName;var b_version=navigator.appVersion;var version=b_version.split(";");var trim_Version = "";if(null != version[1]){trim_Version=version[1].replace(/[ ]/g,"");}function setinner(type){if(browser=="Microsoft Internet Explorer"&& trim_Version=="MSIE6.0"){document.getElementById("myLayer").style.visibility = type;}else {document.getElementById("myLayer").style.visibility = type ;}}function setinnerHidden(){if(browser=="Microsoft Internet Explorer"&& trim_Version=="MSIE6.0"){document.getElementById("myLayer").style.visibility = "hidden";}else {document.getElementById("myLayer").style.visibility = "hidden";}}function init(){if(browser=="Microsoft Internet Explorer"&& trim_Version=="MSIE6.0"){obj=event.srcElement;obj.setCapture();z=obj.style.zIndex;obj.style.zIndex=100 ;x=event.offsetX;y=event.offsetY ;down=true;}}function moveit(){if(browser=="Microsoft Internet Explorer"&& trim_Version=="MSIE6.0"){if(down&&event.srcElement==obj){with(obj.style){posLeft=document.body.scrollLeft+event.x-x;posTop=document.body.scrollTop+event.y-y;}}}}function stopdrag(){if(browser=="Microsoft Internet Explorer"&& trim_Version=="MSIE6.0"){down=false;obj.style.zIndex=z ;obj.releaseCapture();}}function framedispalay(id){if(browser=="Microsoft Internet Explorer"&& trim_Version=="MSIE6.0"){}else {getObj(id).style.display="none";}}function hideHelp(){getObj("alertFram").style.display = "none";};var ie=document.all;var nn6=document.getElementById&&!document.all;var isdrag=false;var y,x;var oDragObj;function moveMouse(e){if (isdrag){oDragObj.style.top = (nn6 ? nTY + e.clientY - y : nTY + event.clientY - y)+"px";oDragObj.style.left = (nn6 ? nTX + e.clientX - x : nTX + event.clientX - x)+"px";return false;}}function initDrag2(o,s){if (typeof(o) == "string") o = document.getElementById(o);o.orig_x = parseInt(o.style.left) - document.body.scrollLeft;o.orig_y = parseInt(o.style.top) - document.body.scrollTop;o.orig_index = o.style.zIndex;o.onmousedown = function(evt){this.style.cursor = "move";var d=document;evt = evt || window.event;var x = evt.clientX+d.body.scrollLeft-o.offsetLeft;var y = evt.clientY+d.body.scrollTop-o.offsetTop;d.ondragstart = "return false;";d.onselectstart = "return false;";d.onselect = "document.selection.empty();";if(o.setCapture)o.setCapture();else if(window.captureEvents)window.captureEvents(Event.MOUSEMOVE|Event.MOUSEUP);d.onmousemove = function(evt){evt = evt || window.event;o.style.left = evt.clientX+document.body.scrollLeft-x +"px";o.style.top = evt.clientY+document.body.scrollTop-y +"px";o.orig_x = parseInt(o.style.left) - document.body.scrollLeft;o.orig_y = parseInt(o.style.top) - document.body.scrollTop;};d.onmouseup = function(){if(o.releaseCapture)o.releaseCapture();else if(window.captureEvents)window.captureEvents(Event.MOUSEMOVE|Event.MOUSEUP);d.onmousemove = null;d.onmouseup = null;d.ondragstart = null;d.onselectstart = null;d.onselect = null;o.style.cursor = "normal";o.style.zIndex = o.orig_index;};};if (s){var orig_scroll = window.onscroll?window.onscroll:function (){};window.onscroll = function (){orig_scroll();o.style.left = o.orig_x + document.body.scrollLeft;o.style.top = o.orig_y + document.body.scrollTop;};}}function initDrag(e){var oDragHandle = nn6 ? e.target : event.srcElement;var topElement = "HTML";if( oDragHandle.tagName ){while (oDragHandle.tagName != topElement && oDragHandle.className != "dragAble"){oDragHandle = nn6 ? oDragHandle.parentNode : oDragHandle.parentElement;}if (oDragHandle.className=="dragAble"){isdrag = true;oDragObj = oDragHandle;nTY = parseInt(oDragObj.style.top+0);y = nn6 ? e.clientY : event.clientY;nTX = parseInt(oDragObj.style.left+0);x = nn6 ? e.clientX : event.clientX;document.onmousemove=moveMouse;return false;}}}function showHelp(){getObj("alertFram").style.display = "block";var helpiframe = document.getElementById('helpiframe');helpiframe.setAttribute('height', document.getElementById('dragAble').scrollHeight);framedispalay("helpiframe");initDrag2('dragAble');}function jump(){top.location.href = "/";}function AutoRelogin(type){var timeout;if ((type == "restart") || (type == "upgconfig")){timeout = 3;}else if (type == "restore"){timeout = 3;}else if (type == "upgversion"){timeout = 5;}else {return;}setTimeout("jump()", timeout*60*1000+5000);}function OldProcessRet(errstr, errpara){if("当前操作无效，请检查"== errstr && "SUCC"== errpara){errstr = "FAIL";}ProcessRet(errstr, errpara);}function ProcessRet(errstr, errpara){var errtype=getValue("IF_ERRORTYPE");if (errstr != "SUCC"){if(errpara != "SUCC"){var param = document.getElementById("Fnt_"+errpara);if ( param== null){ShowErrorForCom(null, null, "当前操作无效，请检查配置参数。");}else {msg = "当前操作无效，请检查"+ param.innerHTML + "是否合法。";ShowErrorForCom("Frm_"+errpara, null, msg);}}else {if (errstr == "FAIL"){errstr = "当前操作无效，请检查配置参数。";}if ((errtype&1) == 1){ShowNote("提示信息", errstr);}else if((errtype&2) == 2){ShowErrorForCom(null, null, errstr);}else if((errtype&4) == 4){}else {ShowErrorForCom(null, null, errstr);}}}}
+var text  = "";
+
+getObj("bottom").innerHTML=text;
+meta_menu        = new Array();
+menu_items       = new Array();
+menu_subitems    = new Array();
+meta_menu['Menu1_Status'] = new Array();
+meta_menu['Menu1_Status']['langName'] = '设备概览';
+meta_menu['Menu1_Status']['page']     = 'status_dev_info_t_fj.gch';
+
+meta_menu['Menu1_Fastconf'] = new Array();
+meta_menu['Menu1_Fastconf']['langName'] = '快速向导';
+meta_menu['Menu1_Fastconf']['page']     = 'quick_setup_user_t.gch';
+
+meta_menu['Menu1_Network'] = new Array();
+meta_menu['Menu1_Network']['langName'] = '网络配置';
+meta_menu['Menu1_Network']['page']     = 'net_ipv4_set_t.gch';
+
+menu_items['Menu1_Network']      = new Array();
+menu_subitems['Menu1_Network']   = new Array();
+menu_items['Menu1_Network']['Menu2_Net_Network'] = new Array();
+menu_items['Menu1_Network']['Menu2_Net_Network']['langName'] = '基础配置';
+menu_items['Menu1_Network']['Menu2_Net_Network']['page']     = 'net_ipv4_set_t.gch';
+
+menu_subitems['Menu1_Network']['Menu2_Net_Network'] = new Array();
+menu_subitems['Menu1_Network']['Menu2_Net_Network']['Menu3_ND_IPv4'] = new Array();
+menu_subitems['Menu1_Network']['Menu2_Net_Network']['Menu3_ND_IPv4']['langName'] = 'LAN接口设置';
+menu_subitems['Menu1_Network']['Menu2_Net_Network']['Menu3_ND_IPv4']['page']     = 'net_ipv4_set_t.gch';
+
+menu_subitems['Menu1_Network']['Menu2_Net_Network']['Menu3_NM_Loid'] = new Array();
+menu_subitems['Menu1_Network']['Menu2_Net_Network']['Menu3_NM_Loid']['langName'] = 'PON设置';
+menu_subitems['Menu1_Network']['Menu2_Net_Network']['Menu3_NM_Loid']['page']     = 'pon_net_loid_conf_t.gch';
+
+menu_subitems['Menu1_Network']['Menu2_Net_Network']['Menu3_DHCPSP'] = new Array();
+menu_subitems['Menu1_Network']['Menu2_Net_Network']['Menu3_DHCPSP']['langName'] = 'DHCP隔离配置';
+menu_subitems['Menu1_Network']['Menu2_Net_Network']['Menu3_DHCPSP']['page']     = 'net_dhcp_Snooping_t.gch';
+
+menu_items['Menu1_Network']['Menu2_Net_LAN'] = new Array();
+menu_items['Menu1_Network']['Menu2_Net_LAN']['langName'] = '高级选项';
+menu_items['Menu1_Network']['Menu2_Net_LAN']['page']     = 'app_virtual_conf_t_zq.gch';
+
+menu_subitems['Menu1_Network']['Menu2_Net_LAN'] = new Array();
+menu_subitems['Menu1_Network']['Menu2_Net_LAN']['Menu3_ZQ_AN_VirtualServer'] = new Array();
+menu_subitems['Menu1_Network']['Menu2_Net_LAN']['Menu3_ZQ_AN_VirtualServer']['langName'] = 'NAT';
+menu_subitems['Menu1_Network']['Menu2_Net_LAN']['Menu3_ZQ_AN_VirtualServer']['page']     = 'app_virtual_conf_t_zq.gch';
+
+menu_subitems['Menu1_Network']['Menu2_Net_LAN']['Menu3_AI_Muticast'] = new Array();
+menu_subitems['Menu1_Network']['Menu2_Net_LAN']['Menu3_AI_Muticast']['langName'] = '组播设置';
+menu_subitems['Menu1_Network']['Menu2_Net_LAN']['Menu3_AI_Muticast']['page']     = 'app_muticast_set_t.gch';
+
+menu_items['Menu1_Network']['Menu2_Net_WLAN'] = new Array();
+menu_items['Menu1_Network']['Menu2_Net_WLAN']['langName'] = 'WLAN接口设置';
+menu_items['Menu1_Network']['Menu2_Net_WLAN']['page']     = 'net_wlan_basic_t1.gch';
+
+menu_subitems['Menu1_Network']['Menu2_Net_WLAN'] = new Array();
+menu_subitems['Menu1_Network']['Menu2_Net_WLAN']['Menu3_NW_Basic'] = new Array();
+menu_subitems['Menu1_Network']['Menu2_Net_WLAN']['Menu3_NW_Basic']['langName'] = '基本设置(2.4G)';
+menu_subitems['Menu1_Network']['Menu2_Net_WLAN']['Menu3_NW_Basic']['page']     = 'net_wlan_basic_t1.gch';
+
+menu_subitems['Menu1_Network']['Menu2_Net_WLAN']['Menu3_NW_Advanced'] = new Array();
+menu_subitems['Menu1_Network']['Menu2_Net_WLAN']['Menu3_NW_Advanced']['langName'] = '高级设置(2.4G)';
+menu_subitems['Menu1_Network']['Menu2_Net_WLAN']['Menu3_NW_Advanced']['page']     = 'net_11n_conf_t1.gch';
+
+menu_subitems['Menu1_Network']['Menu2_Net_WLAN']['Menu3_NW_Basic_5G'] = new Array();
+menu_subitems['Menu1_Network']['Menu2_Net_WLAN']['Menu3_NW_Basic_5G']['langName'] = '基本设置(5G)';
+menu_subitems['Menu1_Network']['Menu2_Net_WLAN']['Menu3_NW_Basic_5G']['page']     = 'net_wlan_basic_t2.gch';
+
+menu_subitems['Menu1_Network']['Menu2_Net_WLAN']['Menu3_NW_Advanced_5G'] = new Array();
+menu_subitems['Menu1_Network']['Menu2_Net_WLAN']['Menu3_NW_Advanced_5G']['langName'] = '高级设置(5G)';
+menu_subitems['Menu1_Network']['Menu2_Net_WLAN']['Menu3_NW_Advanced_5G']['page']     = 'net_11n_conf_t2.gch';
+
+menu_subitems['Menu1_Network']['Menu2_Net_WLAN']['Menu3_meshconfig'] = new Array();
+menu_subitems['Menu1_Network']['Menu2_Net_WLAN']['Menu3_meshconfig']['langName'] = 'MESH设置';
+menu_subitems['Menu1_Network']['Menu2_Net_WLAN']['Menu3_meshconfig']['page']     = 'app_mesh_t_zq.gch';
+
+menu_subitems['Menu1_Network']['Menu2_Net_WLAN']['Menu3_NW_WLANMerge'] = new Array();
+menu_subitems['Menu1_Network']['Menu2_Net_WLAN']['Menu3_NW_WLANMerge']['langName'] = 'Wi-Fi兼容配置';
+menu_subitems['Menu1_Network']['Menu2_Net_WLAN']['Menu3_NW_WLANMerge']['page']     = 'net_wlan_basic_merge_t.gch';
+
+meta_menu['Menu1_IPV6'] = new Array();
+meta_menu['Menu1_IPV6']['langName'] = 'IPv6';
+meta_menu['Menu1_IPV6']['page']     = 'net_ipv6_set_t.gch';
+
+meta_menu['Menu1_OperationControl'] = new Array();
+meta_menu['Menu1_OperationControl']['langName'] = '上网行为管理';
+meta_menu['Menu1_OperationControl']['page']     = 'sec_url_filter_t_ty4.gch';
+
+meta_menu['Menu1_ObjectManagement'] = new Array();
+meta_menu['Menu1_ObjectManagement']['langName'] = '对象管理';
+meta_menu['Menu1_ObjectManagement']['page']     = 'manager_aduser_conf_zq_t.gch';
+
+meta_menu['Menu1_Secure'] = new Array();
+meta_menu['Menu1_Secure']['langName'] = '网络安全';
+meta_menu['Menu1_Secure']['page']     = 'sec_ArpSpoofing_t.gch';
+
+meta_menu['Menu1_Management'] = new Array();
+meta_menu['Menu1_Management']['langName'] = '系统管理';
+meta_menu['Menu1_Management']['page']     = 'net_family_named_t.gch';
+
+meta_menu['Menu1_diagnose'] = new Array();
+meta_menu['Menu1_diagnose']['langName'] = '系统调试';
+meta_menu['Menu1_diagnose']['page']     = 'diagnose_ping_t.gch';
+
+meta_menu['Menu1_Help'] = new Array();
+meta_menu['Menu1_Help']['langName'] = '帮助';
+meta_menu['Menu1_Help']['page']     = 'help_t.gch';
+
+
+var selectPage  = "app_virtual_conf_t_zq.gch";
+var selectSupId = "Menu1_Network";
+function TOPmenuUpdate()
+{
+var TOPmenuText = "<table border='0' cellpadding='0' cellspacing='0' style='text-align:center'><tr>";
+var TOPmenuNum = 0;
+var left = 163;
+var width = 107;
+for(var supId in meta_menu)
+{
+TOPmenuNum = TOPmenuNum +1;
+}
+if(TOPmenuNum != 0)
+{
+width = 645/TOPmenuNum + 2;
+}
+for(var supId in meta_menu)
+{
+
+if(!meta_menu.hasOwnProperty(supId)){
+continue;
+}
+var styleTdVal = "";
+if( supId != selectSupId )
+{
+styleVal = " style=\"background-image:url('img/middle_deep.gif'); background-repeat:no-repeat; cursor:pointer;\"";
+}
+else
+{
+styleVal = " style=\"background-image:url('img/middle_light.gif'); background-repeat:no-repeat; cursor:pointer;\"";
+}
+var TOPmenuTemp = "<td height='20px' width='91px' "+ styleVal + " onclick=\"javascript:openLink('" + meta_menu[supId]['URL']
++ "')\"><font id='" + supId + "' class='Menu_L1_Active'>"
++ meta_menu[supId]['langName'] + "</font></td>";
+TOPmenuText += TOPmenuTemp;
+}
+TOPmenuText += "</tr></table>"
+getObj("MenuArea_L1").innerHTML= TOPmenuText;
+}
+function LEFTmenuUpdate()
+{
+var supId = selectSupId;
+text = "";
+for ( var midId in menu_items[supId] )
+{
+if(!menu_items[supId].hasOwnProperty(midId)){
+continue;
+}
+var stat = getMidMenuStat(supId, midId);
+if ( stat == "single" )
+{
+if (menu_items[supId][midId]['page'] == selectPage)
+{
+text = text
++ "<div class='Menu_L2_Active' id='"+midId+"' style='cursor:pointer' onclick='javascript:openLink(\""
++ menu_items[supId][midId]['URL'] + "\")'><font style='color:#FFFFFF'>"
++ "<img border='0' src='/img/new_minus.gif'>"
++ menu_items[supId][midId]['langName']
++ "</font></div>";
+}
+else
+{
+text = text
++ "<div class='Menu_L2_Link' id='"+midId+"' style='cursor:pointer' onclick='javascript:openLink(\""
++ menu_items[supId][midId]['URL'] + "\")'><font style='color:#FFFFFF'>"
++ "<img border='0' src='/img/more.gif'>"
++ menu_items[supId][midId]['langName']
++ "</font></div>";
+}
+}
+else if ( stat == "closed" )
+{
+text = text
++ "<div class='Menu_L2_Link' id='"+midId+"' style='cursor:pointer' onclick='javascript:openLink(\""
++ menu_items[supId][midId]['URL'] + "\")'><font style='color:#FFFFFF'>"
++ "<img border='0' src='/img/more.gif'>"
++ menu_items[supId][midId]['langName']
++ "</font></div>";
+}
+else if ( stat == "open" )
+{
+text = text
++ "<div class='Menu_L2_Active' id='"+midId+"' style='cursor:pointer' onclick='javascript:openLink(\""
++ menu_items[supId][midId]['URL'] + "\")'><font style='color:#FFFFFF'>"
++ "<img border='0' src='/img/new_minus.gif'>"
++ menu_items[supId][midId]['langName']
++ "</font></div>";
+var textc3 = "<ul style='margin-left: 14px;list-style:none;'>";
+for ( var subId in menu_subitems[supId][midId] )
+{
+if(!menu_subitems[supId][midId].hasOwnProperty(subId)){
+continue;
+}
+var titilflag = 0;
+var titilTMP = "";
+switch(subId)
+{
+case("ssmDHCPSer"):
+{
+titilTMP = "IPv4配置";
+titilflag = 1;
+break;
+}
+case("ssmIPV6Ra"):
+{
+titilTMP = "<br>IPv6配置";
+titilflag = 1;
+break;
+}
+case("ssmSIPPro"):
+{
+titilTMP = "宽带电话基本设置";
+titilflag = 1;
+break;
+}
+case("ssmBasicCon"):
+{
+titilTMP = "<br>宽带电话高级设置";
+titilflag = 1;
+break;
+}
+default:
+break;
+}
+if(titilflag == 1)
+{
+textc3 = textc3
++ "<li class='Menu_L3_Active' id='"+subId+"' style='width:108px; cursor:pointer' onclick=\"javascript:openLink('"
++ menu_subitems[supId][midId][subId]['URL'] + "')\"><font>"
++ "<img border='0' src='/img/xian1.gif'>" + titilTMP
++ "</font></li>";
+}
+if (menu_subitems[supId][midId][subId]['page'] == selectPage)
+{
+textc3 = textc3
++ "<li class='Menu_L3_Active' id='"+subId+"' style='width:108px;cursor:pointer' onclick=\"javascript:openLink('"
++ menu_subitems[supId][midId][subId]['URL'] + "')\"><font>"
++ "<img border='0' src='/img/xian1.gif'>" + menu_subitems[supId][midId][subId]['langName']
++ "</font></li>";
+}
+else
+{
+textc3 = textc3
++ "<li class='Menu_L3_Link' id='"+subId+"' style='width:108px;cursor:pointer' onclick=\"javascript:openLink('"
++ menu_subitems[supId][midId][subId]['URL'] + "')\"><font>"
++ "<img border='0' src='/img/xian1.gif'>" + menu_subitems[supId][midId][subId]['langName']
++ "</font></li>";
+}
+}
+textc3 += "</ul>";
+text = text + textc3;
+}
+}
+text = text + "</div>";
+getObj("MenuArea_L2").innerHTML=text;
+}
+function menuUpdate()
+{
+TOPmenuUpdate();
+LEFTmenuUpdate();
+}
+function altMenuClass(ele)
+{
+var map = {"h1":"h1 bghover","h1 bghover":"h1","h1_s":"h1_s bghover h1_s_bgfix",
+"h1_s bghover h1_s_bgfix":"h1_s","h2":"h2 bghover","h2 bghover":"h2",
+"h2_s":"h2_s bghover","h2_s bghover":"h2_s","h2_content":"h2_content bghover",
+"h2_content bghover":"h2_content","h3":"h3 bghover",
+"h3 bghover":"h3","class3_s":"class3_s bghover","class3_s bghover":"class3_s"};
+ele.className = map[ele.className] || ele.className;
+}
+function handleRemoveClickEvent()
+{
+if(getObj("myLayer").style.visibility == "visible" || getObj("msgbox") != null || document.body.getAttribute("_doConfirmCancel") == "true")
+{
+return;
+}
+removeAllClick();
+}
+function handleF5Refresh(){
+function shieldRefresh(event){
+var event = event || window.event;
+var keycode = event.keyCode || event.which || event.charCode;
+if(keycode == 116){
+if(event.preventDefault){
+event.preventDefault();
+}else{
+event.keyCode = 0;
+event.returnValue = false;
+}
+}
+}
+document.onkeydown = shieldRefresh;
+top.window.onkeydown = shieldRefresh;
+};
+function myOnLoad()
+{
+menuDisp();
+addEvent(getObj("htmlBody"), "keydown", setenter);
+addEvent(getObj("htmlBody"), "keyup", setinnerHidden);
+addEvent(getObj("htmlBody"), "mousedown", setinnerHidden);
+addEvent(getObj("btnAdd"), "click", handleRemoveClickEvent);
+addEvent(getObj("btnEdit"), "click", handleRemoveClickEvent);
+addEvent(getObj("btnDelete"), "click", handleRemoveClickEvent);
+addEvent(getObj("btnOK"), "click", handleRemoveClickEvent);
+addEvent(getObj("btnReFresh"), "click", handleRemoveClickEvent);
+addEvent(getObj("btnCancel"), "click", handleRemoveClickEvent);
+addEvent(getObj("btnBack"), "click", handleRemoveClickEvent);
+handleF5Refresh();
+fnBreakWordAll({word:15,re:'[\\w]'});
+
+
+framedispalay('myiframe');
+
+getObj("myLayer").style.left = "580px";
+getObj("myLayer").style.top  = "137px";
+
+pageLoad(getURL("app_virtual_conf_t_zq.gch"));
+var newlocation = parseInt(getObj("myLayer").style.top) + 43;
+getObj("myLayer").style.top = newlocation + "px";
+
+
+var Version = IEVersion();
+if (Version == "IE6" || Version == "IE7" || Version == "IE8")
+{
+alert("当前页面可能不兼容您使用的浏览器, 如果遇到问题, 请使用Google Chrome、Firefox等浏览器");
+}
+
+}
+function setWindowScrollTop(win, e)
+{
+topHeight = getTop(e) + 55;
+if(win.document.documentElement)
+{
+win.document.documentElement.scrollTop = topHeight;
+}
+if(win.document.body){
+win.document.body.scrollTop = topHeight;
+}
+}
+function getTop(e)
+{
+var offset=e.offsetTop;
+if(e.offsetParent!=null)
+{
+offset+=getTop(e.offsetParent);
+}
+return offset;
+}
+
+
+function addToken2AllForms()
+{
+function doAddLogic()
+{
+var session_token = "8PPOuK7i9oDBhp5H7s4rRmNb";
+var forms = document.getElementsByTagName("form");
+for ( var i=0; i<forms.length; i++ )
+{
+var tempform = forms[i];
+var sEnctype = tempform.getAttribute("enctype");
+if ( sEnctype != null &&
+"multipart/form-data" == sEnctype.toLowerCase() )
+{
+continue;
+}
+var tokenInput = document.createElement("input");
+tokenInput.setAttribute("id", "_SESSION_TOKEN");
+tokenInput.setAttribute("name", "_SESSION_TOKEN");
+tokenInput.setAttribute("type", "hidden");
+tokenInput.setAttribute("value", session_token);
+tempform.appendChild(tokenInput);
+}
+}
+if( window.onload == null )
+{
+window.onload=function(){
+doAddLogic();
+myOnLoad();
+}
+}
+else
+{
+var tempfunction = window.onload;
+window.onload=function(){
+tempfunction();
+doAddLogic();
+myOnLoad();
+}
+}
+}
+addToken2AllForms();
+function timeoutSHA256()
+{
+var enTimeout;
+var logout_check_token = "rJ3NKYeHOAogJWS9soCTUgAf";
+var pwd_random = Math.round(Math.random() * 89999999) + 10000000;
+enTimeout = sha256(logout_check_token + pwd_random);
+getObj("timeout").value = enTimeout;
+getObj("timeoutRandomNum").value = pwd_random;
+}
+</script>
+
+
+</body></html>

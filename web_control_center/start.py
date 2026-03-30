@@ -131,26 +131,65 @@ def ensure_node_modules():
 
 
 def kill_port_simple(port):
-    """简单的端口清理（启动前预防性清理）"""
+    """强大的端口清理（启动前预防性清理），联合 psutil 与原生命令"""
+    print(f"  🔍 正在检查端口 {port} 是否被占用...")
+    
+    # 1. 尝试使用 psutil (跨平台，最优雅)
     try:
         import psutil
-        for conn in psutil.net_connections(kind="inet"):
-            if conn.laddr and conn.laddr.port == port and conn.pid:
-                if conn.pid != os.getpid():
-                    try:
-                        psutil.Process(conn.pid).kill()
-                        print(f"  ✓ 已清理端口 {port} 的旧进程 (PID={conn.pid})")
-                    except Exception:
-                        pass
+        for proc in psutil.process_iter(['pid', 'name']):
+            try:
+                for conn in proc.connections(kind='inet'):
+                    if conn.laddr.port == port:
+                        if proc.pid != os.getpid():
+                            proc.kill()
+                            print(f"  ✓ [psutil] 已终结占用端口 {port} 的进程: {proc.name()} (PID={proc.pid})")
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
     except Exception:
         pass
+
+    # 2. 针对 macOS/Linux 的系统原生兜底 (lsof)
+    if not IS_WINDOWS:
+        try:
+            # 查找 PID
+            cmd = ["lsof", "-t", f"-i:{port}"]
+            output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
+            if output:
+                for pid in output.split("\n"):
+                    if pid.isdigit() and int(pid) != os.getpid():
+                        subprocess.call(["kill", "-9", pid], stderr=subprocess.DEVNULL)
+                        print(f"  ✓ [lsof] 强制清理残留进程 PID={pid}")
+        except Exception:
+            pass
+    
+    # 3. 针对 Windows 的系统原生兜底 (netstat + taskkill)
+    else:
+        try:
+            cmd = f'netstat -ano | findstr :{port}'
+            output = subprocess.getoutput(cmd)
+            for line in output.splitlines():
+                if 'LISTENING' in line:
+                    parts = line.split()
+                    if len(parts) > 4:
+                        pid = parts[-1]
+                        if pid.isdigit() and int(pid) != os.getpid():
+                            subprocess.call(['taskkill', '/F', '/PID', pid], stderr=subprocess.DEVNULL)
+                            print(f"  ✓ [netstat] 强制清理残留进程 PID={pid}")
+        except Exception:
+            pass
 
 
 def start_backend():
     """启动 FastAPI 后端"""
     banner("启动后端服务 (FastAPI on :8088)...")
     kill_port_simple(8088)
-    cmd = [VENV_PYTHON, "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8088", "--reload"]
+    cmd = [VENV_PYTHON, "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8088"]
+    # 仅开发模式下才启用热重载（通过 --dev 命令行参数触发）
+    # 注意：--reload 会导致 DeviceManager 被双重实例化，生产环境务必禁用
+    if "--dev" in sys.argv:
+        cmd.append("--reload")
+        print("  ⚠️ 开发模式：已启用 Uvicorn 热重载 (--reload)")
     proc = subprocess.Popen(cmd, cwd=BACKEND_DIR)
     children.append(proc)
     return proc

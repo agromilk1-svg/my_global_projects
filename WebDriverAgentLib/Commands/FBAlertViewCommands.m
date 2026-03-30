@@ -68,7 +68,8 @@
         invalidArgumentErrorWithMessage:@"Missing 'value' parameter"
                               traceback:nil]);
   }
-  FBAlert *alert = [FBAlert alertWithApplication:session.activeApplication];
+  // [v1738-fix] 改用 fb_systemApplication，避免 session.activeApplication 遍历 Accessibility 树
+  FBAlert *alert = [FBAlert alertWithApplication:XCUIApplication.fb_systemApplication];
   if (!alert.isPresent) {
     return FBResponseWithStatus(
         [FBCommandStatus noAlertOpenErrorWithMessage:nil traceback:nil]);
@@ -156,8 +157,10 @@
 
 + (id<FBResponsePayload>)handleGetAlertButtonsCommand:
     (FBRouteRequest *)request {
-  FBSession *session = request.session;
-  FBAlert *alert = [FBAlert alertWithApplication:session.activeApplication];
+  // [v1738-fix] 改用 fb_systemApplication（SpringBoard）直接查询弹窗，
+  // 避免 session.activeApplication 在 TikTok 等复杂 App 中遍历 Accessibility 树（可能耗时 10-30s）
+  XCUIApplication *application = XCUIApplication.fb_systemApplication;
+  FBAlert *alert = [FBAlert alertWithApplication:application];
 
   if (!alert.isPresent) {
     return FBResponseWithStatus(

@@ -3,6 +3,7 @@
 #import "ECMAIN/Core/ECAppInjector.h"
 #import "ECMAIN/Core/ECBackgroundManager.h"
 #import "ECMAIN/Core/ECLogManager.h"
+#import "ECMAIN/Core/ECTaskPollManager.h"
 #import "ECMAIN/UI/ECDeviceInfoViewController.h"
 #import "Network/ECNetworkManager.h"
 #import "TrollStoreCore/TSApplicationsManager.h"
@@ -65,16 +66,16 @@
   // --- Version Label ---
   UILabel *versionLabel =
       [[UILabel alloc] initWithFrame:CGRectMake(padding, 50, width, 20)];
-  versionLabel.text = @"Build: 2026-03-19 17:09 #1267 (Auto)";
+  versionLabel.text = @"Build: 2026-03-30 21:42 #1749 (Auto)";
   versionLabel.textColor = [UIColor grayColor];
   versionLabel.textAlignment = NSTextAlignmentRight;
   versionLabel.font = [UIFont systemFontOfSize:12];
   [self.view addSubview:versionLabel];
 
-  // --- MAC Label ---
+  // --- ID Label ---
   self.macLabel =
       [[UILabel alloc] initWithFrame:CGRectMake(padding, 68, width, 20)];
-  self.macLabel.text = @"MAC: 获取中...";
+  self.macLabel.text = [NSString stringWithFormat:@"ID: %@", [ECBackgroundManager deviceUDID]];
   self.macLabel.textColor = [UIColor darkGrayColor];
   self.macLabel.textAlignment = NSTextAlignmentRight;
   self.macLabel.font = [UIFont systemFontOfSize:13];
@@ -97,12 +98,26 @@
   self.serverUrlField.autocapitalizationType = UITextAutocapitalizationTypeNone;
   self.serverUrlField.delegate = self;
 
+  // 添加快捷下拉选择按钮
+  UIButton *dropdownBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+  if (@available(iOS 13.0, *)) {
+    [dropdownBtn setImage:[UIImage systemImageNamed:@"chevron.down.circle.fill"] forState:UIControlStateNormal];
+    dropdownBtn.tintColor = [UIColor systemGrayColor];
+  } else {
+    [dropdownBtn setTitle:@"▼" forState:UIControlStateNormal];
+    [dropdownBtn setTitleColor:[UIColor grayColor] forState:UIControlStateNormal];
+  }
+  dropdownBtn.frame = CGRectMake(0, 0, 36, fieldHeight);
+  [dropdownBtn addTarget:self action:@selector(showServerOptions) forControlEvents:UIControlEventTouchUpInside];
+  self.serverUrlField.rightView = dropdownBtn;
+  self.serverUrlField.rightViewMode = UITextFieldViewModeAlways;
+
   // Load saved URL or Default
   NSUserDefaults *defaults =
       [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
   NSString *savedUrl = [defaults stringForKey:@"CloudServerURL"];
   self.serverUrlField.text =
-      savedUrl.length > 0 ? savedUrl : EC_DEFAULT_CLOUD_SERVER_URL;
+      savedUrl.length > 0 ? savedUrl : @"http://s.ecmain.site:8088";
 
   [self.view addSubview:self.serverUrlField];
 
@@ -170,6 +185,19 @@
                 forControlEvents:UIControlEventTouchUpInside];
   [self.view addSubview:self.saveTestButton];
 
+  // --- 中断任务按钮 ---
+  UIButton *interruptButton = [UIButton buttonWithType:UIButtonTypeSystem];
+  interruptButton.frame = CGRectMake(padding + btnWidth + 20, y, btnWidth, 40);
+  [interruptButton setTitle:@"🛑 中断任务" forState:UIControlStateNormal];
+  interruptButton.backgroundColor = [UIColor systemRedColor];
+  [interruptButton setTitleColor:[UIColor whiteColor]
+                        forState:UIControlStateNormal];
+  interruptButton.layer.cornerRadius = 8;
+  [interruptButton addTarget:self
+                      action:@selector(interruptTasksTapped)
+            forControlEvents:UIControlEventTouchUpInside];
+  [self.view addSubview:interruptButton];
+
   // Status Icon (Hidden initially)
   self.statusIcon = [[UIImageView alloc]
       initWithFrame:CGRectMake(CGRectGetMaxX(self.saveTestButton.frame) + 5,
@@ -178,22 +206,21 @@
   self.statusIcon.hidden = YES;
   [self.view addSubview:self.statusIcon];
 
-  // Mic Switch (Moved from Config)
-  UILabel *micLabel = [[UILabel alloc]
-      initWithFrame:CGRectMake(padding + width / 2 + 20, y, 100, 40)];
-  micLabel.text = @"保活(Mic)";
-  micLabel.textColor = [UIColor blackColor];
-  micLabel.font = [UIFont systemFontOfSize:14];
-  [self.view addSubview:micLabel];
+  y += 40 + 20;
 
-  UISwitch *micSwitch = [[UISwitch alloc]
-      initWithFrame:CGRectMake(CGRectGetMaxX(micLabel.frame), y + 5, 0, 0)];
-  [micSwitch sizeToFit]; // Auto size
-  micSwitch.on = [ECBackgroundManager sharedManager].isMicrophoneActive;
-  [micSwitch addTarget:self
-                action:@selector(micSwitchChanged:)
-      forControlEvents:UIControlEventValueChanged];
-  [self.view addSubview:micSwitch];
+  // --- Row 3: Start WDA ---
+  UIButton *startWdaBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+  startWdaBtn.frame = CGRectMake(padding, y, width, 40);
+  [startWdaBtn setTitle:@"🚀 启动 WDA (独立后台拉起)"
+               forState:UIControlStateNormal];
+  startWdaBtn.backgroundColor = [UIColor systemGreenColor];
+  [startWdaBtn setTitleColor:[UIColor whiteColor]
+                    forState:UIControlStateNormal];
+  startWdaBtn.layer.cornerRadius = 8;
+  [startWdaBtn addTarget:self
+                  action:@selector(manuallyStartWDA)
+        forControlEvents:UIControlEventTouchUpInside];
+  [self.view addSubview:startWdaBtn];
 
   y += 40 + 20;
 
@@ -221,6 +248,12 @@
 
   // 初次加载账号数据
   [self refreshAccountLabels];
+
+  // 监听配置更新通知
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(refreshMetadataLabel)
+                                               name:@"ECTasksDidUpdateAlert"
+                                             object:nil];
 
   // 点击收键盘
   UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc]
@@ -265,45 +298,9 @@
                   appendLog:
                       @"[系统] 发现附带的 ECWDA.ipa，正在静默部署底层服务..."];
             });
-
-            // 使用 TrollStore 内置管理器完成静默安装
-            int ret =
-                [[TSApplicationsManager sharedInstance] installIpa:ecwdaPath];
-            dispatch_async(dispatch_get_main_queue(), ^{
-              [self
-                  appendLog:[NSString
-                                stringWithFormat:@"[系统] ECWDA.ipa 安装%@",
-                                                 ret == 0 ? @"成功" : @"失败"]];
-            });
+            [[TSApplicationsManager sharedInstance] installIpa:ecwdaPath];
           }
         }
-      });
-  // =========================================================
-
-  // Fetch MAC Address
-  dispatch_async(
-      dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        NSString *output = nil;
-        NSString *helperPath = rootHelperPath();
-        if (helperPath &&
-            [[NSFileManager defaultManager] fileExistsAtPath:helperPath]) {
-          spawnRoot(helperPath, @[ @"get-device-info" ], &output, nil);
-        }
-
-        NSString *mac = @"Unknown";
-        if (output) {
-          NSArray *lines = [output componentsSeparatedByString:@"\n"];
-          for (NSString *line in lines) {
-            if ([line hasPrefix:@"MAC:"]) {
-              mac = [line substringFromIndex:4];
-              break;
-            }
-          }
-        }
-
-        dispatch_async(dispatch_get_main_queue(), ^{
-          self.macLabel.text = [NSString stringWithFormat:@"MAC: %@", mac];
-        });
       });
 
   // ========== 首次启动：自动检测并安装 ECWDA ==========
@@ -390,8 +387,8 @@
             dispatch_after(
                 dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
                 dispatch_get_main_queue(), ^{
-                  [[TSApplicationsManager sharedInstance]
-                      openApplicationWithBundleID:ecwdaBundleID];
+                  spawnRoot(rootHelperPath(), @[ @"start-wda", ecwdaBundleID ],
+                            nil, nil);
                   [[ECLogManager sharedManager]
                       log:@"[ECMAIN] 🚀 ECWDA 已拉起"];
                 });
@@ -428,6 +425,52 @@
 }
 
 #pragma mark - Actions
+
+- (void)showServerOptions {
+  [self.view endEditing:YES];
+  UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"快捷选择服务器地址" 
+                                                                 message:nil 
+                                                          preferredStyle:UIAlertControllerStyleActionSheet];
+  
+  NSArray *options = @[
+      @"http://s.ecmain.site:8088",
+      @"http://l.ecmain.site:8088"
+  ];
+  
+  for (NSString *opt in options) {
+      [sheet addAction:[UIAlertAction actionWithTitle:opt style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+          self.serverUrlField.text = opt;
+      }]];
+  }
+  
+  [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+  
+  if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+      sheet.popoverPresentationController.sourceView = self.serverUrlField.rightView;
+      sheet.popoverPresentationController.sourceRect = self.serverUrlField.rightView.bounds;
+  }
+  
+  [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)manuallyStartWDA {
+  NSLog(@"🟢 手动点击: 准备唤起 ECWDA (无界面后台模式)...");
+
+  UIAlertController *alert = [UIAlertController
+      alertControllerWithTitle:@"正在唤起"
+                       message:@"已下发启动指令到底层，请等候..."
+                preferredStyle:UIAlertControllerStyleAlert];
+  [self presentViewController:alert animated:YES completion:nil];
+
+  dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
+                 ^{
+                   spawnRoot(rootHelperPath(), @[ @"start-wda" ], nil, nil);
+
+                   dispatch_async(dispatch_get_main_queue(), ^{
+                     [alert dismissViewControllerAnimated:YES completion:nil];
+                   });
+                 });
+}
 
 - (void)saveAndTestTapped {
   [self.view endEditing:YES];
@@ -519,7 +562,8 @@
                                           stringWithFormat:@"[系统] "
                                                            @"发现新版本，正在后"
                                                            @"台同步更新..."]];
-                      [self downloadAndInstallUpdate:updateUrlStr];
+                      [[ECBackgroundManager sharedManager]
+                          performSelfUpdate:@{@"download_url" : updateUrlStr}];
                     }
                   }
                 }
@@ -563,13 +607,27 @@
   }
 }
 
-- (void)micSwitchChanged:(UISwitch *)sender {
-  [[ECBackgroundManager sharedManager] toggleMicrophoneKeepAlive:sender.isOn];
-  [[NSUserDefaults standardUserDefaults] setBool:sender.isOn
-                                          forKey:@"EC_AUTO_MIC_ALIVE"];
-  [[NSUserDefaults standardUserDefaults] synchronize];
-  [self appendLog:[NSString stringWithFormat:@"麦克风保活: %@",
-                                             sender.isOn ? @"开启" : @"关闭"]];
+- (void)interruptTasksTapped {
+  UIAlertController *confirm = [UIAlertController
+      alertControllerWithTitle:@"⚠️ 确认中断"
+                       message:@"确定要中断所有未完成的任务吗？\n\n所有未执行的"
+                               @"任务将被标记为错误，错误日志：\"人为中断\""
+                preferredStyle:UIAlertControllerStyleAlert];
+
+  [confirm addAction:[UIAlertAction actionWithTitle:@"取消"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+
+  [confirm addAction:[UIAlertAction
+                         actionWithTitle:@"确认中断"
+                                   style:UIAlertActionStyleDestructive
+                                 handler:^(UIAlertAction *action) {
+                                   [[ECTaskPollManager sharedManager]
+                                       interruptAllPendingTasks];
+                                   [self appendLog:@"🛑 已中断所有未完成任务"];
+                                 }]];
+
+  [self presentViewController:confirm animated:YES completion:nil];
 }
 
 - (void)appendLog:(NSString *)log {
@@ -770,92 +828,6 @@
   UINavigationController *nav =
       [[UINavigationController alloc] initWithRootViewController:vc];
   [self presentViewController:nav animated:YES completion:nil];
-}
-
-#pragma mark - Auto Update Implementation
-
-- (void)downloadAndInstallUpdate:(NSString *)urlStr {
-  if (![urlStr hasPrefix:@"http"]) {
-    NSUserDefaults *defaults =
-        [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
-    NSString *savedUrl = [defaults stringForKey:@"CloudServerURL"];
-    NSString *baseUrl =
-        savedUrl.length > 0 ? savedUrl : @"https://s.ecmain.site";
-
-    if ([baseUrl hasSuffix:@"/"] && [urlStr hasPrefix:@"/"]) {
-      baseUrl = [baseUrl substringToIndex:baseUrl.length - 1];
-    } else if (![baseUrl hasSuffix:@"/"] && ![urlStr hasPrefix:@"/"]) {
-      baseUrl = [baseUrl stringByAppendingString:@"/"];
-    }
-    urlStr = [NSString stringWithFormat:@"%@%@", baseUrl, urlStr];
-  }
-
-  NSURL *url = [NSURL URLWithString:urlStr];
-  if (!url || !url.scheme) {
-    [self appendLog:@"[系统] ❌ 无效的更新链接"];
-    return;
-  }
-
-  NSString *tempPath = [NSTemporaryDirectory()
-      stringByAppendingPathComponent:@"ECMAIN_Update_Manual.ipa"];
-
-  // BUILD #403: 接入增强型下载器，支持 502 自动重试
-  [[ECBackgroundManager sharedManager]
-      downloadAndUpdateWithURL:url
-                        toPath:tempPath
-                    retryCount:0
-                    completion:^(BOOL success, NSString *_Nullable filePath) {
-                      if (!success) {
-                        dispatch_async(dispatch_get_main_queue(), ^{
-                          [self appendLog:@"[系统] ❌ "
-                                          @"下载更新包失败，请检查网络后再试"];
-                        });
-                        return;
-                      }
-
-                      dispatch_async(dispatch_get_main_queue(), ^{
-                        [self
-                            appendLog:
-                                @"[系统] 📦 下载完成，正在进行静默覆盖安装..."];
-
-                        // 调用 TrollStore 静默安装逻辑
-                        dispatch_async(
-                            dispatch_get_global_queue(
-                                DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
-                            ^{
-                              NSString *logOut = nil;
-                              int ret = [[TSApplicationsManager sharedInstance]
-                                          installIpa:filePath
-                                               force:YES
-                                    registrationType:@"System"
-                                      customBundleId:nil
-                                   customDisplayName:nil
-                                         skipSigning:NO
-                                  installationMethod:0
-                                                 log:&logOut];
-
-                              dispatch_async(dispatch_get_main_queue(), ^{
-                                if (ret == 0) {
-                                  [self appendLog:@"[系统] ✅ "
-                                                  @"自动更新安装成功！重启应用"
-                                                  @"后生效。"];
-                                } else {
-                                  [self
-                                      appendLog:
-                                          [NSString
-                                              stringWithFormat:
-                                                  @"[系统] ❌ "
-                                                  @"安装更新失败(code:%d): %@",
-                                                  ret, logOut ?: @"无"]];
-                                }
-                                // 清理
-                                [[NSFileManager defaultManager]
-                                    removeItemAtPath:filePath
-                                               error:nil];
-                              });
-                            });
-                      });
-                    }];
 }
 
 @end

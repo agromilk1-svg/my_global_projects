@@ -138,7 +138,8 @@ int spawnRoot(NSString* path, NSArray* args, NSString** stdOut, NSString** stdEr
 	
 	pid_t task_pid;
 	int status = -200;
-	int spawnError = posix_spawn(&task_pid, [path UTF8String], &action, &attr, (char* const*)argsC, NULL);
+	extern char **environ;
+	int spawnError = posix_spawn(&task_pid, [path UTF8String], &action, &attr, (char* const*)argsC, environ);
 	posix_spawnattr_destroy(&attr);
 	for (NSUInteger i = 0; i < argCount; i++)
 	{

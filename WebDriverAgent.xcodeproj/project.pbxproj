@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		0B40460A871534D2593EABB8 /* crnn_lite_op.bin in Resources */ = {isa = PBXBuildFile; fileRef = 3817407A8C5C158B5819FD0E /* crnn_lite_op.bin */; };
+		0DB31EB0F25E4F3A8FF8F97C /* ncnn_PP_OCRv5_mobile_det.ncnn.bin in Resources */ = {isa = PBXBuildFile; fileRef = 755C03AA9D014F77A2EAB45B /* ncnn_PP_OCRv5_mobile_det.ncnn.bin */; };
 		0E0413382DF1E15100AF007C /* XCUIElement+FBMinMax.m in Sources */ = {isa = PBXBuildFile; fileRef = 0E0413372DF1E15100AF007C /* XCUIElement+FBMinMax.m */; };
 		0E0413392DF1E15100AF007C /* XCUIElement+FBMinMax.m in Sources */ = {isa = PBXBuildFile; fileRef = 0E0413372DF1E15100AF007C /* XCUIElement+FBMinMax.m */; };
 		0E04133B2DF1E15900AF007C /* XCUIElement+FBMinMax.h in Headers */ = {isa = PBXBuildFile; fileRef = 0E04133A2DF1E15900AF007C /* XCUIElement+FBMinMax.h */; };
@@ -39,14 +40,22 @@
 		13DE7A5D287CA444003243C6 /* FBXCElementSnapshotWrapper+Helpers.m in Sources */ = {isa = PBXBuildFile; fileRef = 13DE7A5A287CA444003243C6 /* FBXCElementSnapshotWrapper+Helpers.m */; };
 		13DE7A5E287CA444003243C6 /* FBXCElementSnapshotWrapper+Helpers.m in Sources */ = {isa = PBXBuildFile; fileRef = 13DE7A5A287CA444003243C6 /* FBXCElementSnapshotWrapper+Helpers.m */; };
 		13FFF2F2287DBEE600E561E4 /* XCElementSnapshotDouble.m in Sources */ = {isa = PBXBuildFile; fileRef = 13FFF2F1287DBEE600E561E4 /* XCElementSnapshotDouble.m */; };
+		17078967A2344CA2863EC2FE /* ncnn_PP_OCRv5_mobile_rec.ncnn.bin in Resources */ = {isa = PBXBuildFile; fileRef = ADF9B81D3333453BAE1897B9 /* ncnn_PP_OCRv5_mobile_rec.ncnn.bin */; };
+		1B62426DBAA0A7BB3EC4A2FC /* FBStandaloneAppDelegate.h in Headers */ = {isa = PBXBuildFile; fileRef = 79304675AC71AB1F07485ACA /* FBStandaloneAppDelegate.h */; };
+		2B59ED2D7E414E9884BE65A7 /* ppocrv5_mobile_labels.txt in Resources */ = {isa = PBXBuildFile; fileRef = 31C19FC11F874917A2C06551 /* ppocrv5_mobile_labels.txt */; };
+		2CFD48B5848A1F09CB00ED52 /* FBECWDACommands.h in Headers */ = {isa = PBXBuildFile; fileRef = A9CA44E49784A4522E35BC71 /* FBECWDACommands.h */; };
+		2E33489192CEA1E09047D7D1 /* FBStandaloneAppDelegate.h in Headers */ = {isa = PBXBuildFile; fileRef = 79304675AC71AB1F07485ACA /* FBStandaloneAppDelegate.h */; };
 		315A15012518CB8700A3A064 /* TouchableView.m in Sources */ = {isa = PBXBuildFile; fileRef = 315A15002518CB8700A3A064 /* TouchableView.m */; };
 		315A15072518CC2800A3A064 /* TouchSpotView.m in Sources */ = {isa = PBXBuildFile; fileRef = 315A15062518CC2800A3A064 /* TouchSpotView.m */; };
 		315A150A2518D6F400A3A064 /* TouchViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = 315A15092518D6F400A3A064 /* TouchViewController.m */; };
 		32A142299E41EC3E66E8339B /* angle_op.bin in Resources */ = {isa = PBXBuildFile; fileRef = F3474ED7A59EFF817605DE23 /* angle_op.bin */; };
 		32A34AE79441BC34E1F1890C /* FBOCREngine.h in Headers */ = {isa = PBXBuildFile; fileRef = 097D41E7AF796E5DBE9A1275 /* FBOCREngine.h */; };
 		366D4B85B11B3ED837737875 /* FBWebServerParams.m in Sources */ = {isa = PBXBuildFile; fileRef = 9711425683193C3275CDC288 /* FBWebServerParams.m */; };
+		45F136EC6FFE4760ABA851E6 /* agent_port.txt in Resources */ = {isa = PBXBuildFile; fileRef = AF9A78D2AB14481A89F5850F /* agent_port.txt */; };
+		47464F99B2168B2595504F36 /* FBStandaloneAppDelegate.h in Headers */ = {isa = PBXBuildFile; fileRef = 79304675AC71AB1F07485ACA /* FBStandaloneAppDelegate.h */; };
 		483F4EC58C0F9D9678906AC3 /* dbnet_op.bin in Resources */ = {isa = PBXBuildFile; fileRef = 71A24BD780008A697F0D11BB /* dbnet_op.bin */; };
 		4B8844E384448CE9F6E87CFA /* XCUIApplication+FBFocused.m in Sources */ = {isa = PBXBuildFile; fileRef = BBE34FA9947AD26AEE98A179 /* XCUIApplication+FBFocused.m */; };
+		52D9419D8FB45941F0F30E76 /* FBStandaloneAppDelegate.h in Headers */ = {isa = PBXBuildFile; fileRef = 79304675AC71AB1F07485ACA /* FBStandaloneAppDelegate.h */; };
 		59704BC490326B56FDAFCBBE /* FBWebServerParams.h in Headers */ = {isa = PBXBuildFile; fileRef = 73B040D98867884F0BD3C6C1 /* FBWebServerParams.h */; };
 		5A9549D69F240C81D72B72C2 /* FBECWDACommands.m in Sources */ = {isa = PBXBuildFile; fileRef = DC3241DEAC93B5774287DD2C /* FBECWDACommands.m */; };
 		5B174BD199C248253B3EBFAB /* XCUIApplication+FBFocused.h in Headers */ = {isa = PBXBuildFile; fileRef = 780D4CF69A9163F77859D80C /* XCUIApplication+FBFocused.h */; };
@@ -540,7 +549,17 @@
 		71F5BE50252F14EB00EE9EBA /* FBExceptions.h in Headers */ = {isa = PBXBuildFile; fileRef = 71F5BE4D252F14EB00EE9EBA /* FBExceptions.h */; };
 		71F5BE51252F14EB00EE9EBA /* FBExceptions.m in Sources */ = {isa = PBXBuildFile; fileRef = 71F5BE4E252F14EB00EE9EBA /* FBExceptions.m */; };
 		71F5BE52252F14EB00EE9EBA /* FBExceptions.m in Sources */ = {isa = PBXBuildFile; fileRef = 71F5BE4E252F14EB00EE9EBA /* FBExceptions.m */; };
+		7838400BA95086AF2DFB4ADB /* FBStandaloneAppDelegate.h in Headers */ = {isa = PBXBuildFile; fileRef = 79304675AC71AB1F07485ACA /* FBStandaloneAppDelegate.h */; };
+		7EBF4325B3E94F75F5E9EB58 /* FBECWDACommands.h in Headers */ = {isa = PBXBuildFile; fileRef = A9CA44E49784A4522E35BC71 /* FBECWDACommands.h */; };
+		8A6344A3AE13DE002A70F9EF /* FBStandaloneAppDelegate.h in Headers */ = {isa = PBXBuildFile; fileRef = 79304675AC71AB1F07485ACA /* FBStandaloneAppDelegate.h */; };
+		8D13406C91A4255688C44720 /* FBECWDACommands.h in Headers */ = {isa = PBXBuildFile; fileRef = A9CA44E49784A4522E35BC71 /* FBECWDACommands.h */; };
+		925B4146B202E06E2EBE7F1E /* FBStandaloneAppDelegate.h in Headers */ = {isa = PBXBuildFile; fileRef = 79304675AC71AB1F07485ACA /* FBStandaloneAppDelegate.h */; };
+		92DC4053B02B9FE53C5674EC /* FBStandaloneAppDelegate.h in Headers */ = {isa = PBXBuildFile; fileRef = 79304675AC71AB1F07485ACA /* FBStandaloneAppDelegate.h */; };
+		9E3940213F1C47AD9A81D41C /* ch_ppocr_mobile_v2.0_cls_infer.onnx in Resources */ = {isa = PBXBuildFile; fileRef = F392294B2ED94F408F5D2B36 /* ch_ppocr_mobile_v2.0_cls_infer.onnx */; };
+		A36C4E14ABC0871FDA10654C /* FBStandaloneAppDelegate.h in Headers */ = {isa = PBXBuildFile; fileRef = 79304675AC71AB1F07485ACA /* FBStandaloneAppDelegate.h */; };
+		A59649448BD870A4BE76F471 /* FBECWDACommands.h in Headers */ = {isa = PBXBuildFile; fileRef = A9CA44E49784A4522E35BC71 /* FBECWDACommands.h */; };
 		AABBCCDDEEFF001122334457 /* SceneDelegate.m in Sources */ = {isa = PBXBuildFile; fileRef = AABBCCDDEEFF001122334456 /* SceneDelegate.m */; };
+		ABB547DE941A53D56EB68718 /* FBECWDACommands.h in Headers */ = {isa = PBXBuildFile; fileRef = A9CA44E49784A4522E35BC71 /* FBECWDACommands.h */; };
 		AD35D06C1CF1C35500870A75 /* WebDriverAgentLib.framework in Copy frameworks */ = {isa = PBXBuildFile; fileRef = EE158A991CBD452B00A3E3F0 /* WebDriverAgentLib.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		AD6C26941CF2379700F8B5FF /* FBAlert.h in Headers */ = {isa = PBXBuildFile; fileRef = AD6C26921CF2379700F8B5FF /* FBAlert.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		AD6C26951CF2379700F8B5FF /* FBAlert.m in Sources */ = {isa = PBXBuildFile; fileRef = AD6C26931CF2379700F8B5FF /* FBAlert.m */; };
@@ -559,14 +578,24 @@
 		B316351D2DDF0CF5007D9317 /* FBAccessibilityTraits.m in Sources */ = {isa = PBXBuildFile; fileRef = B316351B2DDF0CF5007D9317 /* FBAccessibilityTraits.m */; };
 		B316351F2DDF0D0B007D9317 /* FBAccessibilityTraits.h in Headers */ = {isa = PBXBuildFile; fileRef = B316351E2DDF0D0B007D9317 /* FBAccessibilityTraits.h */; };
 		B31635202DDF0D0B007D9317 /* FBAccessibilityTraits.h in Headers */ = {isa = PBXBuildFile; fileRef = B316351E2DDF0D0B007D9317 /* FBAccessibilityTraits.h */; };
+		B54E8404A57745D885DD95C0 /* ncnn_PP_OCRv5_mobile_rec.ncnn.param in Resources */ = {isa = PBXBuildFile; fileRef = CE40E3ECDC3445A48D314489 /* ncnn_PP_OCRv5_mobile_rec.ncnn.param */; };
 		BB834A68B86C9B0F89B271BF /* FBTouchMonitor.h in Headers */ = {isa = PBXBuildFile; fileRef = 02A44E6BA07E3B998BEC9679 /* FBTouchMonitor.h */; };
+		C1A94CC998CB498E9413F0A9 /* FBECWDACommands.h in Headers */ = {isa = PBXBuildFile; fileRef = A9CA44E49784A4522E35BC71 /* FBECWDACommands.h */; };
+		C21AF99A08754C5789B94C95 /* ch_PP-OCRv5_mobile_det.onnx in Resources */ = {isa = PBXBuildFile; fileRef = 2D394D86E1C64F77A4DEA851 /* ch_PP-OCRv5_mobile_det.onnx */; };
 		C3214EF7BFE90A4875506084 /* FBECWDACommands.h in Headers */ = {isa = PBXBuildFile; fileRef = 7A8D46E98524C72C93B62E00 /* FBECWDACommands.h */; };
+		C7934289B9B6ABFB7E9ED8B4 /* FBStandaloneAppDelegate.m in Sources */ = {isa = PBXBuildFile; fileRef = BF7642EBBF02161D3CD8CD3C /* FBStandaloneAppDelegate.m */; };
 		C845206222D5E79400EA68CB /* FBUnattachedAppLauncher.h in Headers */ = {isa = PBXBuildFile; fileRef = C8FB547722D4C1FC00B69954 /* FBUnattachedAppLauncher.h */; };
 		C845206322D5E79700EA68CB /* FBUnattachedAppLauncher.m in Sources */ = {isa = PBXBuildFile; fileRef = C8FB547822D4C1FC00B69954 /* FBUnattachedAppLauncher.m */; };
 		C8FB547422D3949C00B69954 /* LSApplicationWorkspace.h in Headers */ = {isa = PBXBuildFile; fileRef = C8FB547322D3949C00B69954 /* LSApplicationWorkspace.h */; };
 		C8FB547922D4C1FC00B69954 /* FBUnattachedAppLauncher.h in Headers */ = {isa = PBXBuildFile; fileRef = C8FB547722D4C1FC00B69954 /* FBUnattachedAppLauncher.h */; };
 		C8FB547A22D4C1FC00B69954 /* FBUnattachedAppLauncher.m in Sources */ = {isa = PBXBuildFile; fileRef = C8FB547822D4C1FC00B69954 /* FBUnattachedAppLauncher.m */; };
+		CF0949A5BE52CF9AEBDEBAB0 /* FBStandaloneAppDelegate.h in Headers */ = {isa = PBXBuildFile; fileRef = 79304675AC71AB1F07485ACA /* FBStandaloneAppDelegate.h */; };
+		D250EB5E7B4F43D1AE5F9517 /* ch_PP-OCRv5_rec_mobile_infer.onnx in Resources */ = {isa = PBXBuildFile; fileRef = 46E02F6C89BA45B89CF83EE5 /* ch_PP-OCRv5_rec_mobile_infer.onnx */; };
+		D4C248F5A3AB10744794E958 /* FBECWDACommands.h in Headers */ = {isa = PBXBuildFile; fileRef = A9CA44E49784A4522E35BC71 /* FBECWDACommands.h */; };
+		D8F24696911FA13A78C5C5E6 /* FBECWDACommands.h in Headers */ = {isa = PBXBuildFile; fileRef = A9CA44E49784A4522E35BC71 /* FBECWDACommands.h */; };
 		DC4246318816C1C5C9256ED0 /* FBTouchMonitor.m in Sources */ = {isa = PBXBuildFile; fileRef = 82CA4BE59E988F2FF6EDFA26 /* FBTouchMonitor.m */; };
+		DC5A4758B12DD9E7819730CC /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = B80B4F0AA5352C98A9D4CD75 /* main.m */; };
+		DF954D81B5D76E96C9AA4574 /* FBECWDACommands.h in Headers */ = {isa = PBXBuildFile; fileRef = A9CA44E49784A4522E35BC71 /* FBECWDACommands.h */; };
 		E444DC65249131890060D7EB /* HTTPErrorResponse.h in Headers */ = {isa = PBXBuildFile; fileRef = E444DC59249131880060D7EB /* HTTPErrorResponse.h */; };
 		E444DC67249131890060D7EB /* HTTPDataResponse.m in Sources */ = {isa = PBXBuildFile; fileRef = E444DC5B249131880060D7EB /* HTTPDataResponse.m */; };
 		E444DC6C249131890060D7EB /* HTTPDataResponse.h in Headers */ = {isa = PBXBuildFile; fileRef = E444DC60249131890060D7EB /* HTTPDataResponse.h */; };
@@ -608,6 +637,7 @@
 		E444DCD224917A5E0060D7EB /* HTTPErrorResponse.m in Sources */ = {isa = PBXBuildFile; fileRef = E444DC61249131890060D7EB /* HTTPErrorResponse.m */; };
 		E444DCD424917A5E0060D7EB /* DDNumber.m in Sources */ = {isa = PBXBuildFile; fileRef = E444DC7F249131B00060D7EB /* DDNumber.m */; };
 		E444DCD624917A5E0060D7EB /* DDRange.m in Sources */ = {isa = PBXBuildFile; fileRef = E444DC7E249131B00060D7EB /* DDRange.m */; };
+		E7DBCECA3BC84F60B98EDDAC /* ncnn_PP_OCRv5_mobile_det.ncnn.param in Resources */ = {isa = PBXBuildFile; fileRef = F97379782DE64AAFAE60DC76 /* ncnn_PP_OCRv5_mobile_det.ncnn.param */; };
 		EE006EAD1EB99B15006900A4 /* FBElementVisibilityTests.m in Sources */ = {isa = PBXBuildFile; fileRef = EE006EAC1EB99B15006900A4 /* FBElementVisibilityTests.m */; };
 		EE05BAFA1D13003C00A3EB00 /* FBKeyboardTests.m in Sources */ = {isa = PBXBuildFile; fileRef = EE05BAF91D13003C00A3EB00 /* FBKeyboardTests.m */; };
 		EE0D1F611EBCDCF7006A3123 /* NSString+FBVisualLength.h in Headers */ = {isa = PBXBuildFile; fileRef = EE0D1F5F1EBCDCF7006A3123 /* NSString+FBVisualLength.h */; };
@@ -841,15 +871,6 @@
 		F59CD6D62EF16E5E00F91287 /* XCUIElement+FBCustomActions.h in Headers */ = {isa = PBXBuildFile; fileRef = F59CD6D22EF16E5E00F91287 /* XCUIElement+FBCustomActions.h */; };
 		F59CD6D72EF16E5E00F91287 /* XCUIElement+FBCustomActions.m in Sources */ = {isa = PBXBuildFile; fileRef = F59CD6D32EF16E5E00F91287 /* XCUIElement+FBCustomActions.m */; };
 		F8B642CAB249462290B14290 /* agent_url.txt in Resources */ = {isa = PBXBuildFile; fileRef = 31544EEF98BBED583D20610A /* agent_url.txt */; };
-		0DB31EB0F25E4F3A8FF8F97C /* ncnn_PP_OCRv5_mobile_det.ncnn.bin in Resources */ = {isa = PBXBuildFile; fileRef = 755C03AA9D014F77A2EAB45B /* ncnn_PP_OCRv5_mobile_det.ncnn.bin */; };
-		E7DBCECA3BC84F60B98EDDAC /* ncnn_PP_OCRv5_mobile_det.ncnn.param in Resources */ = {isa = PBXBuildFile; fileRef = F97379782DE64AAFAE60DC76 /* ncnn_PP_OCRv5_mobile_det.ncnn.param */; };
-		17078967A2344CA2863EC2FE /* ncnn_PP_OCRv5_mobile_rec.ncnn.bin in Resources */ = {isa = PBXBuildFile; fileRef = ADF9B81D3333453BAE1897B9 /* ncnn_PP_OCRv5_mobile_rec.ncnn.bin */; };
-		B54E8404A57745D885DD95C0 /* ncnn_PP_OCRv5_mobile_rec.ncnn.param in Resources */ = {isa = PBXBuildFile; fileRef = CE40E3ECDC3445A48D314489 /* ncnn_PP_OCRv5_mobile_rec.ncnn.param */; };
-		C21AF99A08754C5789B94C95 /* ch_PP-OCRv5_mobile_det.onnx in Resources */ = {isa = PBXBuildFile; fileRef = 2D394D86E1C64F77A4DEA851 /* ch_PP-OCRv5_mobile_det.onnx */; };
-		D250EB5E7B4F43D1AE5F9517 /* ch_PP-OCRv5_rec_mobile_infer.onnx in Resources */ = {isa = PBXBuildFile; fileRef = 46E02F6C89BA45B89CF83EE5 /* ch_PP-OCRv5_rec_mobile_infer.onnx */; };
-		9E3940213F1C47AD9A81D41C /* ch_ppocr_mobile_v2.0_cls_infer.onnx in Resources */ = {isa = PBXBuildFile; fileRef = F392294B2ED94F408F5D2B36 /* ch_ppocr_mobile_v2.0_cls_infer.onnx */; };
-		2B59ED2D7E414E9884BE65A7 /* ppocrv5_mobile_labels.txt in Resources */ = {isa = PBXBuildFile; fileRef = 31C19FC11F874917A2C06551 /* ppocrv5_mobile_labels.txt */; };
-		45F136EC6FFE4760ABA851E6 /* agent_port.txt in Resources */ = {isa = PBXBuildFile; fileRef = AF9A78D2AB14481A89F5850F /* agent_port.txt */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -972,6 +993,7 @@
 		13FFF2F1287DBEE600E561E4 /* XCElementSnapshotDouble.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = XCElementSnapshotDouble.m; sourceTree = "<group>"; };
 		1BA7DD8C206D694B007C7C26 /* XCTElementSetTransformer-Protocol.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "XCTElementSetTransformer-Protocol.h"; sourceTree = "<group>"; };
 		1E854F779E1249EC911589C6 /* ncnn_keys.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = ncnn_keys.txt; path = ncnn_keys.txt; sourceTree = "<group>"; };
+		2D394D86E1C64F77A4DEA851 /* ch_PP-OCRv5_mobile_det.onnx */ = {isa = PBXFileReference; lastKnownFileType = file; name = "ch_PP-OCRv5_mobile_det.onnx"; path = "ch_PP-OCRv5_mobile_det.onnx"; sourceTree = "<group>"; };
 		31544EEF98BBED583D20610A /* agent_url.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = agent_url.txt; path = agent_url.txt; sourceTree = "<group>"; };
 		315A14FF2518CB8700A3A064 /* TouchableView.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TouchableView.h; sourceTree = "<group>"; };
 		315A15002518CB8700A3A064 /* TouchableView.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TouchableView.m; sourceTree = "<group>"; };
@@ -979,8 +1001,10 @@
 		315A15062518CC2800A3A064 /* TouchSpotView.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TouchSpotView.m; sourceTree = "<group>"; };
 		315A15082518D6F400A3A064 /* TouchViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TouchViewController.h; sourceTree = "<group>"; };
 		315A15092518D6F400A3A064 /* TouchViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TouchViewController.m; sourceTree = "<group>"; };
+		31C19FC11F874917A2C06551 /* ppocrv5_mobile_labels.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = ppocrv5_mobile_labels.txt; path = ppocrv5_mobile_labels.txt; sourceTree = "<group>"; };
 		3817407A8C5C158B5819FD0E /* crnn_lite_op.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; name = crnn_lite_op.bin; path = crnn_lite_op.bin; sourceTree = "<group>"; };
 		44757A831D42CE8300ECF35E /* XCUIDeviceRotationTests.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = XCUIDeviceRotationTests.m; sourceTree = "<group>"; };
+		46E02F6C89BA45B89CF83EE5 /* ch_PP-OCRv5_rec_mobile_infer.onnx */ = {isa = PBXFileReference; lastKnownFileType = file; name = "ch_PP-OCRv5_rec_mobile_infer.onnx"; path = "ch_PP-OCRv5_rec_mobile_infer.onnx"; sourceTree = "<group>"; };
 		631B523421F6174300625362 /* FBImageProcessorTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = FBImageProcessorTests.m; sourceTree = "<group>"; };
 		633E904A220DEE7F007CADF9 /* XCUIApplicationProcessDelay.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = XCUIApplicationProcessDelay.h; sourceTree = "<group>"; };
 		6385F4A5220A40760095BBDB /* XCUIApplicationProcessDelay.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = XCUIApplicationProcessDelay.m; sourceTree = "<group>"; };
@@ -1145,10 +1169,13 @@
 		71F5BE4D252F14EB00EE9EBA /* FBExceptions.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FBExceptions.h; sourceTree = "<group>"; };
 		71F5BE4E252F14EB00EE9EBA /* FBExceptions.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = FBExceptions.m; sourceTree = "<group>"; };
 		73B040D98867884F0BD3C6C1 /* FBWebServerParams.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = FBWebServerParams.h; path = WebDriverAgentLib/Utilities/FBWebServerParams.h; sourceTree = SOURCE_ROOT; };
+		755C03AA9D014F77A2EAB45B /* ncnn_PP_OCRv5_mobile_det.ncnn.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; name = ncnn_PP_OCRv5_mobile_det.ncnn.bin; path = ncnn_PP_OCRv5_mobile_det.ncnn.bin; sourceTree = "<group>"; };
 		780D4CF69A9163F77859D80C /* XCUIApplication+FBFocused.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = "XCUIApplication+FBFocused.h"; path = "WebDriverAgentLib/Categories/XCUIApplication+FBFocused.h"; sourceTree = SOURCE_ROOT; };
+		79304675AC71AB1F07485ACA /* FBStandaloneAppDelegate.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = FBStandaloneAppDelegate.h; path = WebDriverAgentRunner/FBStandaloneAppDelegate.h; sourceTree = SOURCE_ROOT; };
 		7A8D46E98524C72C93B62E00 /* FBECWDACommands.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = FBECWDACommands.h; path = WebDriverAgentLib/Commands/FBECWDACommands.h; sourceTree = SOURCE_ROOT; };
 		82CA4BE59E988F2FF6EDFA26 /* FBTouchMonitor.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = FBTouchMonitor.m; path = WebDriverAgentLib/Utilities/FBTouchMonitor.m; sourceTree = SOURCE_ROOT; };
 		9711425683193C3275CDC288 /* FBWebServerParams.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = FBWebServerParams.m; path = WebDriverAgentLib/Utilities/FBWebServerParams.m; sourceTree = SOURCE_ROOT; };
+		A9CA44E49784A4522E35BC71 /* FBECWDACommands.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = FBECWDACommands.h; path = WebDriverAgentLib/Commands/FBECWDACommands.h; sourceTree = SOURCE_ROOT; };
 		AABBCCDDEEFF001122334455 /* SceneDelegate.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = SceneDelegate.h; sourceTree = "<group>"; };
 		AABBCCDDEEFF001122334456 /* SceneDelegate.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = SceneDelegate.m; sourceTree = "<group>"; };
 		AD42DD2A1CF121E600806E5D /* module.modulemap */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.module-map"; path = module.modulemap; sourceTree = "<group>"; };
@@ -1167,12 +1194,17 @@
 		ADDA07221D6BB2BF001700AC /* FBScrollViewController.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = FBScrollViewController.h; sourceTree = "<group>"; };
 		ADDA07231D6BB2BF001700AC /* FBScrollViewController.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = FBScrollViewController.m; sourceTree = "<group>"; };
 		ADEF63AE1D09DEBE0070A7E3 /* FBRuntimeUtilsTests.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = FBRuntimeUtilsTests.m; sourceTree = "<group>"; };
+		ADF9B81D3333453BAE1897B9 /* ncnn_PP_OCRv5_mobile_rec.ncnn.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; name = ncnn_PP_OCRv5_mobile_rec.ncnn.bin; path = ncnn_PP_OCRv5_mobile_rec.ncnn.bin; sourceTree = "<group>"; };
+		AF9A78D2AB14481A89F5850F /* agent_port.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = agent_port.txt; path = agent_port.txt; sourceTree = "<group>"; };
 		B316351B2DDF0CF5007D9317 /* FBAccessibilityTraits.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = FBAccessibilityTraits.m; sourceTree = "<group>"; };
 		B316351E2DDF0D0B007D9317 /* FBAccessibilityTraits.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FBAccessibilityTraits.h; sourceTree = "<group>"; };
+		B80B4F0AA5352C98A9D4CD75 /* main.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = main.m; path = WebDriverAgentRunner/main.m; sourceTree = SOURCE_ROOT; };
 		BBE34FA9947AD26AEE98A179 /* XCUIApplication+FBFocused.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = "XCUIApplication+FBFocused.m"; path = "WebDriverAgentLib/Categories/XCUIApplication+FBFocused.m"; sourceTree = SOURCE_ROOT; };
+		BF7642EBBF02161D3CD8CD3C /* FBStandaloneAppDelegate.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = FBStandaloneAppDelegate.m; path = WebDriverAgentRunner/FBStandaloneAppDelegate.m; sourceTree = SOURCE_ROOT; };
 		C8FB547322D3949C00B69954 /* LSApplicationWorkspace.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = LSApplicationWorkspace.h; sourceTree = "<group>"; };
 		C8FB547722D4C1FC00B69954 /* FBUnattachedAppLauncher.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FBUnattachedAppLauncher.h; sourceTree = "<group>"; };
 		C8FB547822D4C1FC00B69954 /* FBUnattachedAppLauncher.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = FBUnattachedAppLauncher.m; sourceTree = "<group>"; };
+		CE40E3ECDC3445A48D314489 /* ncnn_PP_OCRv5_mobile_rec.ncnn.param */ = {isa = PBXFileReference; lastKnownFileType = text; name = ncnn_PP_OCRv5_mobile_rec.ncnn.param; path = ncnn_PP_OCRv5_mobile_rec.ncnn.param; sourceTree = "<group>"; };
 		D6FD4EA3BADAE8550C1E708B /* FBOCREngine.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = FBOCREngine.mm; path = WebDriverAgentLib/Utilities/FBOCREngine.mm; sourceTree = SOURCE_ROOT; };
 		DC3241DEAC93B5774287DD2C /* FBECWDACommands.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = FBECWDACommands.m; path = WebDriverAgentLib/Commands/FBECWDACommands.m; sourceTree = SOURCE_ROOT; };
 		E444DC59249131880060D7EB /* HTTPErrorResponse.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = HTTPErrorResponse.h; path = WebDriverAgentLib/Vendor/CocoaHTTPServer/Responses/HTTPErrorResponse.h; sourceTree = SOURCE_ROOT; };
@@ -1447,17 +1479,10 @@
 		EEE9B4711CD02B88009D2030 /* FBRunLoopSpinner.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = FBRunLoopSpinner.m; sourceTree = "<group>"; };
 		EEF9882A1C486603005CA669 /* WebDriverAgentRunner.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WebDriverAgentRunner.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		F3474ED7A59EFF817605DE23 /* angle_op.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; name = angle_op.bin; path = angle_op.bin; sourceTree = "<group>"; };
+		F392294B2ED94F408F5D2B36 /* ch_ppocr_mobile_v2.0_cls_infer.onnx */ = {isa = PBXFileReference; lastKnownFileType = file; name = ch_ppocr_mobile_v2.0_cls_infer.onnx; path = ch_ppocr_mobile_v2.0_cls_infer.onnx; sourceTree = "<group>"; };
 		F59CD6D22EF16E5E00F91287 /* XCUIElement+FBCustomActions.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "XCUIElement+FBCustomActions.h"; sourceTree = "<group>"; };
 		F59CD6D32EF16E5E00F91287 /* XCUIElement+FBCustomActions.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "XCUIElement+FBCustomActions.m"; sourceTree = "<group>"; };
-		755C03AA9D014F77A2EAB45B /* ncnn_PP_OCRv5_mobile_det.ncnn.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; name = ncnn_PP_OCRv5_mobile_det.ncnn.bin; path = ncnn_PP_OCRv5_mobile_det.ncnn.bin; sourceTree = "<group>"; };
 		F97379782DE64AAFAE60DC76 /* ncnn_PP_OCRv5_mobile_det.ncnn.param */ = {isa = PBXFileReference; lastKnownFileType = text; name = ncnn_PP_OCRv5_mobile_det.ncnn.param; path = ncnn_PP_OCRv5_mobile_det.ncnn.param; sourceTree = "<group>"; };
-		ADF9B81D3333453BAE1897B9 /* ncnn_PP_OCRv5_mobile_rec.ncnn.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; name = ncnn_PP_OCRv5_mobile_rec.ncnn.bin; path = ncnn_PP_OCRv5_mobile_rec.ncnn.bin; sourceTree = "<group>"; };
-		CE40E3ECDC3445A48D314489 /* ncnn_PP_OCRv5_mobile_rec.ncnn.param */ = {isa = PBXFileReference; lastKnownFileType = text; name = ncnn_PP_OCRv5_mobile_rec.ncnn.param; path = ncnn_PP_OCRv5_mobile_rec.ncnn.param; sourceTree = "<group>"; };
-		2D394D86E1C64F77A4DEA851 /* ch_PP-OCRv5_mobile_det.onnx */ = {isa = PBXFileReference; lastKnownFileType = file; name = ch_PP-OCRv5_mobile_det.onnx; path = ch_PP-OCRv5_mobile_det.onnx; sourceTree = "<group>"; };
-		46E02F6C89BA45B89CF83EE5 /* ch_PP-OCRv5_rec_mobile_infer.onnx */ = {isa = PBXFileReference; lastKnownFileType = file; name = ch_PP-OCRv5_rec_mobile_infer.onnx; path = ch_PP-OCRv5_rec_mobile_infer.onnx; sourceTree = "<group>"; };
-		F392294B2ED94F408F5D2B36 /* ch_ppocr_mobile_v2.0_cls_infer.onnx */ = {isa = PBXFileReference; lastKnownFileType = file; name = ch_ppocr_mobile_v2.0_cls_infer.onnx; path = ch_ppocr_mobile_v2.0_cls_infer.onnx; sourceTree = "<group>"; };
-		31C19FC11F874917A2C06551 /* ppocrv5_mobile_labels.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = ppocrv5_mobile_labels.txt; path = ppocrv5_mobile_labels.txt; sourceTree = "<group>"; };
-		AF9A78D2AB14481A89F5850F /* agent_port.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = agent_port.txt; path = agent_port.txt; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -1704,7 +1729,6 @@
 				F3474ED7A59EFF817605DE23 /* angle_op.bin */,
 				3817407A8C5C158B5819FD0E /* crnn_lite_op.bin */,
 				31544EEF98BBED583D20610A /* agent_url.txt */,
-			
 				755C03AA9D014F77A2EAB45B /* ncnn_PP_OCRv5_mobile_det.ncnn.bin */,
 				F97379782DE64AAFAE60DC76 /* ncnn_PP_OCRv5_mobile_det.ncnn.param */,
 				ADF9B81D3333453BAE1897B9 /* ncnn_PP_OCRv5_mobile_rec.ncnn.bin */,
@@ -1713,7 +1737,8 @@
 				46E02F6C89BA45B89CF83EE5 /* ch_PP-OCRv5_rec_mobile_infer.onnx */,
 				F392294B2ED94F408F5D2B36 /* ch_ppocr_mobile_v2.0_cls_infer.onnx */,
 				31C19FC11F874917A2C06551 /* ppocrv5_mobile_labels.txt */,
-				AF9A78D2AB14481A89F5850F /* agent_port.txt */,);
+				AF9A78D2AB14481A89F5850F /* agent_port.txt */,
+			);
 			name = OCR;
 			path = WebDriverAgentLib/Resources/OCR;
 			sourceTree = SOURCE_ROOT;
@@ -1935,6 +1960,7 @@
 				EE9AB7651CAEDF0C008C271F /* FBUnknownCommands.m */,
 				71BB58ED2B96511800CB9BFE /* FBVideoCommands.h */,
 				71BB58EE2B96511800CB9BFE /* FBVideoCommands.m */,
+				A9CA44E49784A4522E35BC71 /* FBECWDACommands.h */,
 			);
 			name = Commands;
 			path = WebDriverAgentLib/Commands;
@@ -2375,6 +2401,9 @@
 			children = (
 				EE9AB7FC1CAEE048008C271F /* Info.plist */,
 				EE9AB7FD1CAEE048008C271F /* UITestingUITests.m */,
+				79304675AC71AB1F07485ACA /* FBStandaloneAppDelegate.h */,
+				BF7642EBBF02161D3CD8CD3C /* FBStandaloneAppDelegate.m */,
+				B80B4F0AA5352C98A9D4CD75 /* main.m */,
 			);
 			name = WebDriverAgentRunner;
 			path = XCTUITestRunner;
@@ -2383,6 +2412,33 @@
 /* End PBXGroup section */
 
 /* Begin PBXHeadersBuildPhase section */
+		59D346639AD8BB7F45DDF581 /* Headers */ = {
+			isa = PBXHeadersBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C1A94CC998CB498E9413F0A9 /* FBECWDACommands.h in Headers */,
+				47464F99B2168B2595504F36 /* FBStandaloneAppDelegate.h in Headers */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		62D34C0F973B806E3E282D14 /* Headers */ = {
+			isa = PBXHeadersBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D8F24696911FA13A78C5C5E6 /* FBECWDACommands.h in Headers */,
+				CF0949A5BE52CF9AEBDEBAB0 /* FBStandaloneAppDelegate.h in Headers */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		63384429884D8188155E8307 /* Headers */ = {
+			isa = PBXHeadersBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				ABB547DE941A53D56EB68718 /* FBECWDACommands.h in Headers */,
+				52D9419D8FB45941F0F30E76 /* FBStandaloneAppDelegate.h in Headers */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		641EE6302240C5CA00173FCB /* Headers */ = {
 			isa = PBXHeadersBuildPhase;
 			buildActionMask = 2147483647;
@@ -2622,6 +2678,53 @@
 				71D04DC925356C43008A052C /* XCUIElement+FBCaching.h in Headers */,
 				641EE6EE2240C5CA00173FCB /* XCKeyMappingPath.h in Headers */,
 				71C8E55225399A6B008572C1 /* XCUIApplication+FBQuiescence.h in Headers */,
+				DF954D81B5D76E96C9AA4574 /* FBECWDACommands.h in Headers */,
+				2E33489192CEA1E09047D7D1 /* FBStandaloneAppDelegate.h in Headers */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		73024082BB492EA618E857AD /* Headers */ = {
+			isa = PBXHeadersBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D4C248F5A3AB10744794E958 /* FBECWDACommands.h in Headers */,
+				925B4146B202E06E2EBE7F1E /* FBStandaloneAppDelegate.h in Headers */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7EC34C60ACC75C1D3FADD0C9 /* Headers */ = {
+			isa = PBXHeadersBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7EBF4325B3E94F75F5E9EB58 /* FBECWDACommands.h in Headers */,
+				92DC4053B02B9FE53C5674EC /* FBStandaloneAppDelegate.h in Headers */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A0DA49F7BF188963F5F299F3 /* Headers */ = {
+			isa = PBXHeadersBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8D13406C91A4255688C44720 /* FBECWDACommands.h in Headers */,
+				A36C4E14ABC0871FDA10654C /* FBStandaloneAppDelegate.h in Headers */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B56948D29ABDB0F4773B2861 /* Headers */ = {
+			isa = PBXHeadersBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A59649448BD870A4BE76F471 /* FBECWDACommands.h in Headers */,
+				1B62426DBAA0A7BB3EC4A2FC /* FBStandaloneAppDelegate.h in Headers */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C9514DC99A398001FED15C87 /* Headers */ = {
+			isa = PBXHeadersBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2CFD48B5848A1F09CB00ED52 /* FBECWDACommands.h in Headers */,
+				8A6344A3AE13DE002A70F9EF /* FBStandaloneAppDelegate.h in Headers */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -2872,6 +2975,7 @@
 				5B174BD199C248253B3EBFAB /* XCUIApplication+FBFocused.h in Headers */,
 				32A34AE79441BC34E1F1890C /* FBOCREngine.h in Headers */,
 				BB834A68B86C9B0F89B271BF /* FBTouchMonitor.h in Headers */,
+				7838400BA95086AF2DFB4ADB /* FBStandaloneAppDelegate.h in Headers */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -2886,6 +2990,7 @@
 				641EE2D72240BBE300173FCB /* Frameworks */,
 				641EE2D82240BBE300173FCB /* Resources */,
 				641EE3472240C1EF00173FCB /* Copy frameworks */,
+				62D34C0F973B806E3E282D14 /* Headers */,
 			);
 			buildRules = (
 			);
@@ -2922,6 +3027,7 @@
 				64B264F5228C50E0002A5025 /* Sources */,
 				64B264F6228C50E0002A5025 /* Frameworks */,
 				64B264F7228C50E0002A5025 /* Resources */,
+				73024082BB492EA618E857AD /* Headers */,
 			);
 			buildRules = (
 			);
@@ -2958,6 +3064,7 @@
 				EE2202081ECC612200A29571 /* Sources */,
 				EE2202151ECC612200A29571 /* Frameworks */,
 				EE2202181ECC612200A29571 /* Resources */,
+				B56948D29ABDB0F4773B2861 /* Headers */,
 			);
 			buildRules = (
 			);
@@ -2977,6 +3084,7 @@
 				EE5095E21EBCC9090028E2FE /* Sources */,
 				EE5095F71EBCC9090028E2FE /* Frameworks */,
 				EE5095FA1EBCC9090028E2FE /* Resources */,
+				C9514DC99A398001FED15C87 /* Headers */,
 			);
 			buildRules = (
 			);
@@ -2996,6 +3104,7 @@
 				EE836BFE1C0F118600D87246 /* Sources */,
 				EE836BFF1C0F118600D87246 /* Frameworks */,
 				EE836C001C0F118600D87246 /* Resources */,
+				A0DA49F7BF188963F5F299F3 /* Headers */,
 			);
 			buildRules = (
 			);
@@ -3014,6 +3123,7 @@
 				EE9B75D01CF7956C00275851 /* Sources */,
 				EE9B75D11CF7956C00275851 /* Frameworks */,
 				EE9B75D21CF7956C00275851 /* Resources */,
+				63384429884D8188155E8307 /* Headers */,
 			);
 			buildRules = (
 			);
@@ -3031,6 +3141,7 @@
 				EE9B75E81CF7956C00275851 /* Sources */,
 				EE9B75E91CF7956C00275851 /* Frameworks */,
 				EE9B75EA1CF7956C00275851 /* Resources */,
+				59D346639AD8BB7F45DDF581 /* Headers */,
 			);
 			buildRules = (
 			);
@@ -3051,6 +3162,7 @@
 				EEF988271C486603005CA669 /* Frameworks */,
 				EEF988281C486603005CA669 /* Resources */,
 				EE93CFF41CCA501300708122 /* Copy frameworks */,
+				7EC34C60ACC75C1D3FADD0C9 /* Headers */,
 			);
 			buildRules = (
 			);
@@ -3157,7 +3269,6 @@
 				32A142299E41EC3E66E8339B /* angle_op.bin in Resources */,
 				0B40460A871534D2593EABB8 /* crnn_lite_op.bin in Resources */,
 				F8B642CAB249462290B14290 /* agent_url.txt in Resources */,
-			
 				0DB31EB0F25E4F3A8FF8F97C /* ncnn_PP_OCRv5_mobile_det.ncnn.bin in Resources */,
 				E7DBCECA3BC84F60B98EDDAC /* ncnn_PP_OCRv5_mobile_det.ncnn.param in Resources */,
 				17078967A2344CA2863EC2FE /* ncnn_PP_OCRv5_mobile_rec.ncnn.bin in Resources */,
@@ -3166,7 +3277,8 @@
 				D250EB5E7B4F43D1AE5F9517 /* ch_PP-OCRv5_rec_mobile_infer.onnx in Resources */,
 				9E3940213F1C47AD9A81D41C /* ch_ppocr_mobile_v2.0_cls_infer.onnx in Resources */,
 				2B59ED2D7E414E9884BE65A7 /* ppocrv5_mobile_labels.txt in Resources */,
-				45F136EC6FFE4760ABA851E6 /* agent_port.txt in Resources */,);
+				45F136EC6FFE4760ABA851E6 /* agent_port.txt in Resources */,
+			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		EE2202181ECC612200A29571 /* Resources */ = {
@@ -3612,6 +3724,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				EE9AB8011CAEE048008C271F /* UITestingUITests.m in Sources */,
+				C7934289B9B6ABFB7E9ED8B4 /* FBStandaloneAppDelegate.m in Sources */,
+				DC5A4758B12DD9E7819730CC /* main.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

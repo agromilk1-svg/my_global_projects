@@ -492,7 +492,7 @@ static BOOL FBShouldEnforceCustomSnapshots = NO;
   FBShouldUseCompactResponses = YES;
   FBElementResponseAttributes = @"type,label";
   FBMaxTypingFrequency = @([self defaultTypingFrequency]);
-  FBScreenshotQuality = 3;
+  FBScreenshotQuality = 0; // [v1737] 默认设为 PNG，绕过不稳定的 HEIF->JPEG 转码路径
   FBShouldUseFirstMatch = NO;
   FBShouldBoundElementsByIndex = NO;
   // This is diabled by default because enabling it prevents the accessbility

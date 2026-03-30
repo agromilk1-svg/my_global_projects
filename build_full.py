@@ -281,6 +281,7 @@ def build_native_helper():
         "RootHelper/jit.m",
         "RootHelper/uicache.m",
         "RootHelper/unarchive.m",
+        "RootHelper/usbmuxd_shim.m",
         "Shared/TSUtil.m",
     ]
     sources = [os.path.join(helper_build_dir, s) for s in sources]
@@ -368,6 +369,9 @@ def build_native_helper():
     )
     run_cmd(fps_cmd, ignore_error=False)
 
+    # Debug: Check usbmuxd_shim.m content
+    shim_path = os.path.join(helper_build_dir, "RootHelper/usbmuxd_shim.m")
+    
     cmd = (
         f"xcrun clang -isysroot {sdk_path} -target arm64-apple-ios14.0 "
         f"-fobjc-arc -O2 -fmodules -fcxx-modules " 
@@ -389,7 +393,8 @@ def build_native_helper():
         # Private Frameworks
         f"-F {os.path.join(THEOS_PATH, 'sdks/iPhoneOS14.5.sdk/System/Library/PrivateFrameworks')} " 
         f"-framework Foundation -framework CoreFoundation -framework UIKit -framework MobileCoreServices "
-        f"-framework BackBoardServices -framework FrontBoardServices -framework MobileContainerManager -framework RunningBoardServices -framework CoreTelephony "
+        f"-framework ImageIO -framework CoreGraphics "
+        f"-framework BackBoardServices -framework FrontBoardServices -framework MobileContainerManager -framework RunningBoardServices -framework CoreTelephony -framework NetworkExtension "
         f"-o {output_bin} " + " ".join(sources)
     )
     
@@ -828,6 +833,57 @@ def package_all(app_path, helper_path, dylib_path=None, persistence_helper_path=
         fastpathsign = os.path.join(BUILD_ROOT, "Source/Exploits/fastPathSign/fastPathSign")
         if os.path.exists(fastpathsign):
             run_cmd(f"'{fastpathsign}' '{mihomo_binary}'", ignore_error=True)
+
+    # Copy the pre-generated pair record with PrivateKey into the App Bundle
+    pair_record_src = os.path.join(PROJECT_ROOT, "ECMAIN", "RootHelper", "ecwda_pair_record.plist")
+    if os.path.exists(pair_record_src):
+        log("Injecting ecwda_pair_record.plist into App Bundle...")
+        shutil.copy(pair_record_src, os.path.join(final_app, "ecwda_pair_record.plist"))
+    else:
+        log("WARNING: ecwda_pair_record.plist not found! Standalone WDA might fail without it.")
+
+    # 3.8 Inject DDI images for offline mounting
+    ddi_src_base = os.path.join(PROJECT_ROOT, "ECHelper_Windows_Package/device-support")
+    ddi_dest_base = os.path.join(final_app, "DDI")
+    if os.path.exists(ddi_src_base):
+        log("Injecting DDI images into App Bundle...")
+        for version in os.listdir(ddi_src_base):
+            v_src = os.path.join(ddi_src_base, version)
+            if os.path.isdir(v_src):
+                v_dest = os.path.join(ddi_dest_base, version)
+                os.makedirs(v_dest, exist_ok=True)
+                for f in os.listdir(v_src):
+                    if f.startswith("DeveloperDiskImage.dmg"):
+                        shutil.copy2(os.path.join(v_src, f), os.path.join(v_dest, f))
+                        log(f"  Bundled DDI: {version}/{f}")
+    else:
+        log("WARNING: ECHelper_Windows_Package/device-support not found. Offline DDI mount will fail.")
+
+    # [v1580] Inject core DDI into App Bundle Root for quick self-mount
+    log("Injecting core DDI into App Bundle Root (v1580)...")
+    ddi_dmg = os.path.join(PROJECT_ROOT, "DeveloperDiskImage.dmg")
+    ddi_sig = os.path.join(PROJECT_ROOT, "DeveloperDiskImage.dmg.signature")
+    if os.path.exists(ddi_dmg):
+        shutil.copy2(ddi_dmg, os.path.join(final_app, "DeveloperDiskImage.dmg"))
+        if os.path.exists(ddi_sig):
+            shutil.copy2(ddi_sig, os.path.join(final_app, "DeveloperDiskImage.dmg.signature"))
+        log("  Core DDI injected successfully into App Root.")
+    else:
+        log("WARNING: DeveloperDiskImage.dmg not found in project root! Self-mount might fail.")
+
+    # Sign go-ios-arm64 so iOS does not reject it with EBADEXEC Error 85
+    go_ios_binary = os.path.join(final_app, "go-ios-arm64")
+    if os.path.exists(go_ios_binary):
+        log("Signing go-ios-arm64...")
+        helper_entitlements = os.path.join(BUILD_ROOT, "Source/RootHelper/entitlements.plist")
+        if os.path.exists(helper_entitlements):
+            run_cmd(f"codesign -f -s - --entitlements '{helper_entitlements}' '{go_ios_binary}'", ignore_error=True)
+        else:
+            run_cmd(f"codesign -f -s - '{go_ios_binary}'", ignore_error=True)
+        # Apply CT bypass
+        fastpathsign = os.path.join(BUILD_ROOT, "Source/Exploits/fastPathSign/fastPathSign")
+        if os.path.exists(fastpathsign):
+            run_cmd(f"'{fastpathsign}' '{go_ios_binary}'", ignore_error=True)
     
     # Sign Main App
     sign_binary(final_app, entitlements)
