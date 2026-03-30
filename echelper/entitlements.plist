@@ -2,20 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>application-identifier</key>
-	<string>com.opa334.trollstorepersistencehelper</string>
-	<key>com.apple.CommCenter.fine-grained</key>
-	<array>
-		<string>data-allowed-write</string>
-	</array>
-	<key>com.apple.private.persona-mgmt</key>
-	<true/>
-
-	<!-- All entitlements from RootHelper except for com.apple.private.security.container-required=false -->
+	<!-- 核心安全权限：声明不需要沙盒容器（Persistence Helper 注入系统 App 的必要条件） -->
 	<key>platform-application</key>
 	<true/>
+	<key>com.apple.private.security.container-required</key>
+	<false/>
 	<key>com.apple.private.security.no-sandbox</key>
 	<true/>
+
+	<!-- 容器与安装管理 -->
 	<key>com.apple.private.security.container-manager</key>
 	<true/>
 	<key>com.apple.private.MobileContainerManager.allowed</key>
@@ -24,25 +19,21 @@
 	<true/>
 	<key>com.apple.lsapplicationworkspace.rebuildappdatabases</key>
 	<true/>
+
+	<!-- 存储访问 -->
 	<key>com.apple.private.security.storage.AppBundles</key>
 	<true/>
 	<key>com.apple.private.security.storage.MobileDocuments</key>
 	<true/>
 	<key>com.apple.private.security.storage-exempt.heritable</key>
 	<true/>
+
+	<!-- 安装服务 -->
 	<key>com.apple.private.MobileInstallationHelperService.InstallDaemonOpsEnabled</key>
 	<true/>
 	<key>com.apple.private.MobileInstallationHelperService.allowed</key>
 	<true/>
 	<key>com.apple.private.uninstall.deletion</key>
-	<true/>
-	<key>com.apple.springboard.launchapplications</key>
-	<true/>
-	<key>com.apple.backboardd.launchapplications</key>
-	<true/>
-	<key>com.apple.frontboard.launchapplications</key>
-	<true/>
-	<key>com.apple.multitasking.termination</key>
 	<true/>
 	<key>com.apple.private.mobileinstall.allowedSPI</key>
 	<array>
@@ -52,5 +43,31 @@
 		<string>Uninstall</string>
 		<string>UpdatePlaceholderMetadata</string>
 	</array>
+
+	<!-- 进程启动控制 -->
+	<key>com.apple.springboard.launchapplications</key>
+	<true/>
+	<key>com.apple.backboardd.launchapplications</key>
+	<true/>
+	<key>com.apple.frontboard.launchapplications</key>
+	<true/>
+	<key>com.apple.multitasking.termination</key>
+	<true/>
+
+	<!-- AMFI / 开发者模式控制（原版 TrollStore 关键权限） -->
+	<key>com.apple.private.amfi.developer-mode-control</key>
+	<true/>
+	<key>com.apple.frontboard.shutdown</key>
+	<true/>
+	<key>com.apple.runningboard.process-state</key>
+	<true/>
+
+	<!-- 网络与通信（echelper 扩展功能所需） -->
+	<key>com.apple.CommCenter.fine-grained</key>
+	<array>
+		<string>data-allowed-write</string>
+	</array>
+	<key>com.apple.private.persona-mgmt</key>
+	<true/>
 </dict>
 </plist>

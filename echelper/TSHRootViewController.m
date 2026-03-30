@@ -233,7 +233,7 @@
     if ((isRegistered || !persistenceHelperProxy) &&
         ![[NSFileManager defaultManager]
             fileExistsAtPath:
-                @"/Applications/TrollStorePersistenceHelper.app"]) {
+                @"/Applications/ECPersistenceHelper.app"]) {
       PSSpecifier *registerUnregisterGroupSpecifier =
           [PSSpecifier emptyGroupSpecifier];
       lastGroupSpecifier = nil;

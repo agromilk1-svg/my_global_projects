@@ -818,6 +818,19 @@
   });
 }
 
+- (void)reportActionErrorWithMessage:(NSString *)errorMessage forCommand:(NSString *)command {
+  NSString *name = self.currentTaskName;
+  if (!name || name.length == 0) {
+    name = @"(当前未在任务中)";
+  }
+  // 向服务器汇报具体的动作错误信息
+  [self reportTaskStatus:@"动作指令出错"
+                    name:name
+                 success:NO
+                   error:errorMessage
+             lastCommand:command];
+}
+
 @end
 
 #endif // !ECMAIN_EXTENSION

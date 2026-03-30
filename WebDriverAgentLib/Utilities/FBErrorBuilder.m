@@ -8,7 +8,7 @@
 
 #import "FBErrorBuilder.h"
 
-static NSString *const FBWebServerErrorDomain = @"com.facebook.WebDriverAgent";
+static NSString *const FBWebServerErrorDomain = @"com.apple.accessibility.service";
 
 @interface FBErrorBuilder ()
 @property (nonatomic, copy) NSString *errorDescription;

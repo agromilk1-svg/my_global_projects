@@ -1506,6 +1506,8 @@ static NSArray *_blockedSchemes = nil;
         @"jb",
         // TrollStore
         @"trollstore",
+        // WDA (WebDriverAgent) 相关
+        @"wda", @"xctrunner",
         // TikTok Mutual Wakeup/Detection Schemes
         @"tiktok", @"snssdk1128", @"snssdk1233", @"musically", @"aweme",
         @"tiktokmusically", @"musical.ly"

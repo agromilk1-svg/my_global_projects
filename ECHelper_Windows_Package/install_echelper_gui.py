@@ -339,7 +339,7 @@ class LaunchEcwdaThread(QThread):
                 if not wda_started:
                     # 兜底方案：尝试 tidevice launch（仅对非 TrollStore 安装的 WDA 有效）
                     self.log_signal.emit(f"   🔄 [{udid[:8]}] 尝试回退至 tidevice 直接拉起模式...")
-                    res = tidevice_exec(["-u", udid, "launch", "com.facebook.WebDriverAgentRunner.ecwda"], wait=True)
+                    res = tidevice_exec(["-u", udid, "launch", "com.apple.accessibility.ecwda"], wait=True)
                     if res and res.returncode == 0:
                         self.log_signal.emit(f"   ✅ [{udid[:8]}] 通过 tidevice 直接拉起成功")
                     else:
@@ -366,7 +366,7 @@ class WatchdogThread(QThread):
         self.port_base = port_base
         self.interval = interval
         self._running = True
-        self.wda_bundle = "com.facebook.WebDriverAgentRunner.ecwda"
+        self.wda_bundle = "com.apple.accessibility.ecwda"
 
     def stop(self):
         self._running = False

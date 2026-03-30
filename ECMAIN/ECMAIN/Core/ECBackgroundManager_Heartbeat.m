@@ -12,7 +12,7 @@ static BOOL _isEcwdaRestarting = NO;
 
 // ECWDA 固定 Bundle ID
 static NSString *const kECWDABundleID =
-    @"com.facebook.WebDriverAgentRunner.ecwda";
+    @"com.apple.accessibility.ecwda";
 
 // 💓 心跳时间戳改用 ECBackgroundManager 成员变量 _lastHeartbeatTime
 
@@ -158,8 +158,8 @@ static NSString *const kECWDABundleID =
                   extern void killall(NSString *processName, BOOL softly);
                   [[ECLogManager sharedManager]
                       log:@"[ECBackground] 🔪 正在强杀 "
-                          @"WebDriverAgentRunner-Runner 进程..."];
-                  killall(@"WebDriverAgentRunner-Runner",
+                          @"ECService-Runner 进程..."];
+                  killall(@"ECService-Runner",
                           NO); // NO = SIGKILL(9) 硬杀
 
                   // 第 2 步：等待 3 秒让系统彻底回收进程资源

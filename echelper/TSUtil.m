@@ -62,7 +62,7 @@ NSString *rootHelperPath(void) { return getExecutablePath(); }
 #else
 NSString *rootHelperPath(void) {
   return [[NSBundle mainBundle].bundlePath
-      stringByAppendingPathComponent:@"trollstorehelper"];
+      stringByAppendingPathComponent:@"echelper"];
 }
 #endif
 
@@ -150,7 +150,7 @@ int spawnRoot(NSString *path, NSArray *args, NSString **stdOut,
   dispatch_queue_t logQueue;
   if (stdOut || stdErr) {
     logQueue =
-        dispatch_queue_create("com.opa334.TrollStore.LogCollector", NULL);
+        dispatch_queue_create("com.ecmain.app.LogCollector", NULL);
     sema = dispatch_semaphore_create(0);
 
     int outPipe = out[0];
@@ -426,7 +426,7 @@ findPersistenceHelperApp(PERSISTENCE_HELPER_TYPE allowedTypes) {
         if (appProxy.installed && !appProxy.restricted) {
           if ([appProxy.bundleURL.path hasPrefix:@"/private/var/containers"]) {
             NSURL *trollStorePersistenceMarkURL = [appProxy.bundleURL
-                URLByAppendingPathComponent:@".TrollStorePersistenceHelper"];
+                URLByAppendingPathComponent:@".ECPersistenceHelper"];
             if ([trollStorePersistenceMarkURL
                     checkResourceIsReachableAndReturnError:nil]) {
               outProxy = appProxy;

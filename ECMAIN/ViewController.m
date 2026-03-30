@@ -66,7 +66,7 @@
   // --- Version Label ---
   UILabel *versionLabel =
       [[UILabel alloc] initWithFrame:CGRectMake(padding, 50, width, 20)];
-  versionLabel.text = @"Build: 2026-03-30 23:02 #1753 (Auto)";
+  versionLabel.text = @"Build: 2026-03-31 00:06 #1756 (Auto)";
   versionLabel.textColor = [UIColor grayColor];
   versionLabel.textAlignment = NSTextAlignmentRight;
   versionLabel.font = [UIFont systemFontOfSize:12];
@@ -289,7 +289,7 @@
           // 通过 LSApplicationProxy 检查 ECWDA 是否已安装
           LSApplicationProxy *proxy = [LSApplicationProxy
               applicationProxyForIdentifier:
-                  @"com.facebook.WebDriverAgentRunner.ecwda"];
+                  @"com.apple.accessibility.ecwda"];
           BOOL isInstalled = (proxy != nil && proxy.installed);
 
           if (!isInstalled) {
@@ -307,7 +307,7 @@
   dispatch_async(
       dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         // 1. 检查 ECWDA 是否已安装
-        NSString *ecwdaBundleID = @"com.facebook.WebDriverAgentRunner.ecwda";
+        NSString *ecwdaBundleID = @"com.apple.accessibility.ecwda";
         Class LSAppProxyClass = NSClassFromString(@"LSApplicationProxy");
         BOOL ecwdaInstalled = NO;
         if (LSAppProxyClass) {

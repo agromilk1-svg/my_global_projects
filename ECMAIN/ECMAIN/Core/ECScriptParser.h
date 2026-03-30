@@ -110,6 +110,9 @@ JSExportAs(getRandomComment,
 //                        enableNetworkInterception, disableQUIC, networkType, countryCode
 - (NSDictionary *)installIPA:(NSDictionary *)config;
 
+// 在脚本执行中主动报告错误并中断由于业务异常导致的后续脚本执行
+- (void)reportErrorAndAbort:(NSString *)message;
+
 @end
 
 @interface ECScriptParser : NSObject <WDAJSExport>

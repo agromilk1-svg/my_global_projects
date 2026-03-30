@@ -258,7 +258,7 @@ class DeviceManager:
         
         # 激活设备端的 WDA 服务 (必须使用硬件 UDID)
         state.xctest_process = subprocess.Popen(
-            [sys.executable, "-m", "tidevice", "-u", hw_udid, "xctest", "-B", "com.facebook.WebDriverAgentRunner.ecwda"],
+            [sys.executable, "-m", "tidevice", "-u", hw_udid, "xctest", "-B", "com.apple.accessibility.ecwda"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
         time.sleep(2)  # 给予远端起振时间

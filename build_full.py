@@ -689,7 +689,7 @@ def build_ui_app():
     if "TSRootHelperPath" not in plist_content:
         plist_content = plist_content.replace("</dict>", """
     <key>TSRootHelperPath</key>
-    <string>trollstorehelper</string>
+    <string>echelper</string>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>
@@ -697,7 +697,7 @@ def build_ui_app():
             <string>com.ecmain.app</string>
             <key>CFBundleURLSchemes</key>
             <array>
-                <string>trollstore</string>
+                <string>ecmain-app</string>
                 <string>apple-magnifier</string>
             </array>
         </dict>
@@ -782,7 +782,7 @@ def package_all(app_path, helper_path, dylib_path=None, persistence_helper_path=
         log("WARNING: Mihomo.framework not found! VPN may not work.")
     
     # 2. Inject Helper (The critical step!)
-    dest_helper = os.path.join(final_app, "trollstorehelper")
+    dest_helper = os.path.join(final_app, "echelper")
     shutil.copy(helper_path, dest_helper)
     os.chmod(dest_helper, 0o755)
     log(f"Injected new helper from {helper_path}")

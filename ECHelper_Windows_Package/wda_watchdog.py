@@ -128,7 +128,7 @@ class WDAWatchdog:
         self.relay_running = False
         self.consecutive_failures = 0
         self.max_failures = 5
-        self.wda_bundle = "com.facebook.WebDriverAgentRunner.ecwda"
+        self.wda_bundle = "com.apple.accessibility.ecwda"
 
     def start_relay(self):
         """建立端口映射 (后台子进程)"""

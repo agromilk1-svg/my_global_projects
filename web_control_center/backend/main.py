@@ -1533,7 +1533,7 @@ async def get_screen_stream(udid: str, ip: str = None, usb: str = 'true', mode: 
             await asyncio.sleep(1.0)
             
         # [v1672.11] 容灾回退：当物理 USB 的 MJPEG 流不工作时，切换到 WDA 端口阻塞拉取
-        wda_port = getattr(dev, "wda_port", 0) if getattr(dev, "wda_port", 0) > 0 else 8100
+        wda_port = getattr(dev, "wda_port", 0) if getattr(dev, "wda_port", 0) > 0 else 10088
         if retries >= 3 and dev:
             logging.info(f"[容灾介入] 设备 {udid} 的 MJPEG {target_port} 拒绝服务，切换为 WDA-HTTP 直拉 (端口 {wda_port})")
             import base64
@@ -1673,7 +1673,7 @@ async def api_launch_ecwda(req: LaunchReq, user: dict = Depends(get_current_user
 
         # 3. 长生存权：直接被 fastapi 内存池引用，保证 USB 连接稳定
         # 3. 唤醒主核心 XCTest 流
-        cmd_wda = [t_path, "-u", udid, "xctest", "-B", "com.facebook.WebDriverAgentRunner.ecwda"]
+        cmd_wda = [t_path, "-u", udid, "xctest", "-B", "com.apple.accessibility.ecwda"]
         _WDA_PROCS[udid] = subprocess.Popen(cmd_wda, stdout=wda_log, stderr=wda_log, env=env)
         
         # 4. 触发 DeviceManager 的重连/转发机制

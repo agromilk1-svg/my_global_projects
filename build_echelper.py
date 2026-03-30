@@ -140,13 +140,21 @@ def main():
     print("\n[*] 验证签名...")
     subprocess.run(["codesign", "-dvvv", output_path], capture_output=False)
     
-    # 归档 (新增)
+    # 归档到项目根目录
     final_output_dir = "build_antigravity/IPA"
     if not os.path.exists(final_output_dir):
         os.makedirs(final_output_dir)
     final_bin_path = os.path.join(final_output_dir, "echelper")
     shutil.copy2(output_path, final_bin_path)
     print(f"\n[*] 已归档到: {final_bin_path}")
+
+    # 自动同步到 Windows 安装包目录（install_echelper.py 从这里读取）
+    win_pkg_dir = "ECHelper_Windows_Package/build_antigravity/IPA"
+    if not os.path.exists(win_pkg_dir):
+        os.makedirs(win_pkg_dir)
+    win_bin_path = os.path.join(win_pkg_dir, "echelper")
+    shutil.copy2(output_path, win_bin_path)
+    print(f"[*] 已同步到: {win_bin_path}")
 
     print("\n" + "=" * 50)
     print(f"   ✅ 编译完成")

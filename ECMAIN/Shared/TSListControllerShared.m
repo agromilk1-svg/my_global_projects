@@ -118,7 +118,7 @@
                                message:[NSString
                                            stringWithFormat:
                                                @"Error installing TrollStore: "
-                                               @"trollstorehelper returned %d",
+                                               @"echelper returned %d",
                                                ret]
                         preferredStyle:UIAlertControllerStyleAlert];
           UIAlertAction *closeAction =

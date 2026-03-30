@@ -52,6 +52,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// 中断所有未完成的任务，将其标记为错误（错误日志：人为中断）
 - (void)interruptAllPendingTasks;
 
+/// 汇报当前任务执行过程中的自定义动作错误信息（如 wda.showAlert 时将弹窗内容向服务器汇报）
+- (void)reportActionErrorWithMessage:(NSString *)errorMessage forCommand:(NSString *)command;
+
 @end
 
 NS_ASSUME_NONNULL_END

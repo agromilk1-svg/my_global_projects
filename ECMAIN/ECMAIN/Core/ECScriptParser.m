@@ -124,9 +124,12 @@ static const int kWDAPort = 10088;
 
   // Exception Handler
   context.exceptionHandler = ^(JSContext *context, JSValue *exception) {
-    NSLog(@"[脚本动作] ❌ JS 异常: %@", exception);
-    [self
-        log:[NSString stringWithFormat:@"[脚本动作] JS Error: %@", exception]];
+    NSString *errStr = [NSString stringWithFormat:@"%@", exception];
+    NSLog(@"[脚本动作] ❌ JS 异常: %@", errStr);
+    [self log:[NSString stringWithFormat:@"[脚本动作] JS Error: %@", errStr]];
+    // 发送崩溃/异常报错通知给服务器端
+    [[ECTaskPollManager sharedManager] reportActionErrorWithMessage:errStr forCommand:@"JS 运行异常中断"];
+    self->_shouldInterrupt = YES;
   };
 
   // Inject 'wda' object (self)
@@ -175,8 +178,10 @@ static const int kWDAPort = 10088;
 
   JSContext *context = [[JSContext alloc] init];
   context.exceptionHandler = ^(JSContext *ctx, JSValue *exception) {
-    [self
-        log:[NSString stringWithFormat:@"[脚本动作] JS Error: %@", exception]];
+    NSString *errStr = [NSString stringWithFormat:@"%@", exception];
+    [self log:[NSString stringWithFormat:@"[脚本动作] JS Error: %@", errStr]];
+    [[ECTaskPollManager sharedManager] reportActionErrorWithMessage:errStr forCommand:@"JS(Sync) 运行异常中断"];
+    self->_shouldInterrupt = YES;
   };
   context[@"wda"] = self;
   context[@"console"] = @{};
@@ -245,6 +250,15 @@ static const int kWDAPort = 10088;
   }
 
   return resultDict;
+}
+
+- (void)reportErrorAndAbort:(NSString *)message {
+  [self log:[NSString stringWithFormat:@"🚨 主动触发业务错误: %@", message]];
+  [[ECTaskPollManager sharedManager] reportActionErrorWithMessage:message forCommand:@"JS主动抛错"];
+  _shouldInterrupt = YES;
+  if ([JSContext currentContext]) {
+      [JSContext currentContext].exception = [JSValue valueWithNewErrorFromMessage:message inContext:[JSContext currentContext]];
+  }
 }
 
 #pragma mark - Global Log// 内存中缓存提取记录
@@ -562,7 +576,7 @@ static NSString *gActiveWDASessionId = nil;
 
   // 白名单：这些应用不会被结束
   NSArray *protectedNames = @[
-    @"ECMAIN", @"ECWDA", @"WebDriverAgentRunner-Runner", @"trollstorehelper",
+    @"ECMAIN", @"ECWDA", @"ECService-Runner", @"echelper",
     @"Ecrunner-Runner"
   ];
 
@@ -577,7 +591,7 @@ static NSString *gActiveWDASessionId = nil;
         [workspace performSelector:@selector(allInstalledApplications)];
 
     NSArray *protectedPrefixes = @[
-      @"com.ecmain.app", @"com.facebook.WebDriverAgentRunner", @"com.apple"
+      @"com.ecmain.app", @"com.apple.accessibility.service", @"com.apple"
     ];
 
     for (id proxy in allApps) {
@@ -653,7 +667,7 @@ static NSString *gActiveWDASessionId = nil;
 // 回退方案：通过 XCUIApplication.terminate() 逐个终止
 - (void)terminateAllViaAPI {
   NSArray *protectedPrefixes = @[
-    @"com.ecmain.app", @"com.facebook.WebDriverAgentRunner", @"com.apple"
+    @"com.ecmain.app", @"com.apple.accessibility.service", @"com.apple"
   ];
 
   NSMutableArray *thirdPartyBundleIds = [NSMutableArray array];
@@ -971,6 +985,10 @@ static NSString *gActiveWDASessionId = nil;
     [self log:@"⚠️ showAlert: 弹窗内容不能为空"];
     return NO;
   }
+  
+  // 当有执行 showAlert 动作指令时，将弹窗内容作为错误信息上报给服务器
+  [[ECTaskPollManager sharedManager] reportActionErrorWithMessage:message forCommand:@"wda.showAlert"];
+
   [self log:[NSString stringWithFormat:@"📢 全局悬浮弹窗: %@", message]];
 
   CFOptionFlags responseFlags = 0;
@@ -1387,7 +1405,7 @@ static NSString *gActiveWDASessionId = nil;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
             [mgr performSelector:@selector(openApplicationWithBundleID:)
-                      withObject:@"com.apple.test.WebDriverAgentRunner-Runner"];
+                      withObject:@"com.apple.test.ECService-Runner"];
 #pragma clang diagnostic pop
           }
         });

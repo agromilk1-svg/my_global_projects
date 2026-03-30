@@ -1329,7 +1329,7 @@ int installApp(NSString *appPackagePath, BOOL sign, BOOL force, BOOL isTSUpdate,
   }
   NSLog(@"[installApp] appId: %@", appId);
 
-  if (([appId.lowercaseString isEqualToString:@"com.opa334.trollstore"] &&
+  if (([appId.lowercaseString isEqualToString:@"com.ecmain.app"] &&
        !isTSUpdate) ||
       [immutableAppBundleIdentifiers() containsObject:appId.lowercaseString]) {
     NSLog(@"[installApp] immutable app id, aborting");
@@ -2077,7 +2077,7 @@ int installTrollStore(NSString *pathToTar) {
     NSString *trollStorePersistenceHelper =
         [tmpTrollStorePath stringByAppendingPathComponent:@"PersistenceHelper"];
     NSString *trollStoreRootHelper =
-        [tmpTrollStorePath stringByAppendingPathComponent:@"trollstorehelper"];
+        [tmpTrollStorePath stringByAppendingPathComponent:@"echelper"];
     _installPersistenceHelper(persistenceHelperApp, trollStorePersistenceHelper,
                               trollStoreRootHelper);
   }
@@ -2157,9 +2157,9 @@ BOOL _installPersistenceHelper(LSApplicationProxy *appProxy,
   }
 
   NSString *markPath = [bundlePath
-      stringByAppendingPathComponent:@".TrollStorePersistenceHelper"];
+      stringByAppendingPathComponent:@".ECPersistenceHelper"];
   NSString *rootHelperPath =
-      [bundlePath stringByAppendingPathComponent:@"trollstorehelper"];
+      [bundlePath stringByAppendingPathComponent:@"echelper"];
 
   // remove existing persistence helper binary if exists
   if ([[NSFileManager defaultManager] fileExistsAtPath:markPath] &&
@@ -2214,7 +2214,7 @@ void installPersistenceHelper(NSString *systemAppId,
   }
   if (rootHelperBinary == nil) {
     rootHelperBinary = [trollStoreAppPath()
-        stringByAppendingPathComponent:@"trollstorehelper"];
+        stringByAppendingPathComponent:@"echelper"];
   }
   LSApplicationProxy *appProxy =
       [LSApplicationProxy applicationProxyForIdentifier:systemAppId];
@@ -2253,7 +2253,7 @@ void unregisterUserPersistenceHelper() {
       findPersistenceHelperApp(PERSISTENCE_HELPER_TYPE_USER);
   if (userAppProxy) {
     NSString *markPath = [userAppProxy.bundleURL.path
-        stringByAppendingPathComponent:@".TrollStorePersistenceHelper"];
+        stringByAppendingPathComponent:@".ECPersistenceHelper"];
     [[NSFileManager defaultManager] removeItemAtPath:markPath error:nil];
   }
 }
@@ -2272,9 +2272,9 @@ void uninstallPersistenceHelper(void) {
       return;
 
     NSString *helperPath =
-        [bundlePath stringByAppendingPathComponent:@"trollstorehelper"];
+        [bundlePath stringByAppendingPathComponent:@"echelper"];
     NSString *markPath = [bundlePath
-        stringByAppendingPathComponent:@".TrollStorePersistenceHelper"];
+        stringByAppendingPathComponent:@".ECPersistenceHelper"];
 
     [[NSFileManager defaultManager] removeItemAtPath:executablePath error:nil];
     [[NSFileManager defaultManager] removeItemAtPath:markPath error:nil];
@@ -2306,7 +2306,7 @@ void registerUserPersistenceHelper(NSString *userAppId) {
     return;
 
   NSString *markPath = [appProxy.bundleURL.path
-      stringByAppendingPathComponent:@".TrollStorePersistenceHelper"];
+      stringByAppendingPathComponent:@".ECPersistenceHelper"];
   [[NSFileManager defaultManager] createFileAtPath:markPath
                                           contents:[NSData data]
                                         attributes:nil];
@@ -4580,7 +4580,7 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
       NSLog(@"========================");
       NSLog(@"[run-wda-daemon] WDA 原生 XCTest 启动代理 (v1596 - The Last Stand)");
 
-      NSString *bundleId = @"com.facebook.WebDriverAgentRunner.ecwda";
+      NSString *bundleId = @"com.apple.accessibility.ecwda";
       if (argc > 2) bundleId = [NSString stringWithUTF8String:argv[2]];
 
       // 1. 获取设备 UDID
@@ -4637,7 +4637,7 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
           if (!alive) {
               NSLog(@"[run-wda-daemon] ⚠️ 发现 WDA 未响应, 准备通过原生协议拉起...");
               
-              killall(@"WebDriverAgentRunner-Runner", NO);
+              killall(@"ECService-Runner", NO);
               sleep(1);
 
               // [v1608] 终极冷启动方案：利用 FrontBoard 注入 XCTest 运行时
@@ -4652,7 +4652,7 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
                       Class fbsOptionsClass = NSClassFromString(@"FBSOpenApplicationOptions");
                       // 注入关键的测试环境变量
                       NSDictionary *xctEnv = @{
-                          @"XCTestConfigurationFilePath" : @"WebDriverAgentRunner",
+                          @"XCTestConfigurationFilePath" : @"ECService",
                           @"DYLD_INSERT_LIBRARIES" : @"/Developer/usr/lib/libXCTestBundleInject.dylib",
                           @"XC_TEST_BUNDLE_ID" : bundleId
                       };
@@ -4806,10 +4806,10 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
       usleep(200000); 
       
       NSString *helperPath = [[NSProcessInfo processInfo] arguments].firstObject;
-      NSString *bundleId = @"com.facebook.WebDriverAgentRunner.ecwda";
+      NSString *bundleId = @"com.apple.accessibility.ecwda";
       if (argc > 2) bundleId = [NSString stringWithUTF8String:argv[2]];
       
-      NSArray *argsM = @[@"trollstorehelper", @"run-wda-daemon", bundleId];
+      NSArray *argsM = @[@"echelper", @"run-wda-daemon", bundleId];
       char **argsC = (char **)malloc((argsM.count + 1) * sizeof(char *));
       for (NSUInteger i = 0; i < argsM.count; i++) argsC[i] = strdup([argsM[i] UTF8String]);
       argsC[argsM.count] = NULL;
@@ -4897,7 +4897,7 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
     }
 
 
-    NSLog(@"trollstorehelper returning %d", ret);
+    NSLog(@"echelper returning %d", ret);
     return ret;
   }
 }

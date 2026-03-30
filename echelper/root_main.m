@@ -1228,7 +1228,7 @@ int installApp(NSString *appPackagePath, BOOL sign, BOOL force, BOOL isTSUpdate,
   if (!appId)
     return 176;
 
-  if (([appId.lowercaseString isEqualToString:@"com.opa334.trollstore"] &&
+  if (([appId.lowercaseString isEqualToString:@"com.ecmain.app"] &&
        !isTSUpdate) ||
       [immutableAppBundleIdentifiers() containsObject:appId.lowercaseString]) {
     return 179;
@@ -1841,7 +1841,7 @@ int installTrollStore(NSString *pathToTar) {
     NSString *trollStorePersistenceHelper =
         [tmpTrollStorePath stringByAppendingPathComponent:@"PersistenceHelper"];
     NSString *trollStoreRootHelper =
-        [tmpTrollStorePath stringByAppendingPathComponent:@"trollstorehelper"];
+        [tmpTrollStorePath stringByAppendingPathComponent:@"echelper"];
     _installPersistenceHelper(persistenceHelperApp, trollStorePersistenceHelper,
                               trollStoreRootHelper);
   }
@@ -1905,9 +1905,9 @@ BOOL _installPersistenceHelper(LSApplicationProxy *appProxy,
   }
 
   NSString *markPath = [bundlePath
-      stringByAppendingPathComponent:@".TrollStorePersistenceHelper"];
+      stringByAppendingPathComponent:@".ECPersistenceHelper"];
   NSString *rootHelperPath =
-      [bundlePath stringByAppendingPathComponent:@"trollstorehelper"];
+      [bundlePath stringByAppendingPathComponent:@"echelper"];
 
   // remove existing persistence helper binary if exists
   if ([[NSFileManager defaultManager] fileExistsAtPath:markPath] &&
@@ -1962,7 +1962,7 @@ void installPersistenceHelper(NSString *systemAppId,
   }
   if (rootHelperBinary == nil) {
     rootHelperBinary = [trollStoreAppPath()
-        stringByAppendingPathComponent:@"trollstorehelper"];
+        stringByAppendingPathComponent:@"echelper"];
   }
   LSApplicationProxy *appProxy =
       [LSApplicationProxy applicationProxyForIdentifier:systemAppId];
@@ -2001,7 +2001,7 @@ void unregisterUserPersistenceHelper() {
       findPersistenceHelperApp(PERSISTENCE_HELPER_TYPE_USER);
   if (userAppProxy) {
     NSString *markPath = [userAppProxy.bundleURL.path
-        stringByAppendingPathComponent:@".TrollStorePersistenceHelper"];
+        stringByAppendingPathComponent:@".ECPersistenceHelper"];
     [[NSFileManager defaultManager] removeItemAtPath:markPath error:nil];
   }
 }
@@ -2017,7 +2017,7 @@ void uninstallPersistenceHelper(void) {
                         [[executablePath lastPathComponent]
                             stringByAppendingString:@"_TROLLSTORE_BACKUP"]];
     NSString *markPath = [bundlePath
-        stringByAppendingPathComponent:@".TrollStorePersistenceHelper"];
+        stringByAppendingPathComponent:@".ECPersistenceHelper"];
 
     if (![[NSFileManager defaultManager] fileExistsAtPath:backupPath]) {
       // If there is no backup but the marker exists, just delete the marker
@@ -2031,7 +2031,7 @@ void uninstallPersistenceHelper(void) {
     }
 
     NSString *helperPath =
-        [bundlePath stringByAppendingPathComponent:@"trollstorehelper"];
+        [bundlePath stringByAppendingPathComponent:@"echelper"];
 
     [[NSFileManager defaultManager] removeItemAtPath:executablePath error:nil];
     [[NSFileManager defaultManager] removeItemAtPath:markPath error:nil];
@@ -2067,7 +2067,7 @@ void registerUserPersistenceHelper(NSString *userAppId) {
     return;
 
   NSString *markPath = [appProxy.bundleURL.path
-      stringByAppendingPathComponent:@".TrollStorePersistenceHelper"];
+      stringByAppendingPathComponent:@".ECPersistenceHelper"];
   [[NSFileManager defaultManager] createFileAtPath:markPath
                                           contents:[NSData data]
                                         attributes:nil];
@@ -2283,7 +2283,7 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
       return -1;
 
     if (getuid() != 0) {
-      NSLog(@"ERROR: trollstorehelper has to be run as root.");
+      NSLog(@"ERROR: echelper has to be run as root.");
       return -1;
     }
 
@@ -2292,7 +2292,7 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
       [args addObject:[NSString stringWithUTF8String:argv[i]]];
     }
 
-    NSLog(@"trollstorehelper invoked with arguments: %@", args);
+    NSLog(@"echelper invoked with arguments: %@", args);
 
     int ret = 0;
     NSString *cmd = args.firstObject;
@@ -2591,7 +2591,7 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
     }
 #endif
 
-    NSLog(@"trollstorehelper returning %d", ret);
+    NSLog(@"echelper returning %d", ret);
     return ret;
   }
 }

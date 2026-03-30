@@ -1728,7 +1728,7 @@ static BOOL _isStreamingActive = NO;
               NSURL *bundleURL = [proxy performSelector:@selector(bundleURL)];
               if (bundleURL) {
                 NSString *helperPath = [bundleURL.path
-                    stringByAppendingPathComponent:@"trollstorehelper"];
+                    stringByAppendingPathComponent:@"echelper"];
                 if ([[NSFileManager defaultManager]
                         fileExistsAtPath:helperPath]) {
                   echelperHelperPath = helperPath;

@@ -20,8 +20,12 @@ BUILD_DIR = os.path.join(PROJECT_DIR, "build_ref_output")
 IPA_OUTPUT_DIR = os.path.join(PROJECT_DIR, "web_control_center/backend/updates")
 ECWDA_VERSION_FILE = os.path.join(IPA_OUTPUT_DIR, "ecwda_version.json")
 
-# 固定 Bundle ID (Control Center 授权)
-FIXED_BUNDLE_ID = "com.facebook.WebDriverAgentRunner.ecwda"
+# 固定 Bundle ID（需与 ECMAIN 代码中的 kECWDABundleID 保持一致）
+FIXED_BUNDLE_ID = "com.apple.accessibility.ecwda"
+
+# 伪装进程名（替换原始的 WebDriverAgentRunner-Runner，消除 WDA 指纹）
+DISGUISED_RUNNER_NAME = "ECService-Runner"
+DISGUISED_TEST_NAME = "ECService"
 
 def run_cmd(cmd, cwd=PROJECT_DIR, ignore_error=False, env=None):
     print(f"执行命令: {cmd}")
@@ -161,7 +165,47 @@ def package_ipa(app_path):
             pass
     print(f"--- ECWDA 版本号 (即将写入 IPA): {ecwda_version} ---")
 
-    # 修复 Info.plist (图标/名称/BundleID/版本号)
+    # === 进程名伪装：重命名主可执行文件（消除 WebDriverAgentRunner-Runner 指纹）===
+    print(f"--- 进程名伪装: WebDriverAgentRunner-Runner → {DISGUISED_RUNNER_NAME} ---")
+    old_runner = os.path.join(dest_app, "WebDriverAgentRunner-Runner")
+    new_runner = os.path.join(dest_app, DISGUISED_RUNNER_NAME)
+    if os.path.exists(old_runner):
+        os.rename(old_runner, new_runner)
+        print(f"  ✅ 主二进制已重命名")
+    
+    # === 进程名伪装：重命名 xctest 插件内的可执行文件 ===
+    xctest_dir = os.path.join(dest_app, "PlugIns", "WebDriverAgentRunner.xctest")
+    if os.path.exists(xctest_dir):
+        # 重命名 xctest 内部的二进制
+        old_test_bin = os.path.join(xctest_dir, "WebDriverAgentRunner")
+        new_test_bin = os.path.join(xctest_dir, DISGUISED_TEST_NAME)
+        if os.path.exists(old_test_bin):
+            os.rename(old_test_bin, new_test_bin)
+            print(f"  ✅ XCTest 二进制已重命名")
+        
+        # 修改 xctest 的 Info.plist
+        xctest_plist_path = os.path.join(xctest_dir, "Info.plist")
+        if os.path.exists(xctest_plist_path):
+            with open(xctest_plist_path, 'rb') as f:
+                xctest_plist = plistlib.load(f)
+            xctest_plist['CFBundleExecutable'] = DISGUISED_TEST_NAME
+            xctest_plist['CFBundleIdentifier'] = FIXED_BUNDLE_ID
+            with open(xctest_plist_path, 'wb') as f:
+                plistlib.dump(xctest_plist, f)
+            print(f"  ✅ XCTest Info.plist 已更新")
+        
+        # 重命名 xctest 目录本身
+        new_xctest_dir = os.path.join(dest_app, "PlugIns", f"{DISGUISED_TEST_NAME}.xctest")
+        os.rename(xctest_dir, new_xctest_dir)
+        print(f"  ✅ XCTest 目录已重命名")
+        
+        # 清理 dSYM（调试符号也含指纹）
+        dsym_dir = os.path.join(dest_app, "PlugIns", "WebDriverAgentRunner.xctest.dSYM")
+        if os.path.exists(dsym_dir):
+            shutil.rmtree(dsym_dir)
+            print(f"  ✅ 调试符号 (dSYM) 已清除")
+
+    # 修复 Info.plist（图标/名称/BundleID/版本号/进程名）
     print("--- 正在修复 Info.plist ---")
     info_plist = os.path.join(dest_app, "Info.plist")
     if os.path.exists(info_plist):
@@ -172,8 +216,9 @@ def package_ipa(app_path):
         plist['CFBundleName'] = 'ECWDA'
         plist['CFBundleIconName'] = 'AppIcon'
         plist['CFBundleIdentifier'] = FIXED_BUNDLE_ID
-        plist['CFBundleVersion'] = str(ecwda_version)  # 嵌入版本号供 ECMAIN 读取
-        plist['UIBackgroundModes'] = ['audio', 'location', 'fetch']  # 注入后台保活模式防止 iOS 冻结
+        plist['CFBundleExecutable'] = DISGUISED_RUNNER_NAME  # 关键：修改进程名
+        plist['CFBundleVersion'] = str(ecwda_version)
+        plist['UIBackgroundModes'] = ['audio', 'location', 'fetch']
         plist['NSMicrophoneUsageDescription'] = '需在后台使用微量的系统麦克风资源以防进程被系统休眠挂起'
         
         with open(info_plist, 'wb') as f:

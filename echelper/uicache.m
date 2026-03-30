@@ -164,7 +164,7 @@ bool registerPath(NSString *path, BOOL unregister, BOOL forceSystem) {
                                                         appContainerized);
     }
     dictToRegister[@"IsDeletable"] =
-        @(![appBundleID isEqualToString:@"com.opa334.TrollStore"] &&
+        @(![appBundleID isEqualToString:@"com.ecmain.app"] &&
           kCFCoreFoundationVersionNumber >=
               kCFCoreFoundationVersionNumber_iOS_15_0);
     dictToRegister[@"Path"] = path;
