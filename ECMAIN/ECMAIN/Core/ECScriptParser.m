@@ -21,6 +21,20 @@
 #import <ifaddrs.h>
 #import <net/if.h>
 
+// [v1760] 声明系统级弹窗 API 以便动态调用，防止 Xcode 编译器的 unavailable 检查
+typedef SInt32 (*CFUserNotificationDisplayAlert_t)(
+    CFTimeInterval timeout, 
+    CFOptionFlags flags, 
+    CFURLRef iconURL, 
+    CFURLRef soundURL, 
+    CFURLRef localizationURL, 
+    CFStringRef alertHeader, 
+    CFStringRef alertMessage, 
+    CFStringRef defaultButtonTitle, 
+    CFStringRef alternateButtonTitle, 
+    CFStringRef otherButtonTitle, 
+    CFOptionFlags *responseFlags);
+
 // RootHelper 工具函数声明
 extern int spawnRoot(NSString *path, NSArray *args, NSString **stdOut,
                      NSString **stdErr);
@@ -952,89 +966,44 @@ static NSString *gActiveWDASessionId = nil;
   return connected;
 }
 
-// --- 全局弹窗（iOS 系统级 Alert）---
-
 - (BOOL)showAlert:(NSString *)message {
   if (!message || message.length == 0) {
     [self log:@"⚠️ showAlert: 弹窗内容不能为空"];
     return NO;
   }
-  [self log:[NSString stringWithFormat:@"📢 弹窗: %@", message]];
+  [self log:[NSString stringWithFormat:@"📢 全局悬浮弹窗: %@", message]];
 
-  // 使用信号量阻塞脚本线程，直到用户点击 OK
-  dispatch_semaphore_t sema = dispatch_semaphore_create(0);
-
-  dispatch_async(dispatch_get_main_queue(), ^{
-    // 获取当前最顶层的 ViewController 来呈现 Alert
-    UIWindow *keyWindow = nil;
-    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-      if ([scene isKindOfClass:[UIWindowScene class]]) {
-        UIWindowScene *windowScene = (UIWindowScene *)scene;
-        for (UIWindow *window in windowScene.windows) {
-          if (window.isKeyWindow) {
-            keyWindow = window;
-            break;
-          }
-        }
+  CFOptionFlags responseFlags = 0;
+  SInt32 result = -1;
+  
+  // 通过 dlopen 动态加载 CoreFoundation 获取私有 API，防止编译报错
+  void *handle = dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", RTLD_LAZY);
+  if (handle) {
+      CFUserNotificationDisplayAlert_t displayAlert = (CFUserNotificationDisplayAlert_t)dlsym(handle, "CFUserNotificationDisplayAlert");
+      if (displayAlert) {
+          result = displayAlert(
+              60.0,
+              3, // Alert Level
+              NULL,
+              NULL,
+              NULL,
+              CFSTR("ECMAIN"),
+              (__bridge CFStringRef)message,
+              CFSTR("OK"),
+              NULL,
+              NULL,
+              &responseFlags
+          );
+      } else {
+          [self log:@"⚠️ showAlert 错误: 找不到 CFUserNotificationDisplayAlert 函数"];
       }
-      if (keyWindow) break;
-    }
+      dlclose(handle);
+  } else {
+      [self log:@"⚠️ showAlert 错误: 无法加载 CoreFoundation"];
+  }
 
-    UIViewController *topVC = keyWindow.rootViewController;
-    while (topVC.presentedViewController) {
-      topVC = topVC.presentedViewController;
-    }
-
-    if (!topVC) {
-      NSLog(@"[ECScriptEngine] showAlert: 无法获取顶层 ViewController");
-      dispatch_semaphore_signal(sema);
-      return;
-    }
-
-    UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:@"ECMAIN"
-                         message:message
-                  preferredStyle:UIAlertControllerStyleAlert];
-
-    [alert addAction:[UIAlertAction
-                         actionWithTitle:@"OK"
-                                   style:UIAlertActionStyleDefault
-                                 handler:^(UIAlertAction *_Nonnull action) {
-                                   dispatch_semaphore_signal(sema);
-                                 }]];
-
-    [topVC presentViewController:alert animated:YES completion:nil];
-  });
-
-  // 最多等待 60 秒，防止脚本永久阻塞
-  long result = dispatch_semaphore_wait(
-      sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(60.0 * NSEC_PER_SEC)));
-
-  if (result != 0) {
-    [self log:@"⚠️ showAlert 超时(60s)，自动关闭"];
-    // 超时后尝试关闭弹窗
-    dispatch_async(dispatch_get_main_queue(), ^{
-      UIWindow *keyWindow = nil;
-      for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if ([scene isKindOfClass:[UIWindowScene class]]) {
-          UIWindowScene *windowScene = (UIWindowScene *)scene;
-          for (UIWindow *window in windowScene.windows) {
-            if (window.isKeyWindow) {
-              keyWindow = window;
-              break;
-            }
-          }
-        }
-        if (keyWindow) break;
-      }
-      UIViewController *topVC = keyWindow.rootViewController;
-      while (topVC.presentedViewController) {
-        topVC = topVC.presentedViewController;
-      }
-      if ([topVC isKindOfClass:[UIAlertController class]]) {
-        [topVC dismissViewControllerAnimated:YES completion:nil];
-      }
-    });
+  if (result != 0 && result != -1) {
+    [self log:@"⚠️ showAlert 超时(60s)，悬浮弹窗自动关闭"];
   }
 
   return YES;

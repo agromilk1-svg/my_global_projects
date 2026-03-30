@@ -7,10 +7,15 @@
  */
 
 #import "FBScreenshotCommands.h"
+#import <libkern/OSAtomic.h>
 
 #import "XCUIDevice+FBHelpers.h"
+#import "FBXCTestDaemonsProxy.h"
 
 @implementation FBScreenshotCommands
+
+// [v1760] 截图并发保护：防止 MJPEG 轮询导致多个 _XCT_requestScreenshot 同时排队堵死 XPC
+static volatile int32_t _screenshotInProgress = 0;
 
 #pragma mark - <FBCommandHandler>
 
@@ -28,10 +33,15 @@
 
 + (id<FBResponsePayload>)handleGetScreenshot:(FBRouteRequest *)request
 {
+  // [v1760] 并发保护：如果上一次截图还在进行中，直接返回繁忙错误
+  // 避免多个 _XCT_requestScreenshot IPC 调用同时排队导致 testmanagerd 死锁
+  if (!OSAtomicCompareAndSwap32(0, 1, &_screenshotInProgress)) {
+    return FBResponseWithStatus([FBCommandStatus
+        unableToCaptureScreenErrorWithMessage:@"Screenshot already in progress (debounced)"
+                                   traceback:nil]);
+  }
+
   // [v1738-fix] 防卡死：将截图 + base64 编码移到后台线程，设置 10 秒超时。
-  // 原代码直接在 WDA 主队列同步执行截图（XCTest IPC 最多 3s + PNG 降级 3s）
-  // 加上 base64 编码（大图 1-3s），最坏情况阻塞主队列 9 秒，
-  // 期间所有 WDA 请求（包括 /status 探活）全部排队，导致 ECMAIN 误判 WDA 卡死。
   __block NSData *screenshotData = nil;
   __block NSError *screenshotError = nil;
   dispatch_semaphore_t sema = dispatch_semaphore_create(0);
@@ -46,8 +56,13 @@
   long waitResult = dispatch_semaphore_wait(
       sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)));
 
+  // 截图完成或超时，释放并发锁
+  OSAtomicCompareAndSwap32(1, 0, &_screenshotInProgress);
+
   if (waitResult != 0) {
-    NSLog(@"[ECWDA] ⚠️ /screenshot 截图超时(10s)");
+    NSLog(@"[ECWDA] ⚠️ /screenshot 截图超时(10s)，将刷新 XPC 连接");
+    // [v1760] 超时说明 testmanagerd XPC 可能已断开，标记 proxy 需要刷新
+    [FBXCTestDaemonsProxy invalidateTestRunnerProxy];
     return FBResponseWithStatus([FBCommandStatus
         unableToCaptureScreenErrorWithMessage:@"Screenshot timed out (10s)"
                                    traceback:nil]);

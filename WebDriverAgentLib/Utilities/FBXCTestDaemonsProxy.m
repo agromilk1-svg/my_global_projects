@@ -80,21 +80,34 @@ static void swizzledLaunchApp(id self, SEL _cmd, NSString *path, NSString *bundl
 #pragma clang diagnostic pop
 }
 
+// [v1760] 文件级标志位：控制 testRunnerProxy 是否需要刷新 XPC 连接
+static BOOL _proxyNeedsRefresh = YES;
+
 + (id<XCTestManager_ManagerInterface>)testRunnerProxy
 {
+  // [v1760] 移除 dispatch_once，以支持截图超时后强制刷新 XPC 连接
   static id<XCTestManager_ManagerInterface> proxy = nil;
+  
   if ([FBConfiguration shouldUseSingletonTestManager]) {
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-      [FBLogger logFmt:@"Using singleton test manager"];
+    if (_proxyNeedsRefresh || proxy == nil) {
+      [FBLogger logFmt:@"[v1760] 正在刷新 testRunnerProxy（singleton 模式）"];
       proxy = [self.class retrieveTestRunnerProxy];
-    });
+      _proxyNeedsRefresh = NO;
+    }
   } else {
     [FBLogger logFmt:@"Using general test manager"];
     proxy = [self.class retrieveTestRunnerProxy];
   }
   NSAssert(proxy != NULL, @"Could not determine testRunnerProxy", proxy);
   return proxy;
+}
+
+// [v1760] 截图超时后调用此方法，强制下次重新获取 daemon proxy
+// 解决 testmanagerd XPC 连接 stale 后永久超时的问题
++ (void)invalidateTestRunnerProxy
+{
+  [FBLogger logFmt:@"[v1760] ⚠️ invalidateTestRunnerProxy: 标记 proxy 需要刷新"];
+  _proxyNeedsRefresh = YES;
 }
 
 + (id<XCTestManager_ManagerInterface>)retrieveTestRunnerProxy

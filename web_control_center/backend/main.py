@@ -698,6 +698,8 @@ ACTIVE_TUNNELS: Dict[str, WebSocket] = {}
 PENDING_TASKS: Dict[str, asyncio.Future] = {}
 # [v1683] MJPEG 流帧队列：设备端通过 WS 二进制帧推送 JPEG 数据，后端消费并转发给前端
 STREAM_QUEUES: Dict[str, asyncio.Queue] = {}
+# [v1760] MJPEG 流取消信号：切换设备时主动终止旧流，防止多个流同时轰炸 WDA /screenshot
+ACTIVE_STREAM_STOPS: Dict[str, asyncio.Event] = {}
 
 class WSTunnelManager:
     async def connect(self, ws: WebSocket, device_key: str):
@@ -1349,19 +1351,26 @@ async def ws_screen_stream(websocket: WebSocket, udid: str, mode: str = 'ws', sl
 async def get_screen_stream(udid: str, ip: str = None, usb: str = 'true', mode: str = 'usb', token: str = None, user: dict = Depends(get_current_user), slave: str = '0'):
     await require_device_permission(user, udid)
     
+    # [v1760] 切换设备时，先取消该设备的旧 MJPEG 流，防止旧流继续轰炸 WDA /screenshot
+    old_stop = ACTIVE_STREAM_STOPS.get(udid)
+    if old_stop:
+        old_stop.set()  # 触发旧流生成器退出
+        logging.info(f"[STREAM] 已取消设备 {udid} 的旧 MJPEG 流")
+    stop_event = asyncio.Event()
+    ACTIVE_STREAM_STOPS[udid] = stop_event
+    
     if mode == 'ws':
-        # [v1684] WS MJPEG 模式：后端主动通过 WS 发送 /screenshot 轮询请求，利用 iOS 端的极致压缩通道！
-        # 避免让 iOS 端长时间推二进制流导致 NSURLSessionWebSocketTask 内存泄漏或 EXC_BAD_ACCESS
+        # [v1684] WS MJPEG 模式
         async def iter_mjpeg_ws_frames():
             import base64
             tunnel_wait = 0
-            max_tunnel_wait = 60  # 等待隧道上限：30 秒（60 * 0.5s）
-            fps_delay = 0.5 if slave == '1' else 0.1 # 从机大幅降帧（2 FPS），主机高帧率（10 FPS）
+            max_tunnel_wait = 60
+            fps_delay = 0.5 if slave == '1' else 0.1
             frame_count = 0
             
             logging.info(f"[WS MJPEG] 启动截图轮询: udid={udid}, 当前隧道列表={list(ACTIVE_TUNNELS.keys())}")
             
-            while True:
+            while not stop_event.is_set():
                 tunnel_ws = ACTIVE_TUNNELS.get(udid)
                 if not tunnel_ws:
                     tunnel_wait += 1
@@ -1456,7 +1465,7 @@ async def get_screen_stream(udid: str, ip: str = None, usb: str = 'true', mode: 
         jwt_end = b"\xff\xd9"
         
         retries = 0
-        while retries < 3:
+        while retries < 3 and not stop_event.is_set():
             try:
                 reader, writer = await asyncio.wait_for(
                     asyncio.open_connection(target_ip, target_port), timeout=3.0

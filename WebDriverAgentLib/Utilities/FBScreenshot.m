@@ -20,7 +20,7 @@
 #import "XCTestManager_ManagerInterface-Protocol.h"
 #import "XCUIScreen.h"
 
-static const NSTimeInterval SCREENSHOT_TIMEOUT = 3.;
+static const NSTimeInterval SCREENSHOT_TIMEOUT = 8.;
 // 降低默认分辨率（0.5 = 半分辨率），减轻 HEIF→JPEG 转码内存压力
 static const CGFloat SCREENSHOT_SCALE = 0.5;
 static const CGFloat HIGH_QUALITY = 0.6;

@@ -22,6 +22,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface FBXCTestDaemonsProxy : NSObject
 
 + (id<XCTestManager_ManagerInterface>)testRunnerProxy;
++ (void)invalidateTestRunnerProxy;
 
 + (BOOL)synthesizeEventWithRecord:(XCSynthesizedEventRecord *)record
                             error:(NSError *__autoreleasing*)error;
