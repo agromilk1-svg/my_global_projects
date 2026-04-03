@@ -62,8 +62,9 @@ static const char *QUEUE_NAME = "JPEG Screenshots Provider Queue";
       [self streamScreenshot];
     });
   } else {
-    // Try to do our best to keep the FPS at a decent level
-    dispatch_async(self.backgroundQueue, ^{
+    // Try to do our best to keep the FPS at a decent level, but yield context to avoid XPC starvation
+    // 特别是在 TikTok 等重度渲染的场景下，XCUIScreen 的单次调用可能会超时，如果马上再掉，会形成死锁。
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), self.backgroundQueue, ^{
       [self streamScreenshot];
     });
   }

@@ -104,6 +104,21 @@ NSString *formatTimeInterval(NSTimeInterval interval) {
                                              uti:(UTType *)uti
                                          timeout:(NSTimeInterval)timeout
                                            error:(NSError **)error {
+  static NSLock *globalScreenshotLock = nil;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    globalScreenshotLock = [[NSLock alloc] init];
+  });
+  
+  // [v1761] 全局锁保护：防止多条线程（如：自动化脚本找图 与 前端 MJPEG 投屏）并发调用 XCTest 导致底层 IPC 死锁
+  BOOL locked = [globalScreenshotLock lockBeforeDate:[NSDate dateWithTimeIntervalSinceNow:10.0]];
+  if (!locked) {
+    if (error) {
+      [[[FBErrorBuilder builder] withDescription:@"Failed to acquire global screenshot lock within 10s"] buildError:error];
+    }
+    return nil;
+  }
+
   id<XCTestManager_ManagerInterface> proxy =
       [FBXCTestDaemonsProxy testRunnerProxy];
   __block NSData *screenshotData = nil;
@@ -116,6 +131,7 @@ NSString *formatTimeInterval(NSTimeInterval interval) {
                              compressionQuality:compressionQuality
                                           error:error];
   if (nil == screnshotRequest) {
+    [globalScreenshotLock unlock];
     return nil;
   }
   [proxy _XCT_requestScreenshot:screnshotRequest
@@ -139,6 +155,9 @@ NSString *formatTimeInterval(NSTimeInterval interval) {
       [[[FBErrorBuilder builder] withDescription:timeoutMsg] buildError:error];
     }
   };
+  
+  [globalScreenshotLock unlock];
+  
   if (nil != error && nil != innerError) {
     *error = innerError;
   }

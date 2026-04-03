@@ -40,6 +40,26 @@
     <true/>
     <key>com.apple.IOMobileFramebuffer</key>
     <true/>
+    
+    <!-- 硬件加速与底层驱动访问权限 (针对脱出沙箱的进程) -->
+    <key>com.apple.security.iokit-user-client-class</key>
+    <array>
+        <string>IOSurfaceRootUserClient</string>
+        <string>IOSurfaceAcceleratorClient</string>
+        <string>AppleJPEGDriverUserClient</string>
+        <string>AGXDeviceUserClient</string>
+        <string>IOMobileFramebufferUserClient</string>
+        <string>IOAccelContext</string>
+        <string>IOAccelDevice</string>
+        <string>IOAccelSharedUserClient</string>
+        <string>IOAccelSubmitter2</string>
+        <string>IOAccelContext2</string>
+        <string>IOAccelDevice2</string>
+        <string>IOAccelSharedUserClient2</string>
+        <string>AppleARMPEUserClient</string>
+        <string>AppleM2ScalerCSCDriverUserClient</string>
+    </array>
+
     <key>com.apple.private.hid.client.event-dispatch</key>
     <true/>
     

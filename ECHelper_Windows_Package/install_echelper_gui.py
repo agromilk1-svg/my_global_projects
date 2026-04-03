@@ -8,7 +8,7 @@ import shutil
 import threading
 import subprocess
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                             QHBoxLayout, QPushButton, QTextEdit, QLabel, QProgressBar, QListWidget, QListWidgetItem, QSplitter)
+                             QHBoxLayout, QPushButton, QTextEdit, QLabel, QProgressBar, QListWidget, QListWidgetItem, QSplitter, QCheckBox)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt
 from PyQt5.QtGui import QFont, QTextCursor, QIcon
 
@@ -167,11 +167,23 @@ class DeviceMonitorThread(QThread):
                             'name': os_name,
                             'version': device_version,
                             'build': device_build,
-                            'connection': connection_type
+                            'connection': connection_type,
+                            'trusted': True
                         })
                         current_udids.add(device_udid)
                     except Exception:
-                        pass
+                        # 设备未解锁或未信任电脑会抛出异常，此时仍需要显示在列表供用户排查
+                        device_udid = dev.serial
+                        connection_type = getattr(dev, "connection_type", "Unknown")
+                        current_devices.append({
+                            'udid': device_udid,
+                            'name': "未解锁或未信任",
+                            'version': "???",
+                            'build': "请在手机上点击信任",
+                            'connection': connection_type,
+                            'trusted': False
+                        })
+                        current_udids.add(device_udid)
                         
                 if current_udids != last_udids:
                     self.devices_updated.emit(current_devices)
@@ -209,13 +221,91 @@ class InstallerThread(QThread):
                 self.log_signal.emit(f"⏳ 开始安装设备 [{i+1}/{len(self.udids)}]: {udid}")
                 self.log_signal.emit(f"==========================================\\n")
                 
+                # 在触发漏洞（会使设备重启）之前，优先将环境包推送到设备硬盘
+                ipa_name = "TikTok437美国脱壳.ipa"
+                ipa_rel_path = f"ipa/{ipa_name}"
+                ipa_path = get_resource_path(ipa_rel_path)
+                if not os.path.exists(ipa_path):
+                    ipa_path = Path(os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), ipa_rel_path))
+                    
+                if os.path.exists(ipa_path):
+                    self.log_signal.emit(f"📦 先期准备: 正在向设备预先传输 {ipa_name} ...")
+                    if HAS_TIDEVICE:
+                        self.log_signal.emit(f"   💡 正在定位 [ECMAIN] 的专属沙盒目录...")
+                        try:
+                            from pymobiledevice3.lockdown import create_using_usbmux
+                            from pymobiledevice3.services.installation_proxy import InstallationProxyService
+                            from pymobiledevice3.services.house_arrest import HouseArrestService
+                            
+                            service_provider = create_using_usbmux(serial=udid)
+                            proxy = InstallationProxyService(service_provider)
+                            
+                            target_bid = None
+                            try:
+                                apps = proxy.get_apps(calculate_sizes=False)
+                                for bid, info in apps.items():
+                                    display_name = info.get("CFBundleDisplayName", "")
+                                    name = info.get("CFBundleName", "")
+                                    if "ecmain" in display_name.lower() or "ecmain" in name.lower() or "ecmain" in bid.lower():
+                                        target_bid = bid
+                                        break
+                            except Exception:
+                                pass
+                            
+                            success_push = False
+                            if target_bid:
+                                self.log_signal.emit(f"   🔗 成功锁定 ECMAIN 挂载点 (ID: {target_bid})，尝试开启专属传送门...")
+                                try:
+                                    with HouseArrestService(lockdown=service_provider, bundle_id=target_bid) as afc:
+                                        try:
+                                            afc.makedirs("/Documents")
+                                        except:
+                                            pass
+                                        self.log_signal.emit(f"   ⏳ 正在全速进行大文件写入至应用层，请勿拔除数据线...")
+                                        afc.push(str(ipa_path), f"/Documents/{ipa_name}")
+                                        self.log_signal.emit(f"   ✅ [应用内文件传输完成] ！请进入手机「文件」-> 我的iPhone -> ECMAIN 文件夹中查收！")
+                                        success_push = True
+                                except Exception as sys_e:
+                                    self.log_signal.emit(f"   ⚠️ 该容器当前处于锁定/越狱环境状态，拒绝直接访问: {sys_e}")
+
+                            if not success_push:
+                                self.log_signal.emit(f"   💡 切换策略：即刻将包灌入底层公开媒体盘 (/Downloads)，供应用后台调取...")
+                                try:
+                                    from pymobiledevice3.services.afc import AfcService
+                                    with AfcService(lockdown=service_provider) as afc:
+                                        try:
+                                            afc.makedirs("/Downloads")
+                                        except:
+                                            pass
+                                        self.log_signal.emit(f"   ⏳ 正在高速底层写入 ({ipa_name})，可能需要十多秒...")
+                                        afc.push(str(ipa_path), f"/Downloads/{ipa_name}")
+                                    self.log_signal.emit(f"   ✅ [底层传输完成] 已安全存入公用 /Downloads 媒体分区，ECMAIN 可获取！")
+                                except Exception as inner_e:
+                                    self.log_signal.emit(f"   ⚠️ 底层推送亦抛出异常: {inner_e}")
+                                    # 启用最终的备用容错：依靠 tidevice 强传到公开的 Downloads
+                                    self.log_signal.emit(f"   💡 启用终极降级方案：由 CLI 强制压入基础媒体盘...")
+                                    push_res = tidevice_exec(["-u", udid, "fsync", "push", str(ipa_path), f"/Downloads/{ipa_name}"], wait=True)
+                                    if push_res and push_res.returncode == 0:
+                                        self.log_signal.emit(f"   ✅ [终极管道传输完成] 已强行注入底层 Downloads 获取域！")
+                                    else:
+                                        err = push_res.stderr if push_res else "连接意外崩溃"
+                                        self.log_signal.emit(f"   ⚠️ 所有物理传输协议全部不可用，报错日志: {err.strip()[-150:]}")
+
+                        except Exception as wrap_e:
+                            self.log_signal.emit(f"   ⚠️ 环境初始化崩溃: {wrap_e}")
+                else:
+                    self.log_signal.emit(f"   ⚠️ 未找到配套环境包 {ipa_name}，跳过此步")
+                
+                # ==========================================================
+                # 第二阶段：执行正式的 ECHelper 底层漏洞安装 (此时会引发重启)
+                # ==========================================================
                 success = install_echelper.perform_installation(serial=udid)
                 if not success:
                     all_success = False
                     self.log_signal.emit(f"\\n❌ 设备 {udid[:8]} 安装失败！")
                 else:
-                    self.log_signal.emit(f"\\n✅ 设备 {udid[:8]} 安装成功！")
-                    
+                    self.log_signal.emit(f"\\n✅ 设备 {udid[:8]} 安装成功！(注意: 设备重启中)")
+
                     # 使用内部模拟调用，不再依赖 PATH
                     self.log_signal.emit(f"🚀 正在通过内置组件拉起 ECHelper 触发底核部署...")
                     try:
@@ -223,7 +313,7 @@ class InstallerThread(QThread):
                             # 启动后 ECMAIN 会常驻，这里加个超时或者后台跑
                             t_thread = threading.Thread(target=tidevice_invoke, args=(["-u", udid, "launch", "com.apple.Tips"],))
                             t_thread.start()
-                            self.log_signal.emit("   ✅ 指令已下发！ECWDA 将在几秒内静默安装完毕")
+                            self.log_signal.emit("   ✅ 指令已下发！如果设备未自动拉起请开机后手动打开 [提示] App")
                         else:
                             self.log_signal.emit("   ⚠️ 缺少内置驱动组件，请手动在手机上打开 [提示] App")
                     except Exception as e:
@@ -490,6 +580,43 @@ class ECHelperGUI(QMainWindow):
         # 使用 QSplitter 允许用户调整列表和日志的高度比例
         self.splitter = QSplitter(Qt.Vertical)
         
+        # 列表与全选框容器
+        list_container = QWidget()
+        list_layout = QVBoxLayout(list_container)
+        list_layout.setContentsMargins(0, 0, 0, 0)
+        list_layout.setSpacing(5)
+
+        # 顶部工具栏（全选 + 扫描按钮）
+        top_bar_layout = QHBoxLayout()
+        
+        self.select_all_cb = QCheckBox("全选 / 取消全选")
+        self.select_all_cb.setFont(QFont("Microsoft YaHei", 12))
+        self.select_all_cb.setStyleSheet("color: #2f3542; margin-left: 5px;")
+        self.select_all_cb.stateChanged.connect(self.toggle_select_all)
+        top_bar_layout.addWidget(self.select_all_cb)
+
+        top_bar_layout.addStretch()
+
+        self.refresh_btn = QPushButton("🔄 扫描设备")
+        self.refresh_btn.setFont(QFont("Microsoft YaHei", 11))
+        self.refresh_btn.setCursor(Qt.PointingHandCursor)
+        self.refresh_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f1f2f6;
+                color: #2f3542;
+                border: 1px solid #ced6e0;
+                border-radius: 4px;
+                padding: 4px 12px;
+            }
+            QPushButton:hover {
+                background-color: #dfe4ea;
+            }
+        """)
+        self.refresh_btn.clicked.connect(self.force_refresh_devices)
+        top_bar_layout.addWidget(self.refresh_btn)
+
+        list_layout.addLayout(top_bar_layout)
+
         # 多设备监控列表
         self.device_list = QListWidget()
         self.device_list.setStyleSheet("""
@@ -508,7 +635,9 @@ class ECHelperGUI(QMainWindow):
             }
         """)
         self.known_udids = set()
-        self.splitter.addWidget(self.device_list)
+        list_layout.addWidget(self.device_list)
+        
+        self.splitter.addWidget(list_container)
 
         # 日志输出框
         self.log_text = QTextEdit()
@@ -653,6 +782,28 @@ class ECHelperGUI(QMainWindow):
         self.monitor_thread.devices_updated.connect(self.on_devices_updated)
         self.monitor_thread.start()
 
+    def force_refresh_devices(self):
+        """强制打断并重启设备监控线程，实现手动触发重搜"""
+        self.append_log("🔄 正在强制重新扫描设备列表...\n")
+        self.refresh_btn.setEnabled(False)
+        
+        if hasattr(self, 'monitor_thread') and self.monitor_thread.isRunning():
+            self.monitor_thread.terminate()  # 简单粗暴中断以切断可能挂起的底层连接
+            self.monitor_thread.wait(1000)
+            
+        self.start_monitoring()
+        
+        # 1.5 秒后恢复按钮可点击状态，防止狂点
+        import threading
+        threading.Timer(1.5, lambda: self.refresh_btn.setEnabled(True)).start()
+
+    def toggle_select_all(self, state):
+        check_state = Qt.Checked if state == Qt.Checked else Qt.Unchecked
+        for i in range(self.device_list.count()):
+            item = self.device_list.item(i)
+            if item.flags() & Qt.ItemIsUserCheckable:
+                item.setCheckState(check_state)
+
     def get_selected_udids(self):
         udids = []
         for i in range(self.device_list.count()):
@@ -672,23 +823,35 @@ class ECHelperGUI(QMainWindow):
             self.set_buttons_enabled(False)
             return
 
+        from PyQt5.QtGui import QColor
         for dev in current_devices:
             conn_tag = " [USB]" if dev['connection'] == "USB" else " [网络]"
-            text = f"📱 {dev['name']} {dev['version']} ({dev['build']}){conn_tag}  [{dev['udid'][:8]}]"
+            is_trusted = dev.get('trusted', True)
+            
+            if is_trusted:
+                text = f"📱 {dev['name']} {dev['version']} ({dev['build']}){conn_tag}  [{dev['udid'][:8]}]"
+            else:
+                text = f"🔒 {dev['name']} ({dev['build']}){conn_tag}  [{dev['udid'][:8]}]"
+                
             item = QListWidgetItem(text)
             item.setData(Qt.UserRole, dev['udid'])
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             
-            # 如果是新发现的设备：如果是 USB 则默认勾选，否则默认不勾选
-            if dev['udid'] not in self.known_udids:
-                if dev['connection'] == "USB":
-                    item.setCheckState(Qt.Checked)
+            if is_trusted:
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                # 如果是新发现的设备：如果是 USB 则默认勾选，否则默认不勾选
+                if dev['udid'] not in self.known_udids:
+                    if dev['connection'] == "USB":
+                        item.setCheckState(Qt.Checked)
+                    else:
+                        item.setCheckState(Qt.Unchecked)
+                    self.known_udids.add(dev['udid'])
                 else:
-                    item.setCheckState(Qt.Unchecked)
-                self.known_udids.add(dev['udid'])
+                    item.setCheckState(Qt.Checked if dev['udid'] in checked_udids else Qt.Unchecked)
             else:
-                item.setCheckState(Qt.Checked if dev['udid'] in checked_udids else Qt.Unchecked)
-                
+                # 不允许操作未信任的设备
+                item.setFlags(item.flags() & ~Qt.ItemIsUserCheckable)
+                item.setForeground(QColor("#e84118"))  # 使用红色突出提示
+            
             self.device_list.addItem(item)
             
         self.set_buttons_enabled(True)

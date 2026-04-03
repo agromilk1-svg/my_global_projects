@@ -8,7 +8,9 @@
 #import "FBScriptEngine.h"
 #import <JavaScriptCore/JavaScriptCore.h>
 #import <XCTest/XCTest.h>
-#import "FBOCREngine.h"
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import "XCUIScreen.h"
+#import "FBSession.h"
 #import "FBScreenshot.h"
 #import "FBXCTestDaemonsProxy.h"
 #import "XCPointerEventPath.h"
@@ -223,21 +225,44 @@
 
 #pragma mark - OCR (直接内存调用，消除 HTTP 回环死锁风险)
 
+#import "FBScreenshotFallback.h"
+
 // 内部辅助：带超时保护的截图
 - (UIImage *)takeScreenshotWithTimeout:(NSTimeInterval)timeout {
   __block NSData *screenshotData = nil;
   dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+  
+  CFAbsoluteTime startScreenshot = CFAbsoluteTimeGetCurrent();
 
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     NSError *error = nil;
-    screenshotData = [FBScreenshot takeInOriginalResolutionWithQuality:2 error:&error];
+    
+    // [v1766] 核心修复：彻底抛弃 XCTest 的 8秒 Idleness 动画防抖机制
+    // 直接使用 IOSurface / IOMFB 物理层读取显存，无视任何正在播放的视频或动画！
+    screenshotData = [FBScreenshotFallback takeScreenshotWithCompressionQuality:0.8 error:&error];
+    
+    // 如果物理黑魔法失效，则降级回原生接口（会触发 8 秒罚站）
+    if (!screenshotData) {
+        NSLog(@"[FBScriptEngine] 🚨 物理显存逃生舱取图失败: %@, 降级至受防抖约束的 XCTest", error);
+        screenshotData = [FBScreenshot takeInOriginalResolutionWithScreenID:[(NSNumber *)[[XCUIScreen mainScreen] valueForKey:@"displayID"] longLongValue] compressionQuality:0.8 uti:UTTypeJPEG timeout:timeout error:&error];
+    }
+    
     dispatch_semaphore_signal(sema);
   });
 
   long result = dispatch_semaphore_wait(sema,
       dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout * NSEC_PER_SEC)));
+  
+  CFAbsoluteTime afterScreenshot = CFAbsoluteTimeGetCurrent();
+  NSLog(@"[Perf] 🚀 极速取图引擎 (FBScreenshotFallback) 耗时: %.2f ms", (afterScreenshot - startScreenshot) * 1000.0);
+  
   if (result != 0 || !screenshotData) return nil;
-  return [UIImage imageWithData:screenshotData];
+  
+  UIImage *img = [UIImage imageWithData:screenshotData];
+  CFAbsoluteTime afterDecode = CFAbsoluteTimeGetCurrent();
+  // NSLog(@"[Perf] JPEG 内存解码重绘耗时: %.2f ms", (afterDecode - afterScreenshot) * 1000.0);
+  
+  return img;
 }
 
 - (NSArray *)ocr {
@@ -266,8 +291,13 @@
   UIImage *screenshot = [self takeScreenshotWithTimeout:10.0];
   if (!screenshot) return @{};
 
+  CFAbsoluteTime startOCR = CFAbsoluteTimeGetCurrent();
   FBOCRTextResult *result =
       [[FBOCREngine sharedEngine] findText:text inImage:screenshot];
+  CFAbsoluteTime afterOCR = CFAbsoluteTimeGetCurrent();
+  
+  NSLog(@"[Perf] 取图后 OCR 核心推理总耗时: %.2f ms (含引擎调度)", (afterOCR - startOCR) * 1000.0);
+  
   if (!result) return @{};
 
   CGFloat scale = [UIScreen mainScreen].scale;
@@ -285,9 +315,19 @@
 - (void)tapText:(NSString *)text {
   NSDictionary *result = [self findText:text];
   if ([result[@"found"] boolValue]) {
-    double x = [result[@"x"] doubleValue] + [result[@"width"] doubleValue] / 2;
-    double y = [result[@"y"] doubleValue] + [result[@"height"] doubleValue] / 2;
-    [self tapAtX:x y:y];
+    double baseX = [result[@"x"] doubleValue];
+    double baseY = [result[@"y"] doubleValue];
+    double width = [result[@"width"] doubleValue];
+    double height = [result[@"height"] doubleValue];
+    
+    // [防风控]: 留出 10% 的内缩安全边距，确保随机点击的落点始终真实且处在元素可交互区内
+    double paddingX = width * 0.1;
+    double paddingY = height * 0.1;
+    
+    double randomOffsetX = [self randomMin:paddingX max:(width - paddingX)];
+    double randomOffsetY = [self randomMin:paddingY max:(height - paddingY)];
+    
+    [self tapAtX:(baseX + randomOffsetX) y:(baseY + randomOffsetY)];
   }
 }
 

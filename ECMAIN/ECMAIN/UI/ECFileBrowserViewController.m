@@ -52,21 +52,20 @@ static NSArray *jailbreakDetectionPaths(void) {
   self.tableView.backgroundColor = [UIColor colorWithWhite:0.05 alpha:1.0];
   self.tableView.separatorColor = [UIColor colorWithWhite:0.2 alpha:1.0];
 
-  // 添加扫描按钮（只在根目录显示）
+  UIBarButtonItem *jumpBtn = [[UIBarButtonItem alloc] initWithTitle:@"跳转" style:UIBarButtonItemStylePlain target:self action:@selector(jumpToPath)];
+  
   if (self.isRoot) {
-    self.navigationItem.rightBarButtonItem =
-        [[UIBarButtonItem alloc] initWithTitle:@"🔍 检测扫描"
-                                         style:UIBarButtonItemStylePlain
-                                        target:self
-                                        action:@selector(scanDetectionPaths)];
+    UIBarButtonItem *scanBtn = [[UIBarButtonItem alloc] initWithTitle:@"🔍 扫描" style:UIBarButtonItemStylePlain target:self action:@selector(scanDetectionPaths)];
+    self.navigationItem.rightBarButtonItems = @[scanBtn, jumpBtn];
+  } else {
+    UIBarButtonItem *upBtn = [[UIBarButtonItem alloc] initWithTitle:@"⬆上级" style:UIBarButtonItemStylePlain target:self action:@selector(goUpDirectory)];
+    self.navigationItem.rightBarButtonItems = @[jumpBtn, upBtn];
   }
 
-  // 添加路径输入按钮
-  self.navigationItem.leftBarButtonItem =
-      [[UIBarButtonItem alloc] initWithTitle:@"跳转"
-                                       style:UIBarButtonItemStylePlain
-                                      target:self
-                                      action:@selector(jumpToPath)];
+  // 增加向右滑动（向右划过屏幕）执行返回上级目录的全局手势
+  UISwipeGestureRecognizer *swipeRight = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(goUpDirectory)];
+  swipeRight.direction = UISwipeGestureRecognizerDirectionRight;
+  [self.view addGestureRecognizer:swipeRight];
 
   [self loadFiles];
 }
@@ -115,6 +114,12 @@ static NSArray *jailbreakDetectionPaths(void) {
                                             style:UIAlertActionStyleCancel
                                           handler:nil]];
   [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)goUpDirectory {
+    NSString *parentPath = [self.currentPath stringByDeletingLastPathComponent];
+    ECFileBrowserViewController *nextVC = [[ECFileBrowserViewController alloc] initWithPath:parentPath];
+    [self.navigationController pushViewController:nextVC animated:YES];
 }
 
 - (void)showDetectionResults {
@@ -459,6 +464,12 @@ static NSArray *jailbreakDetectionPaths(void) {
     ECFileBrowserViewController *nextVC =
         [[ECFileBrowserViewController alloc] initWithPath:fullPath];
     [self.navigationController pushViewController:nextVC animated:YES];
+  } else if ([[fileName lowercaseString] containsString:@".ipa"]) {
+    // 为防止扩展名读取异常，直接用 containsString 拦截并调用底层安装逻辑
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"ECInstallIPANotification" object:fullPath];
+        [self.navigationController popToRootViewControllerAnimated:YES];
+    });
   } else {
     ECFileViewerViewController *viewer =
         [[ECFileViewerViewController alloc] initWithPath:fullPath];

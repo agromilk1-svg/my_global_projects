@@ -180,7 +180,12 @@ def init_db():
             cursor.execute("ALTER TABLE ec_devices ADD COLUMN vpn_node TEXT;")
         except Exception:
             pass
-        
+
+        try:
+            cursor.execute("ALTER TABLE ec_devices ADD COLUMN watchdog_wda INTEGER DEFAULT 1;")
+        except Exception:
+            pass
+
         # 2. 任务分发表 (单台下发)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS ec_tasks (
@@ -611,7 +616,7 @@ def get_device_config(udid: str) -> dict:
         with sqlite3.connect(DB_PATH, timeout=5) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute('SELECT config_ip, config_vpn, device_no, country, group_name, exec_time, apple_account, apple_password, tiktok_accounts, wifi_ssid, wifi_password FROM ec_devices WHERE udid = ?', (udid,))
+            cursor.execute('SELECT config_ip, config_vpn, device_no, country, group_name, exec_time, apple_account, apple_password, tiktok_accounts, wifi_ssid, wifi_password, watchdog_wda FROM ec_devices WHERE udid = ?', (udid,))
             row = cursor.fetchone()
             if row:
                 config_data = {
@@ -625,7 +630,8 @@ def get_device_config(udid: str) -> dict:
                     "apple_password": row["apple_password"] or "",
                     "tiktok_accounts": row["tiktok_accounts"] or "[]",
                     "wifi_ssid": row["wifi_ssid"] or "",
-                    "wifi_password": row["wifi_password"] or ""
+                    "wifi_password": row["wifi_password"] or "",
+                    "watchdog_wda": row["watchdog_wda"] if row["watchdog_wda"] is not None else 1
                 }
                 
                 # [TikTok 数据补全逻辑] 从独立账号表拉取实时数据，覆盖 devices 表中的老旧 JSON
@@ -643,21 +649,21 @@ def get_device_config(udid: str) -> dict:
                 return config_data
     except Exception as e:
         logger.error(f"Error getting config for {udid}: {e}")
-    return {"config_ip": "", "config_vpn": "", "device_no": "", "country": "", "group_name": "", "exec_time": "", "apple_account": "", "apple_password": "", "tiktok_accounts": "[]", "wifi_ssid": "", "wifi_password": ""}
+    return {"config_ip": "", "config_vpn": "", "device_no": "", "country": "", "group_name": "", "exec_time": "", "apple_account": "", "apple_password": "", "tiktok_accounts": "[]", "wifi_ssid": "", "wifi_password": "", "watchdog_wda": 1}
 
-def set_device_config(udid: str, config_ip: str, config_vpn: str, device_no: str = "", country: str = "", group_name: str = "", exec_time: str = "", apple_account: str = "", apple_password: str = "", tiktok_accounts: str = "[]", wifi_ssid: str = "", wifi_password: str = ""):
+def set_device_config(udid: str, config_ip: str, config_vpn: str, device_no: str = "", country: str = "", group_name: str = "", exec_time: str = "", apple_account: str = "", apple_password: str = "", tiktok_accounts: str = "[]", wifi_ssid: str = "", wifi_password: str = "", watchdog_wda: int = 1):
     """保存设备的静态 IP、网络及高级设置配置"""
     try:
         with sqlite3.connect(DB_PATH, timeout=5) as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                UPDATE ec_devices 
+                UPDATE ec_devices
                 SET config_ip = ?, config_vpn = ?,
                     device_no = ?, country = ?, group_name = ?, exec_time = ?,
                     apple_account = ?, apple_password = ?, tiktok_accounts = ?,
-                    wifi_ssid = ?, wifi_password = ?
+                    wifi_ssid = ?, wifi_password = ?, watchdog_wda = ?
                 WHERE udid = ?
-            ''', (config_ip, config_vpn, device_no, country, group_name, exec_time, apple_account, apple_password, tiktok_accounts, wifi_ssid, wifi_password, udid))
+            ''', (config_ip, config_vpn, device_no, country, group_name, exec_time, apple_account, apple_password, tiktok_accounts, wifi_ssid, wifi_password, watchdog_wda, udid))
             
             # [TikTok 联动逻辑] 自动解析传递过来的 JSON 格式的 tiktok_accounts
             import json

@@ -111,6 +111,21 @@ extern NSString *rootHelperPath(void);
       [NSURLSession sessionWithConfiguration:config
                                     delegate:self
                                delegateQueue:[NSOperationQueue mainQueue]];
+                               
+  // 监听来自文件浏览器的 IPA 点击安装请求
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(handleInstallNotification:)
+                                               name:@"ECInstallIPANotification"
+                                             object:nil];
+}
+
+- (void)handleInstallNotification:(NSNotification *)note {
+  NSString *path = note.object;
+  if ([path isKindOfClass:[NSString class]]) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+      [self showInstallOptionsForPath:path isURL:NO];
+    });
+  }
 }
 
 - (void)viewWillAppear:(BOOL)animated {

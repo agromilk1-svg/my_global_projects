@@ -59,20 +59,26 @@ def _create_token(user_id: int, username: str, role: str) -> str:
     return f"{payload_b64}.{signature}"
 
 def _verify_token(token: str) -> Optional[dict]:
-    """验证 Token 有效性，返回负载或 None"""
+    """验证 Token 有效性，返回负载或 None（含诊断日志）"""
     try:
         parts = token.split('.')
         if len(parts) != 2:
+            logging.warning(f"[Token] 格式错误：分段数={len(parts)}，期望 2 段")
             return None
         payload_b64, signature = parts
         expected_sig = hmac.new(_TOKEN_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(signature, expected_sig):
+            logging.warning("[Token] 签名不匹配，可能密钥已变更或 Token 被篡改")
             return None
         payload = json.loads(base64.urlsafe_b64decode(payload_b64).decode())
         if payload.get('exp', 0) < time.time():
+            # 计算过期了多久，便于排查
+            expired_ago = time.time() - payload.get('exp', 0)
+            logging.warning(f"[Token] 已过期 {expired_ago:.0f}s（约 {expired_ago/3600:.1f}h），用户={payload.get('username')}")
             return None
         return payload
-    except Exception:
+    except Exception as e:
+        logging.warning(f"[Token] 验证过程异常: {e}")
         return None
 
 def get_current_user(request: Request) -> dict:
@@ -231,6 +237,7 @@ class DeviceConfigRequest(BaseModel):
     tiktok_accounts: str = "[]"
     wifi_ssid: str = ""
     wifi_password: str = ""
+    watchdog_wda: int = 1
 
 @app.get("/api/devices/{udid}/config")
 def get_device_config_api(udid: str):
@@ -241,10 +248,10 @@ def get_device_config_api(udid: str):
 async def set_device_config(udid: str, req: DeviceConfigRequest, user: dict = Depends(get_current_user)):
     await require_device_permission(user, udid)
     success = database.set_device_config(
-        udid, req.config_ip, req.config_vpn, 
+        udid, req.config_ip, req.config_vpn,
         req.device_no, req.country, req.group_name, req.exec_time,
         req.apple_account, req.apple_password, req.tiktok_accounts,
-        req.wifi_ssid, req.wifi_password
+        req.wifi_ssid, req.wifi_password, req.watchdog_wda
     )
     if success:
         return {"status": "ok", "message": "配置保存成功"}
@@ -657,6 +664,7 @@ class TaskReportRequest(BaseModel):
     success: bool = False
     error: str = ""
     last_command: str = ""
+    duration: str = ""  # 任务执行总耗时（如 "2m 36s"），旧客户端不发此字段时默认空
 
 @app.post("/api/device/task_report")
 def api_device_task_report(req: TaskReportRequest):
@@ -667,7 +675,8 @@ def api_device_task_report(req: TaskReportRequest):
         "success": req.success,
         "error": req.error,
         "last_command": req.last_command,
-        "time": time.strftime("%H:%M:%S")
+        "time": time.strftime("%H:%M:%S"),
+        "duration": req.duration
     }
     database.update_device_task_status(req.udid, json.dumps(payload, ensure_ascii=False))
     return {"message": "Success"}
@@ -696,14 +705,29 @@ SIZE_CACHE = {}
 
 ACTIVE_TUNNELS: Dict[str, WebSocket] = {}
 PENDING_TASKS: Dict[str, asyncio.Future] = {}
-# [v1683] MJPEG 流帧队列：设备端通过 WS 二进制帧推送 JPEG 数据，后端消费并转发给前端
-STREAM_QUEUES: Dict[str, asyncio.Queue] = {}
+# [v1763] MJPEG 流帧广播：设备端通过 WS 二进制帧推送 JPEG 数据，后端广播给所有订阅者（主控+从机）
+STREAM_QUEUES: Dict[str, List[asyncio.Queue]] = {}
 # [v1760] MJPEG 流取消信号：切换设备时主动终止旧流，防止多个流同时轰炸 WDA /screenshot
 ACTIVE_STREAM_STOPS: Dict[str, asyncio.Event] = {}
 
 class WSTunnelManager:
     async def connect(self, ws: WebSocket, device_key: str):
-        await ws.accept()
+        # 1. 握手超时保护 (wait_for wrapped websocket.accept)
+        try:
+            await asyncio.wait_for(ws.accept(), timeout=5.0)
+        except asyncio.TimeoutError:
+            logging.error(f"[WS] Handshake timeout for {device_key}")
+            raise
+
+        # 2. 显式关闭旧连接 (Explicit closure before new connection)
+        if device_key in ACTIVE_TUNNELS:
+            old_ws = ACTIVE_TUNNELS[device_key]
+            try:
+                await old_ws.close(code=1000)
+                logging.info(f"[WS] Closed existing tunnel for {device_key}")
+            except:
+                pass
+
         ACTIVE_TUNNELS[device_key] = ws
         
     def disconnect(self, device_key: str):
@@ -716,20 +740,39 @@ tunnel_manager = WSTunnelManager()
 async def ws_tunnel_endpoint(websocket: WebSocket, device_key: str):
     await tunnel_manager.connect(websocket, device_key)
     try:
+        last_heartbeat = time.time()
         while True:
-            # [v1668.28] 关键修复：使用 receive() 兼容文本帧和二进制帧
-            raw = await websocket.receive()
-            
+            # 3. 活跃心跳监测 (Active Heartbeat: 30s timeout)
+            try:
+                # 阻塞等待消息，30秒无消息则触发主动 Ping
+                raw = await asyncio.wait_for(websocket.receive(), timeout=30.0)
+                last_heartbeat = time.time()
+            except asyncio.TimeoutError:
+                # 30秒无数据，发送主动 Ping 并设置 10秒 Pong 超时
+                try:
+                    await websocket.send_json({"type": "ping"})
+                    raw = await asyncio.wait_for(websocket.receive(), timeout=10.0)
+                    if raw.get("type") == "websocket.disconnect":
+                        break
+                    last_heartbeat = time.time()
+                except asyncio.TimeoutError:
+                    logging.warning(f"[WS] Pong timeout (10s) for {device_key}, forcing disconnect")
+                    break
+
             if raw.get("type") == "websocket.disconnect":
                 break
-            
-            # 处理文本帧（指令响应、ping/pong）
+
+            # 处理文本帧（指令响应、pong）
             text_data = raw.get("text")
             if text_data:
                 try:
                     msg = json.loads(text_data)
+                    # 收到客户端发来的 ping，立即回 pong
                     if msg.get("type") == "ping":
                         await websocket.send_json({"type": "pong"})
+                    # 收到我们发出的 ping 的回应 pong
+                    elif msg.get("type") == "pong":
+                        pass
                     elif "id" in msg:
                         reply_id = msg["id"]
                         if reply_id in PENDING_TASKS:
@@ -738,20 +781,20 @@ async def ws_tunnel_endpoint(websocket: WebSocket, device_key: str):
                 except Exception as e:
                     logging.error(f"WS Parse error: {e}")
             
-            # [v1683] 处理二进制帧（MJPEG 流帧：8 字节时间戳 + JPEG 数据）
+            # [v1763] 处理二进制帧（MJPEG 流帧：8 字节时间戳 + JPEG 数据），广播给所有订阅者
             bytes_data = raw.get("bytes")
             if bytes_data and len(bytes_data) > 8:
                 jpeg_data = bytes_data[8:]  # 跳过 8 字节大端时间戳头
-                queue = STREAM_QUEUES.get(device_key)
-                if queue:
+                queues = STREAM_QUEUES.get(device_key, [])
+                for q in queues:
                     # 非阻塞放入，队列满时丢弃最旧帧防止背压
-                    if queue.full():
+                    if q.full():
                         try:
-                            queue.get_nowait()
+                            q.get_nowait()
                         except asyncio.QueueEmpty:
                             pass
                     try:
-                        queue.put_nowait(jpeg_data)
+                        q.put_nowait(jpeg_data)
                     except asyncio.QueueFull:
                         pass
     except WebSocketDisconnect:
@@ -780,8 +823,23 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
         
         if should_use_ws:
             if not _ws:
-                # 明确快速失败：要求走 WS 但通道未建立
-                return 503, {"error": "云端设备 WebSocket 通道未建立或已断线，请检查手机端代理状态"}
+                # [v1779] 隧道未就绪时等待建立，而非立即 503 快速失败
+                # 设备切换时 ECMAIN 需要几秒钟才能建立 WS 隧道，此处给予缓冲
+                _ws_wait_max = 30  # 最多等 15 秒 (30 * 0.5s)
+                for _ws_wait_i in range(_ws_wait_max):
+                    await asyncio.sleep(0.5)
+                    _ws = ACTIVE_TUNNELS.get(req.udid)
+                    if not _ws:
+                        for tk, tw in ACTIVE_TUNNELS.items():
+                            if req.udid in tk or tk in req.udid:
+                                _ws = tw
+                                break
+                    if _ws:
+                        if _ws_wait_i > 0:
+                            logging.info(f"[WS_WAIT] 隧道就绪 (等待了 {(_ws_wait_i+1)*0.5:.1f}s), udid={req.udid}")
+                        break
+                if not _ws:
+                    return 503, {"error": "云端设备 WebSocket 通道未建立或已断线，请检查手机端代理状态"}
                 
             task_id = f"{time.monotonic_ns()}"
             if fire_forget:
@@ -1063,14 +1121,44 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
              return {"status": "ok", "detail": resp}
              
         elif req.action_type == "probe_size":
-             # [v1682.6] 让 probe_size 真正具备探测功能
-             status, sz_resp = await _async_wda_request("GET", f"{wda_url}/window/size", timeout=3.0, force_http=force_http)
-             if status == 200 and isinstance(sz_resp, dict):
-                 sz_val = sz_resp.get("value", {})
-                 if "width" in sz_val:
-                     SIZE_CACHE[cache_key] = sz_val
-                     return {"status": "ok", "window_size": sz_val}
+             # [v1769] 增强 probe_size 鲁棒性：超时从 3s 提升到 8s，支持单次重试
+             # 原因：断开再重连时 WDA 主队列可能仍被残留 MJPEG 截图线程阻塞
+             for _probe_attempt in range(2):
+                 status, sz_resp = await _async_wda_request("GET", f"{wda_url}/window/size", timeout=8.0, force_http=force_http)
+                 if status == 200 and isinstance(sz_resp, dict):
+                     sz_val = sz_resp.get("value", {})
+                     if "width" in sz_val:
+                         SIZE_CACHE[cache_key] = sz_val
+                         return {"status": "ok", "window_size": sz_val}
+                 if _probe_attempt == 0:
+                     logging.warning(f"[PROBE] 第1次 probe_size 失败 (status={status})，1s 后重试...")
+                     await asyncio.sleep(1.0)
              return {"status": "error", "msg": "Probe size failed", "raw": sz_resp}
+             
+        elif req.action_type == "STOP_ALL_STREAMS":
+             old_stop = ACTIVE_STREAM_STOPS.get(req.udid)
+             if old_stop:
+                 old_stop.set()
+                 logging.info(f"[STREAM] 收到前端主动断开指令，释放 {req.udid} 的残留截图队列")
+             # [v1773] 断开时主动向设备发送 STOP_STREAM，直接切断 ECMAIN 的原生推源
+             _stop_ws = ACTIVE_TUNNELS.get(req.udid)
+             if not _stop_ws:
+                 for tk, tw in ACTIVE_TUNNELS.items():
+                     if req.udid in tk or tk in req.udid:
+                         _stop_ws = tw
+                         break
+             if _stop_ws:
+                 try:
+                     asyncio.create_task(_stop_ws.send_json({
+                         "id": f"stream_stop_force_{time.monotonic_ns()}",
+                         "method": "STOP_STREAM",
+                         "url": "",
+                         "body": None
+                     }))
+                     logging.info(f"[STREAM] 发送强制 STOP_STREAM 斩首令到设备 {req.udid}")
+                 except Exception as e:
+                     logging.warning(f"[STREAM] 强制发送 STOP_STREAM 失败: {e}")
+             return {"status": "ok"}
 
         elif req.action_type == "SCRIPT":
              # [v1736] 脚本分发同步化路由：实现从手机端到前端的 logs/return_value 透明传回
@@ -1253,95 +1341,144 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 @app.websocket("/api/ws_stream/{udid}")
 async def ws_screen_stream(websocket: WebSocket, udid: str, mode: str = 'ws', slave: str = '1', quality: str = 'low'):
+    """[v1763] 方案B从机推流：消费 ECMAIN 主动推送的原生 JPEG 帧，转 base64 推送给前端 WebSocket"""
     await websocket.accept()
     
-    # 鉴权机制：如果是 WebSocket，可以通过子协议或后续第一条消息验证 token，这里简化为默认白名单（前端页面已有鉴权保护）
-    tunnel_wait = 0
-    max_tunnel_wait = 60
-    fps_delay = 1.0 if slave == '1' else 0.2 # [v1720.2] 从机降至 1 FPS，避免压垮 iOS 主线程
+    logging.info(f"[WS STREAM] 方案B 从机推流启动: udid={udid}")
     frame_count = 0
-    empty_streak = 0  # 连续空帧计数器
-    
-    logging.info(f"[WS STREAM] 从属大盘 WebSocket 推流启动: udid={udid}")
-    task_id_prefix = f"ws_snap_{time.monotonic_ns()}"
+    stream_started = False
+    queue = asyncio.Queue(maxsize=3)
     
     try:
-        while True:
+        # 注册为该设备的流订阅者
+        if udid not in STREAM_QUEUES:
+            STREAM_QUEUES[udid] = []
+        STREAM_QUEUES[udid].append(queue)
+        
+        # 等待隧道就绪
+        tunnel_ws = None
+        tunnel_wait = 0
+        max_tunnel_wait = 60
+        while tunnel_wait < max_tunnel_wait:
             tunnel_ws = ACTIVE_TUNNELS.get(udid)
             if not tunnel_ws:
-                tunnel_wait += 1
-                if tunnel_wait % 10 == 0:
-                    logging.warning(f"[WS STREAM] 设备 {udid} 隧道缺失，已等待 {tunnel_wait/2}s")
-                if tunnel_wait > max_tunnel_wait:
-                    logging.error(f"[WS STREAM] 设备 {udid} 隧道等待超时，流终止")
-                    break
-                await asyncio.sleep(0.5)
-                continue
-            
-            tunnel_wait = 0
-            task_id = f"{task_id_prefix}_{frame_count}"
-            
-            loop = asyncio.get_running_loop()
-            future = loop.create_future()
-            PENDING_TASKS[task_id] = future
-            
-            _start = time.time()
+                # 模糊匹配
+                for tk, tw in ACTIVE_TUNNELS.items():
+                    if udid in tk or tk in udid:
+                        tunnel_ws = tw
+                        break
+            if tunnel_ws:
+                break
+            tunnel_wait += 1
+            if tunnel_wait % 10 == 1:
+                logging.warning(f"[WS STREAM] 等待设备 {udid} 隧道... (第{tunnel_wait}次)")
+            await asyncio.sleep(0.5)
+        
+        if not tunnel_ws:
+            logging.error(f"[WS STREAM] 设备 {udid} 隧道等待超时")
+            return
+        
+        # 发送 START_STREAM（幂等操作，ECMAIN 已在推流时会忽略重复启动）
+        try:
+            await tunnel_ws.send_json({
+                "id": f"stream_start_{time.monotonic_ns()}",
+                "method": "START_STREAM",
+                "url": "http://127.0.0.1:10089/",
+                "body": None
+            })
+            stream_started = True
+            logging.info(f"[WS STREAM] START_STREAM 已发送 (从机 {udid})")
+        except Exception as e:
+            logging.error(f"[WS STREAM] 发送 START_STREAM 失败: {e}")
+            return
+        
+        # 从队列消费 ECMAIN 推送的原生 JPEG 帧，转 base64 推送给前端
+        empty_streak = 0
+        while True:
             try:
-                # 触发底层 ECMAIN 的截图通道
-                if quality == 'high':
-                    req_url = "http://127.0.0.1:10088/screenshot?scale=3"
-                elif quality == 'medium':
-                    req_url = "http://127.0.0.1:10088/screenshot"
-                else:
-                    req_url = "http://127.0.0.1:10088/screenshot?quality=low"
-                await tunnel_ws.send_json({
-                    "id": task_id,
-                    "method": "GET",
-                    "url": req_url,
-                    "body": None
-                })
-                
-                resp = await asyncio.wait_for(future, timeout=2.5)
-                # logging.debug(f"[WS STREAM] {udid} frame fetch cost: {time.time()-_start:.3f}s")
-                
-                if isinstance(resp, dict) and isinstance(resp.get("body"), dict):
-                    b64_val = resp.get("body").get("value")
-                    if b64_val:
-                        try:
-                            # 直接把 Base64 当纯文本推送给浏览器
-                            await websocket.send_text(b64_val)
-                            frame_count += 1
-                            empty_streak = 0  # 成功拿帧，重置退避
-                        except RuntimeError as re:
-                            if "close message has been sent" in str(re):
-                                logging.info(f"[WS STREAM] 客户端已断开 (UDID: {udid})，停止推流")
-                                return # 优雅退出函数
-                            raise re
-                    else:
-                        empty_streak += 1
-                else:
-                    empty_streak += 1
+                jpeg_data = await asyncio.wait_for(queue.get(), timeout=3.0)
+                if jpeg_data and len(jpeg_data) > 100:
+                    frame_count += 1
+                    empty_streak = 0
+                    
+                    # 从机降帧：每 5 帧只推 1 帧，节省带宽
+                    if slave == '1' and frame_count % 5 != 0:
+                        continue
+                    
+                    # [v1763] 从机缩略图压缩：缩放至 1/3 分辨率 + 低 quality，节省 ~87% 带宽
+                    try:
+                        from PIL import Image
+                        import io
+                        img = Image.open(io.BytesIO(jpeg_data))
+                        # 缩放到 1/3（从机面板只是缩略观察，不需要高清）
+                        new_w = max(img.width // 3, 120)
+                        new_h = max(img.height // 3, 200)
+                        img = img.resize((new_w, new_h), Image.LANCZOS)
+                        buf = io.BytesIO()
+                        img.save(buf, format='JPEG', quality=40, optimize=True)
+                        compressed = buf.getvalue()
+                    except Exception:
+                        compressed = jpeg_data  # 压缩失败时回退原始帧
+                    
+                    # 转为 base64 文本推送（兼容前端 <img src="data:image/jpeg;base64,..."> 渲染）
+                    b64_text = base64.b64encode(compressed).decode('ascii')
+                    await websocket.send_text(b64_text)
             except asyncio.TimeoutError:
                 empty_streak += 1
-            except Exception as e:
-                # 过滤掉已知的连接关闭异常，避免日志污染
-                err_str = str(e)
-                if "close message has been sent" in err_str or "WebSocket is closed" in err_str:
-                    logging.info(f"[WS STREAM] 连接已关闭 ({udid})")
-                    return
-                logging.error(f"[WS STREAM] {udid} 运行异常: {e}")
-                empty_streak += 1
-            finally:
-                PENDING_TASKS.pop(task_id, None)
-                
-            # [v1720.2] 动态退避：连续空帧/超时时自动增大间隔，释放设备 CPU 压力
-            backoff = min(fps_delay * (1 + empty_streak * 0.5), 3.0)
-            await asyncio.sleep(backoff)
+                # 检查隧道是否还活着
+                _check_ws = ACTIVE_TUNNELS.get(udid)
+                if not _check_ws:
+                    for tk in ACTIVE_TUNNELS:
+                        if udid in tk or tk in udid:
+                            _check_ws = True
+                            break
+                if not _check_ws:
+                    logging.warning(f"[WS STREAM] 隧道断开，从机流终止 (共推 {frame_count} 帧)")
+                    break
+                if empty_streak > 10:
+                    logging.warning(f"[WS STREAM] 连续 30s 未收到帧，从机流终止")
+                    break
+                continue
+            except RuntimeError as re:
+                if "close message has been sent" in str(re) or "WebSocket is closed" in str(re):
+                    logging.info(f"[WS STREAM] 客户端已断开 ({udid})")
+                    break
+                raise re
     except WebSocketDisconnect:
-        logging.info(f"[WS STREAM] 浏览器主动断开从属推流: {udid}")
+        logging.info(f"[WS STREAM] 浏览器主动断开从机推流: {udid}")
     except Exception as e:
-        logging.error(f"[WS STREAM] 连接意外中断: {e}")
+        err_str = str(e)
+        if "close message" not in err_str and "WebSocket is closed" not in err_str:
+            logging.error(f"[WS STREAM] 从机流异常: {e}")
     finally:
+        # 取消订阅
+        if udid in STREAM_QUEUES:
+            try:
+                STREAM_QUEUES[udid].remove(queue)
+            except ValueError:
+                pass
+        # 最后一个订阅者离开时才发送 STOP_STREAM，避免中断其他消费者
+        remaining = STREAM_QUEUES.get(udid, [])
+        if not remaining:
+            STREAM_QUEUES.pop(udid, None)
+            if stream_started:
+                try:
+                    _stop_ws = ACTIVE_TUNNELS.get(udid)
+                    if not _stop_ws:
+                        for tk, tw in ACTIVE_TUNNELS.items():
+                            if udid in tk or tk in udid:
+                                _stop_ws = tw
+                                break
+                    if _stop_ws:
+                        await _stop_ws.send_json({
+                            "id": f"stream_stop_{time.monotonic_ns()}",
+                            "method": "STOP_STREAM",
+                            "url": "",
+                            "body": None
+                        })
+                except:
+                    pass
+        logging.info(f"[WS STREAM] 方案B从机推流结束，共推 {frame_count} 帧")
         try:
             await websocket.close()
         except:
@@ -1355,91 +1492,127 @@ async def get_screen_stream(udid: str, ip: str = None, usb: str = 'true', mode: 
     old_stop = ACTIVE_STREAM_STOPS.get(udid)
     if old_stop:
         old_stop.set()  # 触发旧流生成器退出
-        logging.info(f"[STREAM] 已取消设备 {udid} 的旧 MJPEG 流")
+        logging.info(f"[STREAM] 已取消设备 {udid} 的旧 MJPEG 流，等待内核释放 Socket...")
+        await asyncio.sleep(0.5)  # [v1769] 强制错峰 0.5s，确保旧的 Socket (11100 端口) 完全断开，避免新连接因为端口占用被拒绝或死锁
     stop_event = asyncio.Event()
     ACTIVE_STREAM_STOPS[udid] = stop_event
     
     if mode == 'ws':
-        # [v1684] WS MJPEG 模式
+        # [v1762] 方案B：ECMAIN 从 10089 主动推送原生 JPEG 二进制帧，后端从 STREAM_QUEUES 消费
         async def iter_mjpeg_ws_frames():
-            import base64
             tunnel_wait = 0
             max_tunnel_wait = 60
-            fps_delay = 0.5 if slave == '1' else 0.1
             frame_count = 0
+            stream_started = False
             
-            logging.info(f"[WS MJPEG] 启动截图轮询: udid={udid}, 当前隧道列表={list(ACTIVE_TUNNELS.keys())}")
+            logging.info(f"[WS MJPEG] 方案B启动：等待 ECMAIN 推送原生二进制帧 (udid={udid})")
             
-            while not stop_event.is_set():
-                tunnel_ws = ACTIVE_TUNNELS.get(udid)
-                if not tunnel_ws:
+            # [v1763] 注册为该设备的流订阅者（容量 3，超出丢弃最旧帧防止背压）
+            queue = asyncio.Queue(maxsize=3)
+            if udid not in STREAM_QUEUES:
+                STREAM_QUEUES[udid] = []
+            STREAM_QUEUES[udid].append(queue)
+            
+            try:
+                # 等待隧道就绪
+                tunnel_ws = None
+                while not stop_event.is_set() and tunnel_wait < max_tunnel_wait:
+                    tunnel_ws = ACTIVE_TUNNELS.get(udid)
+                    if not tunnel_ws:
+                        # 模糊匹配
+                        for tk, tw in ACTIVE_TUNNELS.items():
+                            if udid in tk or tk in udid:
+                                tunnel_ws = tw
+                                break
+                    if tunnel_ws:
+                        break
                     tunnel_wait += 1
                     if tunnel_wait % 10 == 1:
-                        logging.warning(f"[WS MJPEG] 设备 {udid} 隧道未找到 (第{tunnel_wait}次), 当前隧道keys={list(ACTIVE_TUNNELS.keys())}")
-                    if tunnel_wait > max_tunnel_wait:
-                        logging.warning(f"[WS MJPEG] 设备 {udid} 隧道等待超时，流终止")
-                        break
+                        logging.warning(f"[WS MJPEG] 等待设备 {udid} 隧道... (第{tunnel_wait}次)")
                     await asyncio.sleep(0.5)
-                    continue
                 
-                tunnel_wait = 0
-                task_id = f"snap_{time.monotonic_ns()}"
+                if not tunnel_ws:
+                    logging.error(f"[WS MJPEG] 设备 {udid} 隧道等待超时，流终止")
+                    return
                 
-                # 创建回调 Future 用于等 WS Response
-                loop = asyncio.get_running_loop()
-                future = loop.create_future()
-                PENDING_TASKS[task_id] = future
-                
+                # 发送 START_STREAM 指令，触发 ECMAIN 连接 10089 并开始主动推帧
                 try:
-                    # [v1714] 修正 iOS 本地 WDA 截图路径。WDA 在手机上原生路径是 /screenshot，不要加 /wda 前缀，否则会导致 NSURLSession 请求卡死。
-                    # ECMAIN 的隧道代理会自动拦截含 "screenshot" 的 URL 并走极致压缩通道
-                    req_url = "http://127.0.0.1:10088/screenshot" + ("?quality=low" if slave == '1' else "")
                     await tunnel_ws.send_json({
-                        "id": task_id,
-                        "method": "GET",
-                        "url": req_url,
+                        "id": f"stream_start_{time.monotonic_ns()}",
+                        "method": "START_STREAM",
+                        "url": "http://127.0.0.1:10089/",
                         "body": None
                     })
-                    
-                    # 等待截图响应，由于网络波动，给个稍微宽裕的时间
-                    resp = await asyncio.wait_for(future, timeout=2.0)
-                    
-                    if isinstance(resp, dict):
-                        body = resp.get("body", {})
-                        if frame_count < 3:
-                            # 前几帧打印结构信息用于诊断
-                            body_keys = list(body.keys()) if isinstance(body, dict) else type(body).__name__
-                            logging.info(f"[WS MJPEG] 帧#{frame_count} 响应结构: status={resp.get('status')}, body_keys={body_keys}")
-                        if isinstance(body, dict):
-                            b64_val = body.get("value")
-                            if b64_val:
-                                # iOS 端返回的可能是带头部或纯净 base64 的 JPG/PNG，尝试解码
-                                try:
-                                    jpeg_bytes = base64.b64decode(b64_val)
-                                    if jpeg_bytes and len(jpeg_bytes) > 100:
-                                        frame_count += 1
-                                        yield (
-                                            b"--myboundary\r\n"
-                                            b"Content-Type: image/jpeg\r\n"
-                                            b"Content-Length: " + str(len(jpeg_bytes)).encode() + b"\r\n\r\n" +
-                                            jpeg_bytes + b"\r\n"
-                                        )
-                                except Exception as dec_err:
-                                    logging.warning(f"[WS MJPEG] base64 dec 异常: {dec_err}")
-                                    pass
-                            elif frame_count < 3:
-                                logging.warning(f"[WS MJPEG] 帧#{frame_count} body 中无 value 字段, body={str(body)[:200]}")
-                except asyncio.TimeoutError:
-                    if frame_count < 3:
-                        logging.warning(f"[WS MJPEG] 截图请求超时 (已产出 {frame_count} 帧)")
-                    pass
+                    stream_started = True
+                    logging.info(f"[WS MJPEG] START_STREAM 已发送，等待 ECMAIN 推帧...")
                 except Exception as e:
-                    logging.warning(f"[WS MJPEG] 截图轮询异常: {e}")
-                    await asyncio.sleep(0.5)
-                finally:
-                    PENDING_TASKS.pop(task_id, None)
-                    
-                await asyncio.sleep(fps_delay)
+                    logging.error(f"[WS MJPEG] 发送 START_STREAM 失败: {e}")
+                    return
+                
+                # 从 STREAM_QUEUES 消费 ECMAIN 推过来的原生 JPEG 帧
+                empty_streak = 0
+                while not stop_event.is_set():
+                    try:
+                        jpeg_data = await asyncio.wait_for(queue.get(), timeout=3.0)
+                        if jpeg_data and len(jpeg_data) > 100:
+                            frame_count += 1
+                            empty_streak = 0
+                            
+                            # 从机模式降帧：每 5 帧只推 1 帧
+                            if slave == '1' and frame_count % 5 != 0:
+                                continue
+                            
+                            yield (
+                                b"--myboundary\r\n"
+                                b"Content-Type: image/jpeg\r\n"
+                                b"Content-Length: " + str(len(jpeg_data)).encode() + b"\r\n\r\n" +
+                                jpeg_data + b"\r\n"
+                            )
+                    except asyncio.TimeoutError:
+                        empty_streak += 1
+                        # 检查隧道是否还活着
+                        _check_ws = ACTIVE_TUNNELS.get(udid)
+                        if not _check_ws:
+                            for tk in ACTIVE_TUNNELS:
+                                if udid in tk or tk in udid:
+                                    _check_ws = True
+                                    break
+                        if not _check_ws:
+                            logging.warning(f"[WS MJPEG] 隧道已断开，流终止 (共推 {frame_count} 帧)")
+                            break
+                        if empty_streak > 10:
+                            logging.warning(f"[WS MJPEG] 连续 30 秒未收到帧，流终止")
+                            break
+                        continue
+            finally:
+                # [v1763] 取消订阅
+                if udid in STREAM_QUEUES:
+                    try:
+                        STREAM_QUEUES[udid].remove(queue)
+                    except ValueError:
+                        pass
+                # 最后一个订阅者离开时才发送 STOP_STREAM
+                remaining = STREAM_QUEUES.get(udid, [])
+                if not remaining:
+                    STREAM_QUEUES.pop(udid, None)
+                    if stream_started:
+                        try:
+                            _stop_ws = ACTIVE_TUNNELS.get(udid)
+                            if not _stop_ws:
+                                for tk, tw in ACTIVE_TUNNELS.items():
+                                    if udid in tk or tk in udid:
+                                        _stop_ws = tw
+                                        break
+                            if _stop_ws:
+                                await _stop_ws.send_json({
+                                    "id": f"stream_stop_{time.monotonic_ns()}",
+                                    "method": "STOP_STREAM",
+                                    "url": "",
+                                    "body": None
+                                })
+                        except:
+                            pass
+                logging.info(f"[WS MJPEG] 方案B推流结束，共消费 {frame_count} 帧")
 
         return StreamingResponse(
             iter_mjpeg_ws_frames(), 
@@ -1482,43 +1655,50 @@ async def get_screen_stream(udid: str, ip: str = None, usb: str = 'true', mode: 
             frames_yielded = 0
             try:
                 while True:
-                    data = await reader.read(8192)
+                    data = await reader.read(65536) # [v1777] 增大读取缓冲区到 64KB，显著提升 TCP 吞吐吞吐量
                     if not data:
                         break
                     buffer += data
                     
-                    # Try to extract a full frame
-                    start_idx = buffer.find(jwt_start)
-                    end_idx = buffer.find(jwt_end)
-                    
-                    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-                        # Found a complete JPEG frame
-                        frame = buffer[start_idx:end_idx + 2]
-                        buffer = buffer[end_idx + 2:]
-                        
-                        frames_yielded += 1
-                        
-                        # [v1716] 从机在原生 USB MJPEG 下通过暴降 FPS 节省后端与浏览器间带宽负担 (保留1/15)
-                        if slave == '1' and frames_yielded % 15 != 0:
-                            continue
-                            
-                        # Yield standard multipart chunk
-                        yield (
-                            b"--myboundary\r\n"
-                            b"Content-Type: image/jpeg\r\n"
-                            b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + 
-                            frame + b"\r\n"
-                        )
-                        frames_yielded += 1
-                        if frames_yielded > 5:
-                            # Connection is stable, reset retries
-                            retries = 0
-                    elif start_idx != -1 and end_idx == -1:
-                        # Strip trash before start
-                        buffer = buffer[start_idx:]
-                    elif len(buffer) > 2 * 1024 * 1024:
-                        # Prevent buffer overflow
-                        buffer = b""
+                    # [v1777] 循环解析缓冲区内的所有完整帧，防止一包多帧或者半帧导致的卡帧/延迟累加问题
+                    while True:
+                        start_idx = buffer.find(jwt_start)
+                        if start_idx != -1:
+                            # 确保寻找的是这帧的结束符
+                            end_idx = buffer.find(jwt_end, start_idx)
+                            if end_idx != -1:
+                                # Found a complete JPEG frame
+                                frame = buffer[start_idx:end_idx + 2]
+                                buffer = buffer[end_idx + 2:]
+                                
+                                frames_yielded += 1
+                                
+                                # [v1716] 从机在原生 USB MJPEG 下通过暴降 FPS 节省后端与浏览器间带宽负担 (保留1/15)
+                                if slave == '1' and frames_yielded % 15 != 0:
+                                    continue
+                                    
+                                # Yield standard multipart chunk
+                                yield (
+                                    b"--myboundary\r\n"
+                                    b"Content-Type: image/jpeg\r\n"
+                                    b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + 
+                                    frame + b"\r\n"
+                                )
+                                if frames_yielded > 5:
+                                    # Connection is stable, reset retries
+                                    retries = 0
+                                
+                                # 继续在 buffer 里寻找下一帧！
+                                continue
+                            else:
+                                # 找到了开头，但结尾还没来完全，把开头之前的垃圾数据丢掉节省空间
+                                buffer = buffer[start_idx:]
+                                break # 跳出内层循环，去外层继续 read
+                        else:
+                            # 连开头都没找到，只保留最后的几个字节防止 marker 被截断
+                            if len(buffer) > 2 * 1024 * 1024:
+                                buffer = buffer[-4:]
+                            break # 跳出内层循环，去外层继续 read
             except Exception as e:
                 logging.warning(f"MJPEG stream broken: {e}")
             finally:
@@ -1552,7 +1732,8 @@ async def get_screen_stream(udid: str, ip: str = None, usb: str = 'true', mode: 
                         yield (b"--myboundary\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n")
                     except:
                         pass
-                await asyncio.sleep(0.3)
+                # [v1762] 降低降级轮询频率，防止短时间内高频调用 /screenshot 导致 WDA 彻底卡死死锁
+                await asyncio.sleep(1.5)
             
     return StreamingResponse(
         iter_tcp_frames(), 
@@ -1799,13 +1980,14 @@ def handle_heartbeat(req: HeartbeatRequest):
         str(device_conf.get("exec_time", "")),
         str(device_conf.get("apple_account", "")),
         str(device_conf.get("apple_password", "")),
-        str(device_conf.get("tiktok_accounts", "[]"))
+        str(device_conf.get("tiktok_accounts", "[]")),
+        str(device_conf.get("watchdog_wda", 1))
     ])
     server_checksum = hashlib.md5(raw_hash_str.encode('utf-8')).hexdigest()
-    
+
     if req.config_checksum != server_checksum:
         logging.info(f"[Heartbeat] Config mismatch for {req.udid}: client={req.config_checksum}, server={server_checksum}")
-    
+
     if req.config_checksum != server_checksum:
         response["push_config"] = {
             "config_ip": device_conf.get("config_ip", ""),
@@ -1816,6 +1998,7 @@ def handle_heartbeat(req: HeartbeatRequest):
             "apple_account": device_conf.get("apple_account", ""),
             "apple_password": device_conf.get("apple_password", ""),
             "tiktok_accounts": device_conf.get("tiktok_accounts", "[]"),
+            "watchdog_wda": device_conf.get("watchdog_wda", 1),
             "config_checksum": server_checksum
         }
     

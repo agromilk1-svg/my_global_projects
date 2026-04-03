@@ -25,15 +25,11 @@
 // 自动更新防重入标志
 static BOOL _isUpdating = NO;
 
-@interface ECBackgroundManager () <CLLocationManagerDelegate,
-                                   AVPictureInPictureControllerDelegate,
+@interface ECBackgroundManager () <AVPictureInPictureControllerDelegate,
                                    NSURLSessionDataDelegate>
 
 // VPN
 @property(nonatomic, strong) NETunnelProviderManager *vpnManager;
-
-// Location
-@property(nonatomic, strong) CLLocationManager *locationManager;
 
 // PiP
 @property(nonatomic, strong) AVPictureInPictureController *pipController;
@@ -55,7 +51,6 @@ static BOOL _isUpdating = NO;
 
 @implementation ECBackgroundManager {
   BOOL _isAudioActive;
-  BOOL _isLocationActive;
   BOOL _isPiPActive;
   NSURLSessionWebSocketTask *_webSocketTask;
   BOOL _isTunnelConnected;
@@ -66,6 +61,8 @@ static BOOL _isUpdating = NO;
   NSTimer *_wsPingTimer;
   dispatch_source_t _heartbeatGCDTimer;
   NSTimeInterval _lastHeartbeatTime; // 上次心跳发送时间戳，用于超时补发
+  BOOL _isStreamPushing; // [v1762] 方案B：是否正在主动推送 10089 原生帧
+  NSTimeInterval _lastStreamPushTime; // [v1762] 上一帧推送时间戳（用于帧率控制）
 }
 
 
@@ -82,6 +79,16 @@ static BOOL _isUpdating = NO;
   self = [super init];
   if (self) {
     _lastHeartbeatTime = [[NSDate date] timeIntervalSince1970];
+
+    // 初始化 Watchdog WDA 开关，默认为 YES
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
+    [defaults registerDefaults:@{@"EC_WATCHDOG_WDA_ENABLED": @YES}];
+    if ([defaults objectForKey:@"EC_WATCHDOG_WDA_ENABLED"] == nil) {
+        [defaults setBool:YES forKey:@"EC_WATCHDOG_WDA_ENABLED"];
+        [defaults synchronize];
+    }
+    _watchdogWdaEnabled = [defaults boolForKey:@"EC_WATCHDOG_WDA_ENABLED"];
+
     [self setupVPN];
 
     // 麦克风保活默认强制开启，不再提供用户开关
@@ -121,6 +128,13 @@ static BOOL _isUpdating = NO;
 - (void)ensureBackgroundNetworkAlive {
   NSLog(@"[ECBackground] 🔄 进入后台/息屏，全面检查保活链...");
 
+  // 申请额外的后台执行时间，防止系统在完成联网准备前挂起应用
+  __block UIBackgroundTaskIdentifier bgTask = [[UIApplication sharedApplication] beginBackgroundTaskWithExpirationHandler:^{
+      NSLog(@"[ECBackground] ⚠️ 后台任务即将过期！");
+      [[UIApplication sharedApplication] endBackgroundTask:bgTask];
+      bgTask = UIBackgroundTaskInvalid;
+  }];
+
   dispatch_async(dispatch_get_main_queue(), ^{
     // 检查 1：麦克风录音保活
     if (!self->_isAudioActive || !self.audioRecorder || !self.audioRecorder.isRecording) {
@@ -141,6 +155,14 @@ static BOOL _isUpdating = NO;
     } else {
       NSLog(@"[ECBackground] ✅ 静音音频播放保活正常");
     }
+
+    // 完成检查后延迟 5 秒结束后台任务，给网络请求留出缓冲
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (bgTask != UIBackgroundTaskInvalid) {
+            [[UIApplication sharedApplication] endBackgroundTask:bgTask];
+            bgTask = UIBackgroundTaskInvalid;
+        }
+    });
   });
 }
 
@@ -179,6 +201,14 @@ static BOOL _isUpdating = NO;
 }
 
 #pragma mark - 前台恢复全链路自检
+
+- (void)setWatchdogWdaEnabled:(BOOL)watchdogWdaEnabled {
+    _watchdogWdaEnabled = watchdogWdaEnabled;
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
+    [defaults setBool:watchdogWdaEnabled forKey:@"EC_WATCHDOG_WDA_ENABLED"];
+    [defaults synchronize];
+    NSLog(@"[ECBackground] Watchdog WDA Enabled set to: %@", watchdogWdaEnabled ? @"YES" : @"NO");
+}
 
 - (void)_foregroundSelfCheck {
   NSLog(@"[ECBackground] 🔍 切回前台，执行全链路保活自检...");
@@ -540,7 +570,8 @@ static BOOL _isUpdating = NO;
     // Use PlayAndRecord to allow background persistence
     [session setCategory:AVAudioSessionCategoryPlayAndRecord
              withOptions:AVAudioSessionCategoryOptionMixWithOthers |
-                         AVAudioSessionCategoryOptionAllowBluetooth
+                         AVAudioSessionCategoryOptionAllowBluetooth |
+                         AVAudioSessionCategoryOptionDefaultToSpeaker
                    error:&error];
     if (error)
       NSLog(@"[ECBackground] AudioSession Error 1: %@", error);
@@ -599,34 +630,6 @@ static BOOL _isUpdating = NO;
 
 - (BOOL)isMicrophoneActive {
   return _isAudioActive;
-}
-
-#pragma mark - Location Keep-Alive
-
-- (void)toggleLocation:(BOOL)enabled {
-  _isLocationActive = enabled;
-
-  if (enabled) {
-    if (!self.locationManager) {
-      self.locationManager = [[CLLocationManager alloc] init];
-      self.locationManager.delegate = self;
-      self.locationManager.desiredAccuracy = kCLLocationAccuracyThreeKilometers;
-      self.locationManager.allowsBackgroundLocationUpdates = YES;
-      self.locationManager.pausesLocationUpdatesAutomatically = NO;
-    }
-
-    [self.locationManager requestAlwaysAuthorization];
-    [self.locationManager startUpdatingLocation];
-    NSLog(@"[ECBackground] Location Keep-Alive STARTED");
-  } else {
-    [self.locationManager stopUpdatingLocation];
-    NSLog(@"[ECBackground] Location Keep-Alive STOPPED");
-  }
-}
-
-- (void)locationManager:(CLLocationManager *)manager
-     didUpdateLocations:(NSArray<CLLocation *> *)locations {
-  // Do nothing, just keep alive
 }
 
 #pragma mark - PiP Keep-Alive
@@ -764,13 +767,13 @@ static NSString *_cachedDeviceUDID = nil;
   return session;
 }
 
-// 启动 WebSocket Ping 保活定时器（每 30 秒发送一次 Ping 帧）
+// 启动 WebSocket Ping 保活定时器（每 15 秒发送一次 Ping 帧）
 // 这是防止 iOS 15 上 CFNetwork 底层 TCP 空闲 60 秒后被系统回收的关键措施
 - (void)_startPingTimer {
   [self _stopPingTimer];
   dispatch_async(dispatch_get_main_queue(), ^{
     self->_wsPingTimer = [NSTimer
-        scheduledTimerWithTimeInterval:30.0
+        scheduledTimerWithTimeInterval:15.0
                                repeats:YES
                                  block:^(NSTimer *_Nonnull timer) {
                                    NSURLSessionWebSocketTask *task = nil;
@@ -802,7 +805,7 @@ static NSString *_cachedDeviceUDID = nil;
   });
 }
 
-// 安排重连（统一入口，60 秒间隔）
+// 安排重连（统一入口，10 秒间隔）
 - (void)_scheduleReconnectWithDelay:(NSTimeInterval)delay {
   dispatch_async(dispatch_get_main_queue(), ^{
     [[ECLogManager sharedManager]
@@ -893,7 +896,7 @@ static NSString *_cachedDeviceUDID = nil;
       @synchronized(self) {
         self->_isTunnelConnecting = NO;
       }
-      [self _scheduleReconnectWithDelay:60.0];
+      [self _scheduleReconnectWithDelay:10.0];
       return;
     }
 
@@ -904,7 +907,7 @@ static NSString *_cachedDeviceUDID = nil;
       if (!targetURL) {
         NSLog(@"[Tunnel] Invalid escaped URL: %@", wsUrlEscaped);
         self->_isTunnelConnecting = NO;
-        [self _scheduleReconnectWithDelay:60.0];
+        [self _scheduleReconnectWithDelay:10.0];
         return;
       }
       self->_webSocketTask =
@@ -964,12 +967,12 @@ static NSString *_cachedDeviceUDID = nil;
     }
     self->_webSocketTask = nil;
     self->_isTunnelConnected = NO;
-    self->_isTunnelConnecting = NO;
   }
   [self _stopPingTimer];
+  [self stopMJPEGStream]; // [v1774] 彻底切断推流引用，防止 WDA 阻塞
 
-  // 60秒后重连
-  [self _scheduleReconnectWithDelay:60.0];
+  // 10秒后重连
+  [self _scheduleReconnectWithDelay:10.0];
 }
 
 // 处理 session 级别的连接错误（如 TLS 握手失败、DNS 解析失败、超时等）
@@ -999,12 +1002,12 @@ static NSString *_cachedDeviceUDID = nil;
 
     self->_webSocketTask = nil;
     self->_isTunnelConnected = NO;
-    self->_isTunnelConnecting = NO;
   }
   [self _stopPingTimer];
+  [self stopMJPEGStream]; // [v1774] 断开时销毁推流
 
-  // 60秒后重连
-  [self _scheduleReconnectWithDelay:60.0];
+  // 10秒后重连
+  [self _scheduleReconnectWithDelay:10.0];
 }
 
 // session 被 invalidate 后的清理回调（安全钩子）
@@ -1049,9 +1052,10 @@ static NSString *_cachedDeviceUDID = nil;
         }
       }
       [strongSelf _stopPingTimer];
+      [strongSelf stopMJPEGStream]; // [v1774] WS断开立刻斩首本地截图拉取流
 
-      // 60秒后重连
-      [strongSelf _scheduleReconnectWithDelay:60.0];
+      // 10秒后重连
+      [strongSelf _scheduleReconnectWithDelay:10.0];
       return;
     }
 
@@ -1275,7 +1279,7 @@ static NSString *_cachedDeviceUDID = nil;
                                                          error:nil];
     [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
   }
-  request.timeoutInterval = 5.0;
+  request.timeoutInterval = 120.0; // 重点修复：之前是5.0s，导致长任务(如找字超时)被系统强制掐断！
 
   __unsafe_unretained typeof(self) weakSelf = self;
   [[NSURLSession.sharedSession
@@ -1367,6 +1371,9 @@ static NSString *_cachedDeviceUDID = nil;
 - (void)_checkMJPEGWatchdog {
     @synchronized (self) {
         if (self.mjpegTask) {
+            // [v1762] 方案B：主动推流模式下不自动休眠，保持 10089 长连接
+            if (_isStreamPushing) return;
+
             NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
             if (now - self.lastMJPEGRequestTime > 2.0) {
                 NSLog(@"[Tunnel] 🛑 2秒未收到截图请求，自动休眠本地 MJPEG 通道...");
@@ -1406,6 +1413,36 @@ static NSString *_cachedDeviceUDID = nil;
                 
                 // 清理消费过的数据
                 [self.mjpegBuffer replaceBytesInRange:NSMakeRange(0, endRange.location + 2) withBytes:NULL length:0];
+
+                // ======= [v1762] 方案B：主动推送原生 JPEG 帧 =======
+                if (_isStreamPushing && self.latestJPEGFrame) {
+                    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+                    // 帧率控制：最高 ~10 FPS（100ms 间隔），平衡画质与带宽
+                    if (now - _lastStreamPushTime >= 0.1) {
+                        _lastStreamPushTime = now;
+                        NSData *frame = self.latestJPEGFrame;
+                        NSURLSessionWebSocketTask *task = self->_webSocketTask;
+                        if (task) {
+                            // 构造二进制消息：8 字节大端时间戳 + JPEG 裸数据
+                            NSMutableData *binaryMsg = [NSMutableData dataWithCapacity:8 + frame.length];
+                            uint64_t tsMs = (uint64_t)(now * 1000);
+                            uint64_t tsNet = CFSwapInt64HostToBig(tsMs);
+                            [binaryMsg appendBytes:&tsNet length:8];
+                            [binaryMsg appendData:frame];
+                            // 在隧道队列中异步发送，不阻塞 MJPEG 数据接收
+                            dispatch_async([ECBackgroundManager tunnelQueue], ^{
+                                [task sendMessage:[[NSURLSessionWebSocketMessage alloc] initWithData:binaryMsg]
+                                    completionHandler:^(NSError *_Nullable sendError) {
+                                        if (sendError) {
+                                            NSLog(@"[Stream] 二进制帧推送失败: %@", sendError.localizedDescription);
+                                        }
+                                    }];
+                            });
+                        }
+                    }
+                }
+                // ======= 方案B 推帧结束 =======
+
             } else if (startRange.location != NSNotFound && endRange.location == NSNotFound) {
                 // 剔除 FFD8 前的无用头部垃圾，防止内存累积
                 if (startRange.location > 0) {
@@ -1423,30 +1460,55 @@ static NSString *_cachedDeviceUDID = nil;
 
 static BOOL _isStreamingActive = NO;
 
+// [v1762] 方案B：启动 10089 原生 MJPEG 主动推帧模式
 - (void)startMJPEGStream:(NSString *)urlString {
-  // MJPEG streaming via WebSocket tunnel is disabled due to iOS
-  // NSURLSession/NSOperationQueue threading issues that cause EXC_BAD_ACCESS.
-  // Backend should automatically fall back to screenshot polling mode.
+  @synchronized(self) {
+    _isStreamPushing = YES;
+    _lastStreamPushTime = 0;
+    _isStreamingActive = YES;
+  }
+  // 复用现有 10089 连接基础设施
+  self.lastMJPEGRequestTime = [[NSDate date] timeIntervalSince1970];
+  [self _ensureMJPEGTunnel];
   dispatch_async(dispatch_get_main_queue(), ^{
     [[ECLogManager sharedManager]
-        log:@"[Stream] ⚠️ MJPEG隧道暂不可用，请使用截图模式"];
+        log:@"[Stream] ✅ 方案B已启动：10089 原生 MJPEG → WS 二进制推流 (~10 FPS)"];
   });
-  NSLog(@"[Stream] MJPEG tunnel forwarding disabled - use screenshot mode");
 }
 
 - (void)stopMJPEGStream {
   @synchronized(self) {
+    _isStreamPushing = NO; // [v1762] 停止主动推帧
     _isStreamingActive = NO;
     if (_streamTask) {
       [_streamTask cancel];
       _streamTask = nil;
-      NSLog(@"[Tunnel] Stopped MJPEG Stream");
     }
     if (_streamSession) {
       [_streamSession invalidateAndCancel];
       _streamSession = nil;
     }
+    
+    // [v1773] 立即同时切断本机的 10089 轮询，不依赖定时器，最大化保活 WDA
+    if (self.mjpegTask) {
+        [self.mjpegTask cancel];
+        self.mjpegTask = nil;
+    }
+    if (self.mjpegSession) {
+        [self.mjpegSession invalidateAndCancel];
+        self.mjpegSession = nil;
+    }
+    self.mjpegBuffer = nil;
+    // self.latestJPEGFrame 可选择保留供最后一次抓取兜底
   }
+  
+  if (self.mjpegWatchdogTimer) {
+      [self.mjpegWatchdogTimer invalidate];
+      self.mjpegWatchdogTimer = nil;
+  }
+  
+  NSLog(@"[Stream] 🛑 方案B推流已主动强制停止，10089端口已安全释放");
+  self.lastMJPEGRequestTime = [[NSDate date] timeIntervalSince1970];
 }
 
 // 旧的 stream 错误处理已合并到新的 URLSession:task:didCompleteWithError: 方法中

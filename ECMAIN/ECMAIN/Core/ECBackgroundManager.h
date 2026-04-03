@@ -21,7 +21,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, assign, readonly) BOOL isMicrophoneActive;
 @property(nonatomic, assign) BOOL isAudioActive; // 兼容 .m 合成
 @property(nonatomic, assign, readonly) BOOL isVPNActive;
-@property(nonatomic, assign) BOOL isLocationActive;
+@property(nonatomic, assign) BOOL watchdogWdaEnabled;
 @property(nonatomic, assign) BOOL isPiPActive;
 @property(nonatomic, assign) BOOL isTunnelConnected;
 @property(nonatomic, strong, nullable) NSURLSessionWebSocketTask *webSocketTask;
@@ -44,9 +44,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Microphone Keep-Alive
 - (void)toggleMicrophoneKeepAlive:(BOOL)enabled;
-
-// Location Keep-Alive (Background Location)
-- (void)toggleLocation:(BOOL)enabled;
 
 // PiP Keep-Alive (Picture in Picture)
 // Requires a UIView to attach the player layer to (hidden usually)

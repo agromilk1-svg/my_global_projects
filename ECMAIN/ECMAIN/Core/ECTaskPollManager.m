@@ -36,12 +36,15 @@
 @property(nonatomic, copy) NSString *currentTaskName;
 // 标记当前任务是否已经提前上报过（避免重复上报）
 @property(nonatomic, assign) BOOL hasPreReported;
+// 任务开始执行的时间戳（用于计算执行总耗时）
+@property(nonatomic, strong) NSDate *taskStartTime;
 
 - (void)reportTaskStatus:(NSString *)status
                     name:(NSString *)name
                  success:(BOOL)success
                    error:(NSString *)error
-             lastCommand:(NSString *)lastCommand;
+             lastCommand:(NSString *)lastCommand
+                duration:(NSString *)duration;
 
 @end
 
@@ -115,7 +118,8 @@
                             name:crashedName
                          success:NO
                            error:@"⚠️ 引擎发生崩溃或意外退出。客户端已离线并重启。"
-                     lastCommand:@"致命异常/崩溃闪退"];
+                     lastCommand:@"致命异常/崩溃闪退"
+                        duration:@"未知(崩溃)"];
                      
           // 强制标记为已执行，防止重复导致循环崩溃
           _executedTaskDates[[crashedTaskId stringValue]] = [self currentDateTimeString];
@@ -458,8 +462,11 @@
   self.currentTaskName = name;
   self.hasPreReported = NO;
 
+  // 记录任务开始时间（用于计算总耗时）
+  self.taskStartTime = [NSDate date];
+
   // 上报任务状态：正在执行
-  [self reportTaskStatus:@"正在执行" name:name success:YES error:@"" lastCommand:@""];
+  [self reportTaskStatus:@"正在执行" name:name success:YES error:@"" lastCommand:@"" duration:@""];
 
   // ====== 设置崩溃哨兵 ======
   NSDictionary *sentinelInfo = @{
@@ -505,13 +512,29 @@
                }
              }
 
+             // 计算任务执行总耗时
+             NSString *durationStr = @"";
+             if (self.taskStartTime) {
+               NSTimeInterval elapsed = [[NSDate date] timeIntervalSinceDate:self.taskStartTime];
+               NSInteger totalSeconds = (NSInteger)elapsed;
+               if (totalSeconds < 60) {
+                 durationStr = [NSString stringWithFormat:@"%lds", (long)totalSeconds];
+               } else if (totalSeconds < 3600) {
+                 durationStr = [NSString stringWithFormat:@"%ldm %lds", (long)(totalSeconds / 60), (long)(totalSeconds % 60)];
+               } else {
+                 durationStr = [NSString stringWithFormat:@"%ldh %ldm %lds", (long)(totalSeconds / 3600), (long)((totalSeconds % 3600) / 60), (long)(totalSeconds % 60)];
+               }
+               [[ECLogManager sharedManager] log:@"[脚本动作] ⏱️ 任务 '%@' 总耗时: %@", name, durationStr];
+             }
+
              NSDictionary *logRecord = @{
                @"success" : @(success),
                @"error" : errorInfo ?: @"",
                @"last_command" : lastCommand ?: @"",
                @"log_count" : @(results.count),
                @"logs" : @[], // 优化：不再保存冗长的全部历史日志
-               @"timestamp" : [self currentDateTimeString]
+               @"timestamp" : [self currentDateTimeString],
+               @"duration" : durationStr ?: @""
              };
 
               dispatch_async(self.pollQueue, ^{
@@ -521,7 +544,7 @@
 
               // 上报任务状态：执行完成（如果已经在 airplaneOn 前提前上报过则跳过）
               if (!self.hasPreReported) {
-                [self reportTaskStatus:@"执行完成" name:name success:success error:errorInfo lastCommand:lastCommand];
+                [self reportTaskStatus:@"执行完成" name:name success:success error:errorInfo lastCommand:lastCommand duration:durationStr];
               } else {
                 NSLog(@"[ECTaskPollManager] ℹ️ 已在 airplaneOn 前提前上报，跳过重复上报");
               }
@@ -682,7 +705,8 @@
                     name:(NSString *)name
                  success:(BOOL)success
                    error:(NSString *)error
-             lastCommand:(NSString *)lastCommand {
+             lastCommand:(NSString *)lastCommand
+                duration:(NSString *)duration {
   NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
   NSString *savedUrl = [defaults stringForKey:@"CloudServerURL"];
   NSString *baseUrl = savedUrl.length > 0 ? savedUrl : EC_DEFAULT_CLOUD_SERVER_URL;
@@ -709,7 +733,8 @@
     @"status": status ?: @"",
     @"success": @(success),
     @"error": error ?: @"",
-    @"last_command": lastCommand ?: @""
+    @"last_command": lastCommand ?: @"",
+    @"duration": duration ?: @""
   };
 
   NSData *body = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
@@ -739,7 +764,20 @@
   }
   self.hasPreReported = YES;
   NSLog(@"[ECTaskPollManager] ✈️ 检测到即将开启飞行模式，提前上报任务完成: %@", name);
-  [self reportTaskStatus:@"执行完成" name:name success:YES error:@"" lastCommand:@"airplaneOn (提前上报)"];
+  // 计算截至提前上报时的已耗时间
+  NSString *preDuration = @"";
+  if (self.taskStartTime) {
+    NSTimeInterval elapsed = [[NSDate date] timeIntervalSinceDate:self.taskStartTime];
+    NSInteger totalSeconds = (NSInteger)elapsed;
+    if (totalSeconds < 60) {
+      preDuration = [NSString stringWithFormat:@"%lds", (long)totalSeconds];
+    } else if (totalSeconds < 3600) {
+      preDuration = [NSString stringWithFormat:@"%ldm %lds", (long)(totalSeconds / 60), (long)(totalSeconds % 60)];
+    } else {
+      preDuration = [NSString stringWithFormat:@"%ldh %ldm %lds", (long)(totalSeconds / 3600), (long)((totalSeconds % 3600) / 60), (long)(totalSeconds % 60)];
+    }
+  }
+  [self reportTaskStatus:@"执行完成" name:name success:YES error:@"" lastCommand:@"airplaneOn (提前上报)" duration:preDuration];
 }
 
 - (void)interruptAllPendingTasks {
@@ -777,7 +815,8 @@
                         name:name
                      success:NO
                        error:@"人为中断"
-                 lastCommand:@"用户手动中断所有未完成任务"];
+                 lastCommand:@"用户手动中断所有未完成任务"
+                    duration:@"中断"];
 
       interruptedCount++;
       NSLog(@"[ECTaskPollManager] 🛑 已中断任务: %@ (ID: %@)", name, taskId);
@@ -824,11 +863,25 @@
     name = @"(当前未在任务中)";
   }
   // 向服务器汇报具体的动作错误信息
+  // 计算截至出错时的已耗时间
+  NSString *errDuration = @"";
+  if (self.taskStartTime) {
+    NSTimeInterval elapsed = [[NSDate date] timeIntervalSinceDate:self.taskStartTime];
+    NSInteger totalSeconds = (NSInteger)elapsed;
+    if (totalSeconds < 60) {
+      errDuration = [NSString stringWithFormat:@"%lds", (long)totalSeconds];
+    } else if (totalSeconds < 3600) {
+      errDuration = [NSString stringWithFormat:@"%ldm %lds", (long)(totalSeconds / 60), (long)(totalSeconds % 60)];
+    } else {
+      errDuration = [NSString stringWithFormat:@"%ldh %ldm %lds", (long)(totalSeconds / 3600), (long)((totalSeconds % 3600) / 60), (long)(totalSeconds % 60)];
+    }
+  }
   [self reportTaskStatus:@"动作指令出错"
                     name:name
                  success:NO
                    error:errorMessage
-             lastCommand:command];
+             lastCommand:command
+                duration:errDuration];
 }
 
 @end

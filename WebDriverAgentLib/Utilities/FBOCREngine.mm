@@ -37,7 +37,7 @@
 #import <vector>
 
 // PP-OCRv5 Mobile Config
-static const int RAW_SHORT_SIDE = 640;  // 从 960 降至 640: 推理面积缩小 55%, 速度翻倍，对按钮文字识别无损
+static const int RAW_SHORT_SIDE = 960;  // 恢复为 960，防止压缩比过高导致状态栏小字(如 9pt 的 VPN/电量等)丢失
 static const float DET_DB_THRESH = 0.3f;
 static const float DET_DB_BOX_THRESH = 0.6f;
 static const float DET_DB_UNCLIP_RATIO = 1.5f;
@@ -208,19 +208,39 @@ static const int REC_IMG_H = 48;
 
 #pragma mark - Vision API OCR (Fallback)
 
-- (NSArray<FBOCRTextResult *> *)recognizeTextWithVision:(UIImage *)image {
+- (NSArray<FBOCRTextResult *> *)recognizeTextWithVision:(UIImage *)image targetText:(nullable NSString *)targetText {
   if (!image)
     return @[];
 
   if (@available(iOS 13.0, *)) {
     __block NSMutableArray<FBOCRTextResult *> *results = [NSMutableArray array];
 
-    CGImageRef cgImage = image.CGImage;
-    if (!cgImage)
-      return @[];
+    CGFloat originalPixelWidth = image.CGImage ? CGImageGetWidth(image.CGImage) : image.size.width * image.scale;
+    CGFloat originalPixelHeight = image.CGImage ? CGImageGetHeight(image.CGImage) : image.size.height * image.scale;
 
-    CGFloat imageWidth = CGImageGetWidth(cgImage);
-    CGFloat imageHeight = CGImageGetHeight(cgImage);
+    UIImage *visionImage = image;
+    CGFloat shortSide = MIN(originalPixelWidth, originalPixelHeight);
+    
+    // [v81] 神级优化：因为 IOSurface 逃生舱取到的是 100% 物理显存原图（比如 750x1334 甚至 1290x2796），
+    // 像素面积比以前（被苹果原生 API 降采样的图）大了 4 倍到 9 倍！
+    // 传入这么巨大的原生像素图，会导致 A11/A12 芯片的 Vision Accurate 神经网络推理耗时飙升到 4 秒。
+    // 因此这里强制将短边大幅压缩到 384px（等效大约 384x682），足够识别除了发丝级别以外的所有清晰字体。
+    // [v83修复] 还原安全的 UIGraphics 缩放（CGBitmap 会倒置图像导致 OCR 失明）
+    CGFloat maxShortSide = 384.0;
+    if (shortSide > maxShortSide) {
+        CGFloat ratio = maxShortSide / shortSide;
+        CGSize targetSize = CGSizeMake(originalPixelWidth * ratio, originalPixelHeight * ratio);
+        
+        UIGraphicsBeginImageContextWithOptions(targetSize, NO, 1.0); // 防止二次放大
+        [image drawInRect:CGRectMake(0, 0, targetSize.width, targetSize.height)];
+        visionImage = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+    }
+
+    CGImageRef cgImage = visionImage.CGImage;
+    if (!cgImage) {
+        return @[];
+    }
 
     VNRecognizeTextRequest *request = [[VNRecognizeTextRequest alloc]
         initWithCompletionHandler:^(VNRequest *req, NSError *error) {
@@ -232,22 +252,56 @@ static const int REC_IMG_H = 48;
                 [observation topCandidates:1].firstObject;
             if (topCandidate) {
               CGRect bbox = observation.boundingBox;
-              CGFloat x = bbox.origin.x * imageWidth;
-              CGFloat y = (1 - bbox.origin.y - bbox.size.height) * imageHeight;
-              CGFloat w = bbox.size.width * imageWidth;
-              CGFloat h = bbox.size.height * imageHeight;
+              NSString *recognizedString = topCandidate.string;
+              
+              // [v86 精确坐标提取]: 如果匹配到了目标字符，尝试获取该子字符串的精确 boundingBox
+              if (targetText && targetText.length > 0) {
+                  NSRange range = [recognizedString rangeOfString:targetText options:NSCaseInsensitiveSearch];
+                  if (range.location != NSNotFound) {
+                      NSError *err = nil;
+                      VNRectangleObservation *subBboxObs = [topCandidate boundingBoxForRange:range error:&err];
+                      if (subBboxObs && !err) {
+                          // 如果成功获取到了子字符串的边框，替换原有的整段边框
+                          bbox = subBboxObs.boundingBox;
+                      }
+                  }
+              }
+              
+              CGFloat x = bbox.origin.x * originalPixelWidth;
+              CGFloat y = (1 - bbox.origin.y - bbox.size.height) * originalPixelHeight;
+              CGFloat w = bbox.size.width * originalPixelWidth;
+              CGFloat h = bbox.size.height * originalPixelHeight;
 
               [results addObject:[FBOCRTextResult
-                                     resultWithText:topCandidate.string
+                                     resultWithText:recognizedString
                                               frame:CGRectMake(x, y, w, h)
                                          confidence:topCandidate.confidence]];
             }
           }
         }];
 
+    // 动态智能语言模型分配（大幅降低准确模式下的推理耗时）
     request.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
-    request.recognitionLanguages = @[ @"zh-Hans", @"en-US" ];
-    request.usesLanguageCorrection = YES;
+    
+    BOOL isAsianText = NO;
+    if (targetText && targetText.length > 0) {
+        for (NSUInteger i = 0; i < targetText.length; i++) {
+            unichar c = [targetText characterAtIndex:i];
+            if (c > 0x0500) { // 检测到中/日/韩等宽字符
+                isAsianText = YES;
+                break;
+            }
+        }
+    }
+    
+    // 核心优化：如果只需查找英文/拉美文（如 Para ti），绝不加载重达数以百兆计的中文/日文神经网络模型！
+    if (isAsianText) {
+        request.recognitionLanguages = @[ @"zh-Hans", @"zh-Hant", @"ja-JP", @"ko-KR", @"en-US" ];
+    } else {
+        request.recognitionLanguages = @[ @"en-US", @"es-ES" ]; // 纯英文或西语
+    }
+    
+    request.usesLanguageCorrection = NO; // 关闭语义修正，加快速度且避免错误联想
 
     VNImageRequestHandler *handler =
         [[VNImageRequestHandler alloc] initWithCGImage:cgImage options:@{}];
@@ -381,9 +435,12 @@ static std::vector<DetBox> filterBoxes(const ncnn::Mat &pred, float scaleX,
     int w = src.cols;
     int h = src.rows;
     float ratio = 1.f;
-    int max_side = std::max(w, h);
-    if (max_side > RAW_SHORT_SIDE) {
-      ratio = (float)RAW_SHORT_SIDE / max_side;
+    
+    // [v1764] 修复小字漏扫问题：原先使用 max_side 限制在 640，导致竖屏 (例如 1170x2532) 被压成宽仅 295，状态栏小字彻底糊掉
+    // 现改为限制短边不能超过 RAW_SHORT_SIDE(640)，或者限制长边在 1280
+    int short_side = std::min(w, h);
+    if (short_side > RAW_SHORT_SIDE) {
+      ratio = (float)RAW_SHORT_SIDE / short_side;
     }
 
     int resize_w = ((int)(w * ratio) / 32) * 32;
@@ -515,7 +572,7 @@ static std::vector<DetBox> filterBoxes(const ncnn::Mat &pred, float scaleX,
   }
 
   // Fallback to Vision API
-  return [self recognizeTextWithVision:image];
+  return [self recognizeTextWithVision:image targetText:nil];
 }
 
 - (NSArray<FBOCRTextResult *> *)recognizeText:(UIImage *)image
@@ -556,11 +613,55 @@ static std::vector<DetBox> filterBoxes(const ncnn::Mat &pred, float scaleX,
   if (!text || !image)
     return nil;
 
-  NSArray<FBOCRTextResult *> *results = [self recognizeText:image];
+  // 1. 优先使用极速 Apple Native Vision 引擎（ANE 硬件加速，通常耗时 < 100ms）
+  if (@available(iOS 13.0, *)) {
+    NSArray<FBOCRTextResult *> *visionResults = [self recognizeTextWithVision:image targetText:text];
+    for (FBOCRTextResult *result in visionResults) {
+      NSString *cleanResult = [[result.text stringByReplacingOccurrencesOfString:@" " withString:@""] lowercaseString];
+      NSString *cleanTarget = [[text stringByReplacingOccurrencesOfString:@" " withString:@""] lowercaseString];
+      
+      if ([cleanResult containsString:cleanTarget]) {
+        NSLog(@"[FBOCREngine] ⚡️ Vision 极速命中: %@", result.text);
+        
+        // [v87修复]: 移除存在偏差的字符集内插运算（v86中的精确框选已经生效）。
+        // 关键：底层返回的是基于原图尺寸绝对物理像素 (Pixels)！而 WDA 点击使用的是逻辑坐标系 (Points)！
+        // 必须将其映射回 Point：
+        CGFloat screenScale = [UIScreen mainScreen].scale;
+        
+        CGFloat finalX = result.frame.origin.x / MAX(1.0, screenScale);
+        CGFloat finalY = result.frame.origin.y / MAX(1.0, screenScale);
+        CGFloat finalW = result.frame.size.width / MAX(1.0, screenScale);
+        CGFloat finalH = result.frame.size.height / MAX(1.0, screenScale);
+        
+        // 确保使用纯净的 target text，并包裹修正后的坐标系
+        result.text = text;
+        result.frame = CGRectMake(finalX, finalY, finalW, finalH);
+        return result;
+      }
+    }
+  }
 
-  for (FBOCRTextResult *result in results) {
-    if ([result.text containsString:text]) {
-      return result;
+  // 2. 如果高速的 Vision 没有命中，作为最后保障，启动深度的 NCNN 引擎（耗时 1-2s，适用于特殊字体和复杂排版框选）
+  if (_ncnnAvailable) {
+    NSLog(@"[FBOCREngine] ⚠️ Vision 未命中目标文字 '%@'，启动深度 NCNN 引擎进行兜底扫描...", text);
+    NSArray<FBOCRTextResult *> *ncnnResults = [self recognizeTextWithNCNN:image];
+    for (FBOCRTextResult *result in ncnnResults) {
+      NSString *cleanResult = [[result.text stringByReplacingOccurrencesOfString:@" " withString:@""] lowercaseString];
+      NSString *cleanTarget = [[text stringByReplacingOccurrencesOfString:@" " withString:@""] lowercaseString];
+      
+      if ([cleanResult containsString:cleanTarget]) {
+        NSLog(@"[FBOCREngine] 🐢 NCNN 兜底命中: %@", result.text);
+        
+        CGFloat screenScale = [UIScreen mainScreen].scale;
+        CGFloat finalX = result.frame.origin.x / MAX(1.0, screenScale);
+        CGFloat finalY = result.frame.origin.y / MAX(1.0, screenScale);
+        CGFloat finalW = result.frame.size.width / MAX(1.0, screenScale);
+        CGFloat finalH = result.frame.size.height / MAX(1.0, screenScale);
+        
+        result.text = text;
+        result.frame = CGRectMake(finalX, finalY, finalW, finalH);
+        return result;
+      }
     }
   }
 

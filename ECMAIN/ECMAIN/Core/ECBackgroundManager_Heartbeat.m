@@ -101,7 +101,7 @@ static NSString *const kECWDABundleID =
   }
 
   // >>> [v1742] 增强型 ECWDA 存活探测：10088 端口连续失败时强杀进程并重启 <<<
-  if (!_isEcwdaUpdating && !_isEcwdaRestarting) {
+  if (self.watchdogWdaEnabled && !_isEcwdaUpdating && !_isEcwdaRestarting) {
     NSURL *wdaUrl = [NSURL URLWithString:@"http://127.0.0.1:10088/status"];
     NSMutableURLRequest *wdaReq = [NSMutableURLRequest requestWithURL:wdaUrl];
     // [v1742] 超时时间 15 秒，缩短以更快发现子线程僵死（原 60 秒太慢）

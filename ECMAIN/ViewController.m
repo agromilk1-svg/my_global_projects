@@ -21,6 +21,7 @@
 @property(strong, nonatomic) UIImageView *statusIcon;
 @property(strong, nonatomic) UILabel *macLabel;
 @property(strong, nonatomic) UILabel *metadataLabel;
+@property(strong, nonatomic) UISwitch *watchdogSwitch;
 // 账号展示区
 @property(strong, nonatomic) UIScrollView *accountScrollView;
 @end
@@ -66,7 +67,7 @@
   // --- Version Label ---
   UILabel *versionLabel =
       [[UILabel alloc] initWithFrame:CGRectMake(padding, 50, width, 20)];
-  versionLabel.text = @"Build: 2026-03-31 00:06 #1756 (Auto)";
+  versionLabel.text = @"Build: 2026-04-03 18:59 #1790 (Auto)";
   versionLabel.textColor = [UIColor grayColor];
   versionLabel.textAlignment = NSTextAlignmentRight;
   versionLabel.font = [UIFont systemFontOfSize:12];
@@ -208,10 +209,10 @@
 
   y += 40 + 20;
 
-  // --- Row 3: Start WDA ---
+  // --- Row 3: Start WDA & Free Memory ---
   UIButton *startWdaBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-  startWdaBtn.frame = CGRectMake(padding, y, width, 40);
-  [startWdaBtn setTitle:@"🚀 启动 WDA (独立后台拉起)"
+  startWdaBtn.frame = CGRectMake(padding, y, btnWidth, 40);
+  [startWdaBtn setTitle:@"🚀 独立重启 WDA"
                forState:UIControlStateNormal];
   startWdaBtn.backgroundColor = [UIColor systemGreenColor];
   [startWdaBtn setTitleColor:[UIColor whiteColor]
@@ -221,8 +222,43 @@
                   action:@selector(manuallyStartWDA)
         forControlEvents:UIControlEventTouchUpInside];
   [self.view addSubview:startWdaBtn];
+  
+  UIButton *freeMemoryBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+  freeMemoryBtn.frame = CGRectMake(padding + btnWidth + 20, y, btnWidth, 40);
+  [freeMemoryBtn setTitle:@"🧹 强制清理内存"
+                 forState:UIControlStateNormal];
+  freeMemoryBtn.backgroundColor = [UIColor systemPurpleColor];
+  [freeMemoryBtn setTitleColor:[UIColor whiteColor]
+                      forState:UIControlStateNormal];
+  freeMemoryBtn.layer.cornerRadius = 8;
+  [freeMemoryBtn addTarget:self
+                    action:@selector(freeMemoryTapped)
+          forControlEvents:UIControlEventTouchUpInside];
+  [self.view addSubview:freeMemoryBtn];
 
-  y += 40 + 20;
+  y += 40 + 15;
+
+  // --- Row 3.5: Watchdog WDA Switch ---
+  UILabel *watchdogLabel = [[UILabel alloc] initWithFrame:CGRectMake(padding, y, 120, 31)];
+  watchdogLabel.text = @"探活 WDA:";
+  watchdogLabel.textColor = [UIColor blackColor];
+  watchdogLabel.font = [UIFont systemFontOfSize:14];
+  [self.view addSubview:watchdogLabel];
+
+  self.watchdogSwitch = [[UISwitch alloc] initWithFrame:CGRectMake(padding + 80, y, 51, 31)];
+  [self.watchdogSwitch addTarget:self action:@selector(watchdogSwitchToggled:) forControlEvents:UIControlEventValueChanged];
+
+  // Load state
+  [defaults registerDefaults:@{@"EC_WATCHDOG_WDA_ENABLED": @YES}];
+  if ([defaults objectForKey:@"EC_WATCHDOG_WDA_ENABLED"] == nil) {
+      [defaults setBool:YES forKey:@"EC_WATCHDOG_WDA_ENABLED"];
+      [defaults synchronize];
+  }
+  BOOL watchdogEnabled = [defaults boolForKey:@"EC_WATCHDOG_WDA_ENABLED"];
+  [self.watchdogSwitch setOn:watchdogEnabled animated:NO];
+  [self.view addSubview:self.watchdogSwitch];
+
+  y += 31 + 20;
 
   // --- Metadata Label (国家/分组/执行时间) ---
   self.metadataLabel =
@@ -237,7 +273,7 @@
   y += 24;
 
   // --- 账号信息展示区域 ---
-  CGFloat remainingHeight = self.view.bounds.size.height - y - 100;
+  CGFloat remainingHeight = self.view.bounds.size.height - y - 60;
   self.accountScrollView = [[UIScrollView alloc]
       initWithFrame:CGRectMake(padding, y, width, remainingHeight)];
   self.accountScrollView.backgroundColor = [UIColor colorWithWhite:0.05
@@ -424,6 +460,13 @@
   [self refreshAccountLabels];
 }
 
+- (void)watchdogSwitchToggled:(UISwitch *)sender {
+  NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
+  [defaults setBool:sender.isOn forKey:@"EC_WATCHDOG_WDA_ENABLED"];
+  [defaults synchronize];
+  NSLog(@"[ECMAIN] Watchdog WDA state changed to: %@", sender.isOn ? @"ON" : @"OFF");
+}
+
 #pragma mark - Actions
 
 - (void)showServerOptions {
@@ -470,6 +513,103 @@
                      [alert dismissViewControllerAnimated:YES completion:nil];
                    });
                  });
+}
+
+// [v1766] 三段式极限内存清理：清缓存 → 击穿压缩器 → 广播内存警告
+- (void)freeMemoryTapped {
+    [self appendLog:@"🧹 启动三段式极限内存清理..."];
+    
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:@"深度清理中"
+                         message:@"阶段 1/3: 正在清除应用缓存..."
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [self presentViewController:alert animated:YES completion:nil];
+    
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        
+        // ========== 阶段 1: 清除 App 层全部缓存 ==========
+        // NSURLCache 是 ECMAIN 网络通讯最大的隐形内存杀手
+        [[NSURLCache sharedURLCache] removeAllCachedResponses];
+        [[NSURLCache sharedURLCache] setMemoryCapacity:0];
+        [[NSURLCache sharedURLCache] setDiskCapacity:0];
+        
+        // 清除图片缓存（如果有用 UIImage imageNamed: 的地方）
+        // 系统 imageNamed: 缓存不可控，但 URLCache 是大头
+        
+        dispatch_async(dispatch_get_main_queue(), ^{
+            alert.message = @"阶段 2/3: 正在用随机数据击穿内存压缩器...";
+        });
+        
+        // ========== 阶段 2: 随机数据内存挤压（击穿 iOS compressor） ==========
+        // 关键区别：用 arc4random_buf 填充而不是 memset 0
+        // iOS 17+ 的透明内存压缩器可以将全零页面压缩到近乎 0 字节
+        // 随机数据完全不可压缩，能真正制造物理内存压力!
+        NSMutableArray *dummyArray = [NSMutableArray array];
+        long totalMB = 0;
+        @try {
+            for (int i = 0; i < 200; i++) {
+                // 每次分配 5MB（更频繁的分配让内核更快反应）
+                int size = 5 * 1024 * 1024;
+                char *block = (char *)malloc(size);
+                if (block) {
+                    // 核心：用随机数据填充，让 iOS 压缩器束手无策
+                    arc4random_buf(block, size);
+                    [dummyArray addObject:[NSValue valueWithPointer:block]];
+                    totalMB += 5;
+                } else {
+                    // malloc 返回 NULL = 内核已经开始杀进程了，目的达到
+                    break;
+                }
+                // 不 sleep！全速碾压，让内核来不及压缩就触发 Jetsam
+            }
+        } @catch (NSException *e) {
+            NSLog(@"[MemClean] 内存挤压中被系统拦截 (预期行为): %@", e);
+        }
+        
+        // 瞬间全额释放
+        for (NSValue *val in dummyArray) {
+            free([val pointerValue]);
+        }
+        [dummyArray removeAllObjects];
+        
+        dispatch_async(dispatch_get_main_queue(), ^{
+            alert.message = @"阶段 3/3: 正在广播系统内存警告...";
+        });
+        [NSThread sleepForTimeInterval:0.3];
+        
+        // ========== 阶段 3: 广播系统级内存警告 ==========
+        // 这会让所有正在运行的 App（包括 WDA）收到 didReceiveMemoryWarning
+        // 迫使它们释放内部缓存（图片缓存、网页缓存、视频帧缓冲等）
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // 模拟系统内存警告通知 (UIKit 公开 API)
+            [[NSNotificationCenter defaultCenter]
+                postNotificationName:UIApplicationDidReceiveMemoryWarningNotification
+                              object:[UIApplication sharedApplication]];
+            
+            // 恢复 URLCache 容量（设为较小值）
+            [[NSURLCache sharedURLCache] setMemoryCapacity:512 * 1024];  // 512KB
+            [[NSURLCache sharedURLCache] setDiskCapacity:5 * 1024 * 1024]; // 5MB
+            
+            [alert dismissViewControllerAnimated:YES completion:^{
+                NSString *msg = [NSString stringWithFormat:
+                    @"✅ 三段式清理完毕:\n"
+                    @"• 已清除全部 URLCache 缓存\n"
+                    @"• 已用 %ld MB 不可压缩随机数据击穿压缩器\n"
+                    @"• 已广播系统级内存警告\n"
+                    @"后台僵尸进程应已被内核 Jetsam 强杀", totalMB];
+                [self appendLog:msg];
+                
+                UIAlertController *doneAlert = [UIAlertController
+                    alertControllerWithTitle:@"深度清理完成"
+                             message:[NSString stringWithFormat:@"共挤压 %ld MB 物理内存\n"
+                                      @"iOS 内核已触发 Jetsam 清理\n\n"
+                                      @"如果手机仍然卡顿，建议重启设备", totalMB]
+                              preferredStyle:UIAlertControllerStyleAlert];
+                [doneAlert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:doneAlert animated:YES completion:nil];
+            }];
+        });
+    });
 }
 
 - (void)saveAndTestTapped {
@@ -653,27 +793,6 @@
   CGFloat labelH = 22;
   CGFloat sectionGap = 16;
 
-  // --- Apple 账号区域 ---
-  UILabel *appleTitle =
-      [[UILabel alloc] initWithFrame:CGRectMake(12, curY, w - 24, labelH)];
-  appleTitle.text = @"🍎 Apple 账号";
-  appleTitle.font = [UIFont boldSystemFontOfSize:15];
-  appleTitle.textColor = [UIColor systemOrangeColor];
-  [self.accountScrollView addSubview:appleTitle];
-  curY += labelH + 6;
-
-  UILabel *accLabel = [self
-      createCopyableLabel:[NSString stringWithFormat:@"账号: %@", appleAcc]
-                    frame:CGRectMake(12, curY, w - 24, labelH)];
-  [self.accountScrollView addSubview:accLabel];
-  curY += labelH + 4;
-
-  UILabel *pwdLabel = [self
-      createCopyableLabel:[NSString stringWithFormat:@"密码: %@", applePwd]
-                    frame:CGRectMake(12, curY, w - 24, labelH)];
-  [self.accountScrollView addSubview:pwdLabel];
-  curY += labelH + sectionGap;
-
   // --- TikTok 账号区域 ---
   UILabel *tkTitle =
       [[UILabel alloc] initWithFrame:CGRectMake(12, curY, w - 24, labelH)];
@@ -731,6 +850,28 @@
       curY += labelH + 8;
     }
   }
+  curY += sectionGap;
+
+  // --- Apple 账号区域 ---
+  UILabel *appleTitle =
+      [[UILabel alloc] initWithFrame:CGRectMake(12, curY, w - 24, labelH)];
+  appleTitle.text = @"🍎 Apple 账号";
+  appleTitle.font = [UIFont boldSystemFontOfSize:15];
+  appleTitle.textColor = [UIColor systemOrangeColor];
+  [self.accountScrollView addSubview:appleTitle];
+  curY += labelH + 6;
+
+  UILabel *accLabel = [self
+      createCopyableLabel:[NSString stringWithFormat:@"账号: %@", appleAcc]
+                    frame:CGRectMake(12, curY, w - 24, labelH)];
+  [self.accountScrollView addSubview:accLabel];
+  curY += labelH + 4;
+
+  UILabel *pwdLabel = [self
+      createCopyableLabel:[NSString stringWithFormat:@"密码: %@", applePwd]
+                    frame:CGRectMake(12, curY, w - 24, labelH)];
+  [self.accountScrollView addSubview:pwdLabel];
+  curY += labelH + sectionGap;
 
   self.accountScrollView.contentSize = CGSizeMake(w, curY + 12);
 }

@@ -56,7 +56,7 @@ JSExportAs(findImage, -(NSDictionary *)findImage : (NSString *)
 JSExportAs(getColorAt,
            -(NSString *)getColorAt : (NSNumber *)x y : (NSNumber *)y);
 JSExportAs(findMultiColor,
-           -(NSDictionary *)findMultiColor : (NSString *)colors);
+           -(NSDictionary *)findMultiColor : (NSString *)colors sim : (NSNumber *)sim);
 
 // Utils
 - (void)log:(NSString *)message;

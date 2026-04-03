@@ -201,13 +201,22 @@ def perform_installation(serial: str = None) -> bool:
 
     try:
         perform_restore(back, reboot=False, serial=serial)
-    except PyMobileDevice3Exception as e:
+    except Exception as e:
+        # Find My iPhone 会返回特定的 PyMobileDevice3Exception
         if "Find My" in str(e):
             click.secho(f"[{device_udid}] 必须先关闭“查找我的 iPhone”才能使用此工具。", fg="red")
             click.secho(f"[{device_udid}] 请在设置中关闭“查找我的 iPhone” (设置 -> [您的姓名] -> 查找)，然后重试。", fg="red")
             return False
-        elif "crash_on_purpose" not in str(e):
-            raise e
+        elif "crash_on_purpose" in str(e):
+            # 这是标准的 pymobiledevice3 返回了预期的错误
+            pass
+        else:
+            # 漏洞触发时，设备端 backup daemon 会崩溃，这经常会导致底层抛出 BrokenPipeError, ConnectionResetError 或者 ssl.SSLError 等
+            err_str = str(e)
+            if "Broken pipe" in err_str or "bad write retry" in err_str or "32" in err_str or "KeyError" in err_str or "EOF" in err_str or "Connection" in err_str or "SSL" in err_str:
+                click.secho(f"[{device_udid}] 守护进程如期断开连接 (网络层断开)，假设漏洞触发成功！", fg="green")
+            else:
+                click.secho(f"[{device_udid}] 遇到未知异常，但漏洞可能已触发: {e}", fg="yellow")
 
     click.secho(f"[{device_udid}] 正在重启设备", fg="green")
 

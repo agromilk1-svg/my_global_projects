@@ -18,8 +18,8 @@ const loginLoading = ref(false);
 // 角色判断
 const isSuperAdmin = computed(() => currentUser.value?.role === 'super_admin');
 
-// 带认证的 fetch 封装
-const authFetch = (url: string, options: any = {}) => {
+// 带认证的 fetch 封装（含全局 401 拦截）
+const authFetch = async (url: string, options: any = {}): Promise<Response> => {
   if (!options.headers) options.headers = {};
   if (authToken.value) {
     options.headers['Authorization'] = `Bearer ${authToken.value}`;
@@ -27,7 +27,13 @@ const authFetch = (url: string, options: any = {}) => {
   if (!options.headers['Content-Type'] && options.body && typeof options.body === 'string') {
     options.headers['Content-Type'] = 'application/json';
   }
-  return fetch(url, options);
+  const res = await fetch(url, options);
+  // 全局 401 拦截：Token 过期或无效时，自动登出并引导用户重新登录
+  if (res.status === 401 && isLoggedIn.value) {
+    doLogout();
+    alert('⚠️ 登录已过期，请重新登录');
+  }
+  return res;
 };
 
 // 登录
@@ -854,6 +860,8 @@ const copyText = (text: string) => {
 
 const isColorPickerMode = ref(false);
 const pickedColors = ref<{x: number, y: number, hex: string}[]>([]);
+const multiColorSim = ref<number>(0.9); // [v1778] 新增多点找色容差响应变量
+
 const multiColorJS = computed(() => {
   if (pickedColors.value.length === 0) return '';
   const base = pickedColors.value[0];
@@ -861,12 +869,28 @@ const multiColorJS = computed(() => {
   let offsets = [];
   for (let i = 1; i < pickedColors.value.length; i++) {
      const pt = pickedColors.value[i];
-     offsets.push(`${pt!.x - base!.x}|${pt!.y - base!.y}|${pt?.hex}`);
+     // [v1769] 修正 ECMAIN 多点找色协议规范：坐标内部用逗号，坐标之间用竖线
+     offsets.push(`${pt!.x - base!.x},${pt!.y - base!.y},${pt?.hex}`);
   }
   if (offsets.length > 0) {
-     colorStr += ',' + offsets.join(',');
+     colorStr += '|' + offsets.join('|');
   }
-  return `var pos = wda.findMultiColor("${colorStr}");\nif(pos && pos.found){\n   wda.tap(pos.x, pos.y);\n}`;
+  return `var pos = wda.findMultiColor("${colorStr}", ${multiColorSim.value});\nif(pos && pos.found){\n   wda.tap(pos.value.x, pos.value.y);\n}`;
+});
+
+const multiColorBounds = computed(() => {
+  if (pickedColors.value.length === 0) return { w: 0, h: 0 };
+  const base = pickedColors.value[0]!;
+  let maxX = 0;
+  let maxY = 0;
+  for (let i = 1; i < pickedColors.value.length; i++) {
+     const pt = pickedColors.value[i]!;
+     const ox = Math.abs(pt.x - base.x);
+     const oy = Math.abs(pt.y - base.y);
+     if (ox > maxX) maxX = ox;
+     if (oy > maxY) maxY = oy;
+  }
+  return { w: maxX, h: maxY };
 });
 const pickedImages = ref<{b64: string, w: number, h: number}[]>([]);
 
@@ -948,13 +972,14 @@ const configForm = ref({
    apple_password: '',
    tiktok_accounts: [] as {email: string, account: string, password: string}[],
    wifi_ssid: '',
-   wifi_password: ''
+   wifi_password: '',
+   watchdog_wda: false
 });
 
 const openConfigModal = async (dev: any) => {
     configEditingUdid.value = dev.udid;
     configEditingAdmin.value = dev.admin_username || '';
-    configForm.value = { ip: '', subnet: '', gateway: '', dns: '', vpnJson: '', device_no: '', country: '', group_name: '', exec_time: '', apple_account: '', apple_password: '', tiktok_accounts: [], wifi_ssid: '', wifi_password: '' };
+    configForm.value = { ip: '', subnet: '', gateway: '', dns: '', vpnJson: '', device_no: '', country: '', group_name: '', exec_time: '', apple_account: '', apple_password: '', tiktok_accounts: [], wifi_ssid: '', wifi_password: '', watchdog_wda: false };
     showConfigModal.value = true;
     try {
         const res = await authFetch(`${apiBase}/devices/${dev.udid}/config`);
@@ -991,6 +1016,7 @@ const openConfigModal = async (dev: any) => {
             }
             configForm.value.wifi_ssid = data.config.wifi_ssid || '';
             configForm.value.wifi_password = data.config.wifi_password || '';
+            configForm.value.watchdog_wda = !!data.config.watchdog_wda;
         }
     } catch (e) {
         console.error("加载配置失败", e);
@@ -1035,7 +1061,8 @@ const saveConfig = async () => {
                 apple_password: configForm.value.apple_password,
                 tiktok_accounts: JSON.stringify(configForm.value.tiktok_accounts),
                 wifi_ssid: configForm.value.wifi_ssid,
-                wifi_password: configForm.value.wifi_password
+                wifi_password: configForm.value.wifi_password,
+                watchdog_wda: configForm.value.watchdog_wda
             })
         });
         const ret = await res.json();
@@ -1047,6 +1074,23 @@ const saveConfig = async () => {
         }
     } catch(e) {
          alert("保存时发生网络异常：" + (e as Error).message);
+    }
+};
+
+const updateWatchdog = async (dev: any) => {
+    try {
+        const res = await authFetch(`${apiBase}/devices/${dev.udid}/config`, {
+            method: 'POST',
+            body: JSON.stringify({
+                watchdog_wda: dev.watchdog_wda
+            })
+        });
+        const ret = await res.json();
+        if (ret.status !== 'ok') {
+            alert("同步探活设置失败: " + ret.detail);
+        }
+    } catch(e) {
+        alert("网络异常，探活设置未同步：" + (e as Error).message);
     }
 };
 
@@ -1397,10 +1441,30 @@ const connectSmart = async () => {
       log(`✓ 保持预设的 [${connectionMode.value.toUpperCase()}] 链路，防串台机制生效。`);
   }
 
-  // [v1672.18] 优先级重构：必须先拿回逻辑分辨率，再渲染推流画面，确保坐标系从第一帧起就是对齐的
+  // [v1769] 优先级重构：先拿回逻辑分辨率，再渲染推流画面
+  // 增加重试容错：断开再重连时 WDA 可能仍被残留截图任务阻塞，需要等待其恢复
   if (selectedDevice.value) {
       log('📡 正在同步物理比例尺...');
-      await sendDeviceAction('probe_size').catch(() => {});
+      let probeOk = false;
+      // [v1779] WS 模式隧道建立需更多时间，增大重试参数
+      const maxAttempts = connectionMode.value === 'ws' ? 5 : 3;
+      const retryDelay = connectionMode.value === 'ws' ? 3000 : 2000;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+          try {
+              const result = await sendDeviceAction('probe_size');
+              if (result) {
+                  probeOk = true;
+                  break;
+              }
+          } catch (e) { /* 忽略 */ }
+          if (attempt < maxAttempts) {
+              log(`⏳ 比例尺探测第 ${attempt} 次未就绪，${retryDelay/1000}s 后重试...`);
+              await new Promise(r => setTimeout(r, retryDelay));
+          }
+      }
+      if (!probeOk) {
+          log('⚠️ 比例尺探测失败，将在推流建立后由后台自动校准。');
+      }
   }
 
   // [v1742.7] 连接群控扩展：同步唤醒所有从机矩阵
@@ -1444,6 +1508,12 @@ const selectDeviceAndConnect = (dev: any, resetPool = false) => {
     if (dev.can_usb || dev.wda_ready) {
         connectionMode.value = 'usb';
         log(`✓ 设备 [${dev.device_no || dev.udid.substring(0,8)}] 检测到 USB 连接，自动切换高速通路`);
+    } else if (dev.status === 'online' || dev.status === 'busy' || dev.can_ws) {
+        connectionMode.value = 'ws';
+        log(`✓ 设备 [${dev.device_no || dev.udid.substring(0,8)}] 云控模式，通过 WebSocket 中继通信`);
+    } else if (dev.ip || dev.local_ip) {
+        connectionMode.value = 'lan';
+        log(`✓ 设备 [${dev.device_no || dev.udid.substring(0,8)}] 使用内网直连通路`);
     }
     
     connectSmart();
@@ -2256,12 +2326,18 @@ const endWinDrag = () => {
   document.removeEventListener('mouseup', endWinDrag);
 };
 
+const consoleContainerRef = ref<HTMLElement | null>(null);
+
 const startWinResize = (e: MouseEvent) => {
   e.preventDefault();
   e.stopPropagation();
   deviceWin.value.isResizing = true;
-  deviceWin.value.dragStartX = e.clientX;
-  deviceWin.value.dragStartY = e.clientY;
+  
+  const scrollY = consoleContainerRef.value ? consoleContainerRef.value.scrollTop : 0;
+  const scrollX = consoleContainerRef.value ? consoleContainerRef.value.scrollLeft : 0;
+  
+  deviceWin.value.dragStartX = e.clientX + scrollX;
+  deviceWin.value.dragStartY = e.clientY + scrollY;
   deviceWin.value.initialW = deviceWin.value.w;
   deviceWin.value.initialH = deviceWin.value.h;
   document.addEventListener('mousemove', onWinResize);
@@ -2270,17 +2346,40 @@ const startWinResize = (e: MouseEvent) => {
 
 const onWinResize = (e: MouseEvent) => {
   if (!deviceWin.value.isResizing) return;
-  const dx = e.clientX - deviceWin.value.dragStartX;
-  const dy = e.clientY - deviceWin.value.dragStartY;
+  
+  const scrollY = consoleContainerRef.value ? consoleContainerRef.value.scrollTop : 0;
+  const scrollX = consoleContainerRef.value ? consoleContainerRef.value.scrollLeft : 0;
+  
+  const currentX = e.clientX + scrollX;
+  const currentY = e.clientY + scrollY;
+  
+  const dx = currentX - deviceWin.value.dragStartX;
+  const dy = currentY - deviceWin.value.dragStartY;
+  
   deviceWin.value.w = Math.max(300, deviceWin.value.initialW + dx);
   deviceWin.value.h = Math.max(400, deviceWin.value.initialH + dy);
+
+  // 边缘滚动跟随
+  if (consoleContainerRef.value) {
+     const rect = consoleContainerRef.value.getBoundingClientRect();
+     if (e.clientY > rect.bottom - 40) {
+         consoleContainerRef.value.scrollBy(0, 20);
+     } else if (e.clientY < rect.top + 40) {
+         consoleContainerRef.value.scrollBy(0, -20);
+     }
+  }
 };
 
 const endWinResize = () => {
   deviceWin.value.isResizing = false;
   document.removeEventListener('mousemove', onWinResize);
   document.removeEventListener('mouseup', endWinResize);
-  // syncCanvasSize(); // Assuming this function exists elsewhere and needs to be called
+  
+  // [v1778] 极速补偿调度：拉伸结束后立即让 DOM 渲染，然后同步物理画布
+  // 彻底避免控制台拉大后，底层点坐标运算使用旧的 canvas 高度导致的截断失效问题。
+  setTimeout(() => {
+     syncCanvasSize();
+  }, 50);
 };
 
 const selectedActionDoc = ref<any>(null);
@@ -2377,7 +2476,6 @@ const actionLibrary = [
   { label: '[启动APP] Launch', type: 'LAUNCH', desc: '透过底层 Springboard 唤死级激活并置顶 APP', usage: '直接靠底参启动目标分析软件，非表面物理点击', params: 'bundleId: 苹果内部识别身份包名(如 com.apple.Preferences)', example: 'var success = wda.launch("com.zhiliaoapp.musically");\nif(!success) wda.log("启动失败");' },
   { label: '[输入文本] Input', type: 'INPUT', desc: '强制为屏幕当前具有焦点(Focus)的元素填充串流', usage: '自动打字、高频灌水回复', params: 'text: 欲键入的字符信息组', example: 'wda.input("Hello Automation");' },
   { label: '[日志] Log', type: 'LOG', desc: '由主控台在后台截取并记录您的探针信号', usage: '用于排查排版复杂多线程宏到底走到了哪一步', params: 'message: 需要暴露并打印的字符/变量', example: 'wda.log("checkpoint checked");' },
-  { label: '[OCR点击] OCR Tap', type: 'OCR_TAP', desc: '驱动视觉识别引擎捕获字符串的实际物理映射并实施点击', usage: '攻克找不到绝对坐标的随机出现动态弹窗按钮', params: 'text: 确切期望匹配锁定的锚文本片段', example: 'wda.tapText("同意并继续");' },
   { label: '[找图] Find Image', type: 'FIND_IMAGE', desc: '向终端传递原色块矩阵进行比对识别计算中心坐标', usage: '精确锚点物料匹配、特征全屏扫描', params: 'template: 图片切割切片Base64流\nthreshold: 置信度容限率(浮点0~1, 默认0.8推荐)', example: 'var result = wda.findImage("BASE...64", 0.8);\nif(result && result.value && result.value.found) wda.log("找到位点");' },
   { label: '[找图点击] Find+Tap', type: 'FIND_IMAGE_TAP', desc: '集成了先搜图后抽取结果集中幅位移然后单击的高集宏', usage: '全自动无脑图像化按钮点击全链组件', params: 'template: 图像Base64\nthreshold: 匹配容限比(不填写默认0.8)', example: 'var res = wda.findImage("...", 0.8);\nif(res && res.value && res.value.found){\n   wda.tap(res.value.x + wda.randomInt(0, res.value.width || 0), res.value.y + wda.randomInt(0, res.value.height || 0));\n}' },
   { label: '[取色] Get Color', type: 'GET_COLOR', desc: '提取屏幕指定单像素针尖所在位置的原生特征色(Hex型)', usage: '探知并判断特定UI组件是否正处于高亮选中态', params: 'x, y: 所求像素的绝对位置投射', example: 'var res = wda.getColorAt(100, 200);\nif(res && res.value === "#FF0000") wda.log("红包来了");' },
@@ -2404,9 +2502,13 @@ const actionLibrary = [
 ];
 
 // [v1738] 追加动作：VPN 重连 + 全局弹窗
+// [v1763] 追加动作：OCR 相关能力
 actionLibrary.push(
   { label: '[🔗 重连VPN] Reconnect Last VPN', type: 'RECONNECT_VPN', desc: '自动连接上次使用过的 VPN 节点。如果设备上没有上次的连接记录则返回 false，不做任何操作', usage: '脚本开始前自动恢复 VPN 网络环境，无需手动指定节点', params: '无需传参（自动读取上次连接记录）', example: '// 自动重连上次的 VPN 节点\nvar ok = wda.connectProxy(\"\");\nif(ok) {\n    wda.log(\"VPN 重连成功（已恢复上次节点）\");\n} else {\n    wda.log(\"没有上次VPN连接记录，跳过\");\n}\nwda.sleep(3); // 等待隧道建立' },
-  { label: '[📢 全局弹窗] Show Alert', type: 'SHOW_ALERT', desc: '在 iOS 设备上弹出一个系统级 Alert 弹窗（标题 ECMAIN），包含自定义消息和一个 OK 按钮。脚本会暂停执行直到用户点击 OK（最长等待60秒后自动关闭）', usage: '脚本执行到关键节点时暂停提醒用户确认、调试时检查中间状态', params: 'message: 弹窗显示的消息文字', example: '// 在 iOS 设备上弹出提示\nwda.showAlert(\"脚本已执行完毕！请检查结果。\");\n\n// 也可以用于调试暂停\nwda.showAlert(\"即将开始下一轮操作，点击OK继续\");\nwda.log(\"用户已确认，继续执行...\");' }
+  { label: '[📢 全局弹窗] Show Alert', type: 'SHOW_ALERT', desc: '在 iOS 设备上弹出一个系统级 Alert 弹窗（标题 ECMAIN），包含自定义消息和一个 OK 按钮。脚本会暂停执行直到用户点击 OK（最长等待60秒后自动关闭）', usage: '脚本执行到关键节点时暂停提醒用户确认、调试时检查中间状态', params: 'message: 弹窗显示的消息文字', example: '// 在 iOS 设备上弹出提示\nwda.showAlert(\"脚本已执行完毕！请检查结果。\");\n\n// 也可以用于调试暂停\nwda.showAlert(\"即将开始下一轮操作，点击OK继续\");\nwda.log(\"用户已确认，继续执行...\");' },
+  { label: '[🔍 找字] Find Text', type: 'FIND_TEXT', desc: '使用 PaddleOCR 离线引擎对当前屏幕瞬时截图进行文字识别搜索。截图为瞬间定格帧，TikTok 等视频播放场景下不会受画面变化影响。底层有 10s 超时保护，不会卡死。', usage: '检测是否出现特定文字（如“关注”）以决定脚本分支', params: 'text: 目标文字（支持子串匹配）', example: '// 查找当前屏幕是否存在指定文字\nvar res = wda.findText(\"登录\");\nif (res && res.value && res.value.found) {\n    wda.log(\"找到文字: \" + JSON.stringify(res.value.result));\n    // res.value.result 包含: text, x, y, width, height, confidence\n    var r = res.value.result;\n    wda.tap(r.x + r.width / 2, r.y + r.height / 2);\n} else {\n    wda.log(\"未找到目标文字\");\n}' },
+  { label: '[🔍 找字点击] Tap Text', type: 'TAP_TEXT', desc: '先搜索页面指定文字，找到后自动点击其中心（封装函数）。同样基于定格流，无惧视频变化', usage: '一步到位点击屏幕上的文字按钮', params: 'text: 目标文字', example: 'var ok = wda.tapText(\"关注\");\nif (ok) {\n    wda.log(\"点击成功\");\n} else {\n    wda.log(\"找不到文字，放弃点击\");\n}' },
+  { label: '[🔍 全屏OCR] Full OCR', type: 'FULL_OCR', desc: '全量 OCR，返回所有可识别文字和块位置', usage: '复杂页面扫描', params: '无', example: 'var res = wda.ocr();\nif(res && res.value && res.value.texts) {\n    wda.log(\"共识别到: \" + res.value.texts.length + \" 块文字\");\n}' }
 );
 
 const handleActionClick = (act: any) => {
@@ -2452,8 +2554,14 @@ const clearQueue = () => {
 
 const disconnectDevice = () => {
   if (selectedDevice.value) {
-    // 仅清空推流地址和日志流，但保留 selectedDevice 不变 (锁定当前手机)，防止 fetchDevices 轮询导致串台
+    // [v1769] 斩首行动：主动下达止推令。彻底防止浏览器 <img> DOM 生命周期延迟导致 MJPEG 幽灵连接，从而堵塞下一次 probe_size
+    sendDeviceAction('STOP_ALL_STREAMS', {});
+    
+    // 清空推流地址，但保留 selectedDevice 不变 (锁定当前手机)
     streamUrl.value = '';
+    
+    // [v1769] 清除该设备的逻辑分辨率缓存，确保重连时走全新探测路径
+    delete deviceSizeMap.value[selectedDevice.value];
     
     // [v1742.9] 断开群控扩展：同步释放所有从机流
     if (isGroupControl.value) {
@@ -3357,6 +3465,7 @@ const handleImageUpload = (event: Event) => {
                  <th @click="sortBy('vpn_node')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">VPN 节点 <span v-if="sortKey==='vpn_node'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th @click="sortBy('admin_username')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">管理员 <span v-if="sortKey==='admin_username'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-default">任务状态</th>
+                 <th class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-default">探活</th>
                  <th @click="sortBy('last_heartbeat')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-right cursor-pointer hover:bg-gray-800 transition-colors">最后上线 <span v-if="sortKey==='last_heartbeat'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-default">操作</th>
               </tr>
@@ -3443,7 +3552,10 @@ const handleImageUpload = (event: Event) => {
                                 <span v-else-if="rpt.status === '执行完成' && !rpt.success" 
                                       class="text-[9px] bg-red-900/40 text-red-400 border border-red-800 px-1.5 py-0.5 rounded-full cursor-pointer hover:bg-red-700 hover:text-white transition-colors font-bold"
                                       @click="showTaskError(rpt)">❌ 查看错误日志</span>
-                                <div class="text-[8px] text-gray-600 font-mono">{{ rpt.time }}</div>
+                                <div class="flex items-center gap-1.5 justify-center">
+                                  <div class="text-[8px] text-gray-600 font-mono">{{ rpt.time }}</div>
+                                  <span v-if="rpt.duration" class="text-[8px] bg-gray-800 text-gray-400 border border-gray-700 px-1 py-0 rounded font-mono" title="任务执行耗时">⏱ {{ rpt.duration }}</span>
+                                </div>
                              </template>
                           </template>
                        </template>
@@ -3458,6 +3570,9 @@ const handleImageUpload = (event: Event) => {
                        </template>
                        <span v-if="!dev.task_report && !dev.task_status" class="text-gray-600 text-[10px]">无任务</span>
                     </div>
+                 </td>
+                 <td class="p-3 text-center">
+                    <el-switch size="small" v-model="dev.watchdog_wda" active-text="" inactive-text="" @change="updateWatchdog(dev)" />
                  </td>
                  <td class="p-3 text-gray-400 font-mono text-right text-[10px]">
                     {{ dev.last_heartbeat ? new Date(dev.last_heartbeat * 1000).toLocaleTimeString() : '---' }}
@@ -3479,10 +3594,10 @@ const handleImageUpload = (event: Event) => {
 
     <!-- 中间巨型工作区：控制台(原脚本引擎) -->
         <!-- =============== ⚡️ 控制台 =============== -->
-        <div v-if="activeTab === '⚡️ 控制台'" class="relative flex flex-col flex-1 overflow-auto bg-black bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-gray-900 via-gray-950 to-black p-0 custom-scrollbar">
+        <div v-if="activeTab === '⚡️ 控制台'" class="relative flex flex-col flex-1 overflow-auto bg-black bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-gray-900 via-gray-950 to-black p-0 custom-scrollbar" ref="consoleContainerRef">
       
       <!-- [上半区]: 控制台原主功能区 (精密动态对齐方案) -->
-      <div class="relative flex shrink-0 justify-start pl-[460px] pr-4 pb-4" :style="{ height: (deviceWin.h + deviceWin.y) + 'px', paddingTop: deviceWin.y + 'px' }">
+      <div class="relative flex shrink-0 justify-start pr-4 pb-4 transition-all duration-75" :style="{ height: (deviceWin.h + deviceWin.y) + 'px', paddingTop: deviceWin.y + 'px', paddingLeft: (deviceWin.x + deviceWin.w + 80) + 'px' }">
         <!-- 左：设备状态与光速屏幕投射及侧边实体按键融合区 (群控悬浮版) -->
         <div class="flex gap-2 shrink-0 absolute z-[100] shadow-2xl rounded-2xl"
              :style="{ left: deviceWin.x + 'px', top: deviceWin.y + 'px', width: deviceWin.w + 'px', height: deviceWin.h + 'px' }">
@@ -3620,10 +3735,10 @@ const handleImageUpload = (event: Event) => {
       </div>
 
       <!-- 右：三列工作流矩阵 -->
-      <div class="flex flex-1 gap-4 overflow-x-auto custom-scrollbar pb-2">
+      <div class="flex flex-1 gap-4 overflow-x-auto custom-scrollbar pb-2 items-start">
         
         <!-- 列1：原语库 -->
-        <div class="flex flex-col w-[260px] bg-gray-800 border border-gray-700 rounded-xl shadow-xl overflow-hidden flex-shrink-0">
+        <div class="flex flex-col w-[260px] h-[calc(100vh-140px)] bg-gray-800 border border-gray-700 rounded-xl shadow-xl overflow-hidden flex-shrink-0 sticky top-0">
            <div class="text-[11px] font-bold text-gray-300 p-3 border-b border-gray-700 bg-gray-900/80 flex items-center gap-2 tracking-widest uppercase">
               <span class="text-indigo-400">📦</span> 动作库
            </div>
@@ -3681,7 +3796,7 @@ const handleImageUpload = (event: Event) => {
         </div>
 
          <!-- 列3：黑客代码编译器面板 / 扩展功能 Tab -->
-          <div class="flex flex-col flex-1 bg-gray-800 border border-gray-700 rounded-xl shadow-xl overflow-hidden relative">
+          <div class="flex flex-col flex-1 h-[calc(100vh-140px)] bg-gray-800 border border-gray-700 rounded-xl shadow-xl overflow-hidden relative sticky top-0">
             <div class="flex text-[11px] font-bold text-gray-300 border-b border-gray-700 bg-gray-900/80 tracking-widest uppercase shrink-0">
               <div @click="activeRightTab = 'code'" :class="['px-4 py-3 cursor-pointer transition-colors border-b-2', activeRightTab === 'code' ? 'text-green-400 border-green-500 bg-gray-800' : 'text-gray-500 border-transparent hover:text-gray-300']">
                 <span class="mr-1">👨‍💻</span> 代码框
@@ -3737,20 +3852,29 @@ const handleImageUpload = (event: Event) => {
                          等待点击左侧图传捕获...
                       </div>
                       <div v-else class="flex flex-wrap gap-1.5">
-                         <div v-for="(color, idx) in pickedColors" :key="idx" class="flex items-center gap-1 bg-gray-800 pl-1 pr-2 py-1 rounded-sm border border-gray-700 group cursor-pointer hover:border-gray-500 transition-colors" :title="'点击复刻 ' + color.hex" @click="copyText(color.hex)">
-                            <div class="w-3 h-3 rounded-full border border-gray-900 shadow-inner" :style="{ backgroundColor: color.hex }"></div>
-                            <span class="text-[10px] font-mono text-gray-300 group-hover:text-white">{{ color.hex }}</span>
-                            <span class="text-[8px] text-gray-500 ml-1">({{color.x}},{{color.y}})</span>
+                         <div v-for="(color, idx) in pickedColors" :key="idx" class="flex items-center gap-1 bg-gray-800 pl-1 pr-2 py-1 rounded-sm border border-gray-700 group cursor-pointer hover:border-red-900 hover:bg-red-900/30 transition-all shadow-sm" title="点击删除该取色点" @click="pickedColors.splice(idx, 1)">
+                            <div class="w-3 h-3 rounded-full border border-gray-900 shadow-inner group-hover:opacity-50 transition-opacity" :style="{ backgroundColor: color.hex }"></div>
+                            <span class="text-[10px] font-mono text-gray-300 group-hover:text-red-400 decoration-red-500 group-hover:line-through">{{ color.hex }}</span>
+                            <span class="text-[8px] text-gray-500 ml-1 group-hover:text-red-900/50">({{color.x}},{{color.y}})</span>
                          </div>
                       </div>
                    </div>
                    <!-- 聚合宏产出 -->
-                   <div v-if="pickedColors.length > 0" class="mt-1 bg-black/40 border border-emerald-900/50 rounded p-1.5">
-                       <div class="text-[9px] text-emerald-400/70 mb-0.5 flex justify-between">
-                          <span>⚙️ 生成的多点找色宏</span>
-                          <span class="cursor-pointer hover:text-emerald-300" @click="copyText(multiColorJS)">[点击拷列]</span>
+                   <div v-if="pickedColors.length > 0" class="mt-1 bg-black/40 border border-emerald-900/50 rounded p-1.5 flex flex-col gap-1">
+                       <div class="text-[9px] text-emerald-400/70 mb-0 flex justify-between items-center">
+                          <span class="flex items-center gap-1">
+                             ⚙️ 生成的多点找色宏
+                             <span class="bg-emerald-900/50 text-emerald-200 px-1 rounded tag-text border border-emerald-800 border-opacity-30">
+                                宽: {{multiColorBounds.w}} 高: {{multiColorBounds.h}}
+                             </span>
+                          </span>
+                          <div class="flex items-center gap-1">
+                              <span class="text-[8px] text-gray-500">容差:</span>
+                              <input type="number" step="0.05" min="0" max="1" v-model.number="multiColorSim" class="w-12 bg-gray-900 border border-gray-700 text-[9px] rounded px-1 py-0.5 text-center text-emerald-300 outline-none" title="值越低包容度越高(0~1)">
+                              <span class="cursor-pointer hover:text-emerald-300 ml-1 font-bold" @click="copyText(multiColorJS)">[拷列]</span>
+                          </div>
                        </div>
-                       <textarea readonly class="w-full h-[40px] text-[8px] text-emerald-300 font-mono bg-transparent border-none resize-none custom-scrollbar select-text cursor-text focus:outline-none p-0 leading-tight" :value="multiColorJS" @click="copyText(multiColorJS)" title="点击即刻复印此宏"></textarea>
+                       <textarea readonly class="w-full h-[45px] text-[8px] text-emerald-300 font-mono bg-transparent border-none resize-none custom-scrollbar select-text cursor-text focus:outline-none p-0 leading-snug" :value="multiColorJS" @click="copyText(multiColorJS)" title="点击即刻复印此宏"></textarea>
                    </div>
                 </div>
                </div>              
@@ -4094,6 +4218,7 @@ const handleImageUpload = (event: Event) => {
                                   <span :class="['w-1.5 h-1.5 rounded-full shrink-0 shadow-[0_0_2px_currentColor]', dev.status === 'online' ? 'bg-green-500 text-green-500' : 'bg-gray-600 text-transparent']"></span>
                                   <span class="text-[10px] font-bold text-gray-300 tracking-wider truncate" :title="dev.udid">{{ dev.device_no || dev.udid.substring(0,6) }}</span>
                               </div>
+                              <el-switch size="small" v-model="dev.watchdog_wda" @change="updateWatchdog(dev)" />
                           </div>
  
                           <!-- 内容视窗 -->

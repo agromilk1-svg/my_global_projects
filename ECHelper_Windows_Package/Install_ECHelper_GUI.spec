@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('build_antigravity/IPA/echelper', 'build_antigravity/IPA'), ('web_control_center/backend/updates', 'web_control_center/backend/updates'), ('installer', 'installer'), ('device-support', 'device-support')]
+datas = [('build_antigravity/IPA/echelper', 'build_antigravity/IPA'), ('web_control_center/backend/updates', 'web_control_center/backend/updates'), ('installer', 'installer'), ('device-support', 'device-support'), ('ipa', 'ipa')]
 binaries = []
 hiddenimports = ['pymobiledevice3.services.mobilebackup2', 'pymobiledevice3.services.installation_proxy', 'pymobiledevice3.services.diagnostics', 'pymobiledevice3.services.afc', 'pymobiledevice3.services.syslog', 'pymobiledevice3.services.os_trace', 'PyQt5', 'PyQt5.QtCore', 'PyQt5.QtGui', 'PyQt5.QtWidgets']
 tmp_ret = collect_all('tidevice')

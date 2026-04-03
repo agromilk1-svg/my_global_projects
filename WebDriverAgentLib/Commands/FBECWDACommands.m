@@ -9,7 +9,9 @@
 #import <CommonCrypto/CommonDigest.h>
 #import <Photos/Photos.h>
 #import <Vision/Vision.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <XCTest/XCTest.h>
+#import "XCUIScreen.h"
 
 #import "FBConfiguration.h"
 #import "FBOCREngine.h"
@@ -18,6 +20,7 @@
 #import "FBRouteRequest.h"
 #import "FBRunLoopSpinner.h"
 #import "FBScreenshot.h"
+#import "FBScreenshotFallback.h"
 #import "FBSession.h"
 #import "FBTouchMonitor.h"
 #import "FBUnattachedAppLauncher.h"
@@ -48,64 +51,8 @@ static NSCache *_templateImageCache = nil;
   _templateImageCache = [[NSCache alloc] init];
   _templateImageCache.countLimit = 50; // 最多缓存 50 张模板
 
-  // 延迟 5 秒启动保活定时器，等待网络栈就绪 (从 10s 缩减)
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)),
-                 dispatch_get_main_queue(), ^{
-                   [self startEcmainKeepAliveTimer];
-                 });
-}
-
-+ (void)startEcmainKeepAliveTimer {
-  [NSTimer scheduledTimerWithTimeInterval:60.0
-                                  repeats:YES
-                                    block:^(NSTimer *_Nonnull timer) {
-                                      [self checkEcmainAlive];
-                                    }];
-  [self checkEcmainAlive];
-  NSLog(@"[ECWDA] 保活探测已启动: 每 60 秒检测 ECMAIN (127.0.0.1:8089)");
-}
-
-+ (void)checkEcmainAlive {
-  NSURL *url = [NSURL URLWithString:@"http://127.0.0.1:8089/ping"];
-  NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-  req.timeoutInterval = 30.0;
-  req.HTTPMethod = @"GET";
-
-  [[NSURLSession.sharedSession
-      dataTaskWithRequest:req
-        completionHandler:^(NSData *_Nullable data,
-                            NSURLResponse *_Nullable response,
-                            NSError *_Nullable error) {
-          NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
-          if (error || httpResp.statusCode == 0) {
-            _isEcmainOnline = NO;
-            NSLog(@"[ECWDA] ⚠️ ECMAIN 进程离线 (8089 端口无响应)");
-            NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-            if (now - _lastEcmainLaunchTime > 60.0) {
-              _lastEcmainLaunchTime = now;
-              dispatch_async(dispatch_get_main_queue(), ^{
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                             (int64_t)(2.0 * NSEC_PER_SEC)),
-                               dispatch_get_main_queue(), ^{
-                                 NSLog(@"[ECWDA] 🔄 正在尝试拉起 ECMAIN...");
-                                 // 优先使用后台启动方式（支持锁屏状态）
-                                 BOOL launched = [FBUnattachedAppLauncher
-                                     launchAppInBackgroundWithBundleId:@"com.ecmain.app"];
-                                 NSLog(@"[ECWDA] %@ ECMAIN 拉起结果",
-                                       launched ? @"✅" : @"❌");
-                               });
-              });
-            } else {
-              NSLog(@"[ECWDA] ⏳ 拉起冷却中 (距上次 %.0fs，需 60s)",
-                    now - _lastEcmainLaunchTime);
-            }
-          } else {
-            if (!_isEcmainOnline) {
-              NSLog(@"[ECWDA] ✅ ECMAIN 进程已恢复在线");
-            }
-            _isEcmainOnline = YES;
-          }
-        }] resume];
+  // [v1821] ECMAIN 保活已迁移至 XCUIDevice+FBHealthCheck.m
+  NSLog(@"[ECWDA] FBECWDACommands loaded (Template Cache initialized)");
 }
 
 + (BOOL)isEcmainOnline {
@@ -308,7 +255,7 @@ static NSCache *_templateImageCache = nil;
   dispatch_semaphore_t screenshotSema = dispatch_semaphore_create(0);
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     NSError *error = nil;
-    screenshotData = [FBScreenshot takeInOriginalResolutionWithQuality:2 error:&error];
+    screenshotData = [FBScreenshot takeInOriginalResolutionWithScreenID:[(NSNumber *)[[XCUIScreen mainScreen] valueForKey:@"displayID"] longLongValue] compressionQuality:1.0 uti:UTTypePNG timeout:10.0 error:&error];
     screenshotError = error;
     dispatch_semaphore_signal(screenshotSema);
   });
@@ -398,7 +345,7 @@ static NSCache *_templateImageCache = nil;
   dispatch_semaphore_t screenshotSema = dispatch_semaphore_create(0);
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     NSError *error = nil;
-    screenshotData = [FBScreenshot takeInOriginalResolutionWithQuality:2 error:&error];
+    screenshotData = [FBScreenshot takeInOriginalResolutionWithScreenID:[(NSNumber *)[[XCUIScreen mainScreen] valueForKey:@"displayID"] longLongValue] compressionQuality:1.0 uti:UTTypePNG timeout:10.0 error:&error];
     screenshotError = error;
     dispatch_semaphore_signal(screenshotSema);
   });
@@ -432,6 +379,16 @@ static NSCache *_templateImageCache = nil;
     startY = [region[@"y"] floatValue];
     endX = startX + [region[@"width"] floatValue];
     endY = startY + [region[@"height"] floatValue];
+  }
+
+  // [v1778.5] 计算多点找色的近似宽高度 bounding box
+  NSInteger maxOffsetX = 0;
+  NSInteger maxOffsetY = 0;
+  for (NSDictionary *offsetColor in offsetColors) {
+     NSInteger ox = [offsetColor[@"offsetX"] integerValue];
+     NSInteger oy = [offsetColor[@"offsetY"] integerValue];
+     if (abs((int)ox) > maxOffsetX) maxOffsetX = abs((int)ox);
+     if (abs((int)oy) > maxOffsetY) maxOffsetY = abs((int)oy);
   }
 
   CFDataRef pixelData =
@@ -494,14 +451,15 @@ static NSCache *_templateImageCache = nil;
 
       if (allMatch) {
         CFRelease(pixelData);
+        CGFloat scale = [UIScreen mainScreen].scale;
         return FBResponseWithObject(
-            @{@"x" : @(x), @"y" : @(y), @"found" : @YES});
+            @{@"x" : @(x / scale), @"y" : @(y / scale), @"width" : @(maxOffsetX / scale), @"height" : @(maxOffsetY / scale), @"found" : @YES});
       }
     }
   }
 
   CFRelease(pixelData);
-  return FBResponseWithObject(@{@"x" : @(-1), @"y" : @(-1), @"found" : @NO});
+  return FBResponseWithObject(@{@"x" : @(-1), @"y" : @(-1), @"width" : @0, @"height" : @0, @"found" : @NO});
 }
 
 + (id<FBResponsePayload>)handleCmpColor:(FBRouteRequest *)request {
@@ -522,7 +480,7 @@ static NSCache *_templateImageCache = nil;
   dispatch_semaphore_t screenshotSema = dispatch_semaphore_create(0);
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     NSError *error = nil;
-    screenshotData = [FBScreenshot takeInOriginalResolutionWithQuality:2 error:&error];
+    screenshotData = [FBScreenshot takeInOriginalResolutionWithScreenID:[(NSNumber *)[[XCUIScreen mainScreen] valueForKey:@"displayID"] longLongValue] compressionQuality:1.0 uti:UTTypePNG timeout:10.0 error:&error];
     screenshotError = error;
     dispatch_semaphore_signal(screenshotSema);
   });
@@ -589,7 +547,7 @@ static NSCache *_templateImageCache = nil;
   dispatch_semaphore_t screenshotSema = dispatch_semaphore_create(0);
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     NSError *error = nil;
-    screenshotData = [FBScreenshot takeInOriginalResolutionWithQuality:2 error:&error];
+    screenshotData = [FBScreenshot takeInOriginalResolutionWithScreenID:[(NSNumber *)[[XCUIScreen mainScreen] valueForKey:@"displayID"] longLongValue] compressionQuality:1.0 uti:UTTypePNG timeout:10.0 error:&error];
     screenshotError = error;
     dispatch_semaphore_signal(screenshotSema);
   });
@@ -649,8 +607,7 @@ static NSCache *_templateImageCache = nil;
 
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     NSError *error = nil;
-    screenshotData = [FBScreenshot takeInOriginalResolutionWithQuality:2
-                                                                 error:&error];
+    screenshotData = [FBScreenshot takeInOriginalResolutionWithScreenID:[(NSNumber *)[[XCUIScreen mainScreen] valueForKey:@"displayID"] longLongValue] compressionQuality:1.0 uti:UTTypePNG timeout:10.0 error:&error];
     screenshotError = error;
     dispatch_semaphore_signal(sema);
   });
@@ -704,28 +661,50 @@ static NSCache *_templateImageCache = nil;
                               traceback:nil]);
   }
 
-  // 防卡死：截图超时保护（与 handleFindImage 一致）
+  // [v79] 性能埋点：记录截图起始时间
+  CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
+
+  // [v79] 核心修复：优先使用 IOSurface 物理显存直读（不走 testmanagerd，不受动画卡顿影响）
   __block NSData *screenshotData = nil;
   __block NSError *screenshotError = nil;
-  dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+  
+  NSError *fallbackError = nil;
+  screenshotData = [FBScreenshotFallback takeScreenshotWithCompressionQuality:0.9 error:&fallbackError];
+  
+  CFAbsoluteTime t1 = CFAbsoluteTimeGetCurrent();
+  
+  if (screenshotData) {
+    NSLog(@"[Perf] 🚀 findText 取图 (IOSurface 物理直读) 耗时: %.2f ms, 数据量: %lu bytes",
+          (t1 - t0) * 1000.0, (unsigned long)screenshotData.length);
+  } else {
+    // 降级回 XCTest 通道（会触发 Idleness 检测，可能卡 8 秒）
+    NSLog(@"[Perf] ⚠️ IOSurface 取图失败: %@, 降级至 XCTest 通道", fallbackError);
+    
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+      NSError *error = nil;
+      screenshotData = [FBScreenshot takeInOriginalResolutionWithScreenID:[(NSNumber *)[[XCUIScreen mainScreen] valueForKey:@"displayID"] longLongValue]
+                                                       compressionQuality:1.0
+                                                                      uti:UTTypePNG
+                                                                  timeout:10.0
+                                                                    error:&error];
+      screenshotError = error;
+      dispatch_semaphore_signal(sema);
+    });
 
-  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-    NSError *error = nil;
-    screenshotData = [FBScreenshot takeInOriginalResolutionWithQuality:2
-                                                                 error:&error];
-    screenshotError = error;
-    dispatch_semaphore_signal(sema);
-  });
+    long waitResult = dispatch_semaphore_wait(
+        sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)));
 
-  long waitResult = dispatch_semaphore_wait(
-      sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)));
-
-  if (waitResult != 0) {
-    NSLog(@"[ECWDA] ⚠️ findText 截图超时(10s)，TikTok 等高负载场景可能阻塞了 "
-          @"XCTest IPC");
-    return FBResponseWithStatus([FBCommandStatus
-        unknownErrorWithMessage:@"Screenshot timed out (10s)"
-                      traceback:nil]);
+    t1 = CFAbsoluteTimeGetCurrent();
+    NSLog(@"[Perf] ⏱️ findText 取图 (XCTest 降级) 耗时: %.2f ms", (t1 - t0) * 1000.0);
+    
+    if (waitResult != 0) {
+      NSLog(@"[ECWDA] ⚠️ findText 截图超时(10s)，TikTok 等高负载场景可能阻塞了 "
+            @"XCTest IPC");
+      return FBResponseWithStatus([FBCommandStatus
+          unknownErrorWithMessage:@"Screenshot timed out (10s)"
+                        traceback:nil]);
+    }
   }
 
   if (!screenshotData) {
@@ -733,14 +712,16 @@ static NSCache *_templateImageCache = nil;
   }
   UIImage *screenshot = [UIImage imageWithData:screenshotData];
 
+  CFAbsoluteTime t2 = CFAbsoluteTimeGetCurrent();
   FBOCRTextResult *result = [[FBOCREngine sharedEngine] findText:text
                                                          inImage:screenshot];
+  CFAbsoluteTime t3 = CFAbsoluteTimeGetCurrent();
+  NSLog(@"[Perf] 🔍 findText OCR 推理耗时: %.2f ms (解码+识别+匹配)", (t3 - t2) * 1000.0);
+  NSLog(@"[Perf] 📊 findText 总耗时: %.2f ms (取图 %.0f + OCR %.0f)",
+        (t3 - t0) * 1000.0, (t1 - t0) * 1000.0, (t3 - t2) * 1000.0);
 
   if (result) {
-    CGFloat scale = [UIScreen mainScreen].scale;
-    CGRect f = result.frame;
-    result.frame = CGRectMake(f.origin.x / scale, f.origin.y / scale,
-                              f.size.width / scale, f.size.height / scale);
+    // [v1769-fix] 不再重复除以屏幕缩放比 (scale)，因为底层 FBOCREngine 中已映射转换至 Point 体系。不再引发双重缩放偏差。
     return FBResponseWithObject(
         @{@"found" : @YES, @"result" : [result toDictionary]});
   } else {
@@ -796,8 +777,7 @@ static NSCache *_templateImageCache = nil;
 
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     NSError *error = nil;
-    screenshotData = [FBScreenshot takeInOriginalResolutionWithQuality:2
-                                                                 error:&error];
+    screenshotData = [FBScreenshot takeInOriginalResolutionWithScreenID:[(NSNumber *)[[XCUIScreen mainScreen] valueForKey:@"displayID"] longLongValue] compressionQuality:1.0 uti:UTTypePNG timeout:10.0 error:&error];
     screenshotError = error;
     dispatch_semaphore_signal(screenshotSema);
   });
@@ -868,6 +848,8 @@ static NSCache *_templateImageCache = nil;
 
 // ====== 纯模板匹配（不截图，由调用方提供截图 base64，防止 XCTest IPC 卡死） ======
 + (id<FBResponsePayload>)handleMatchImage:(FBRouteRequest *)request {
+  @autoreleasepool { // 强制释放截图 Base64 等大对象，防止内存堆积
+
   NSString *screenshotBase64 = request.arguments[@"screenshot"];
   NSString *templateBase64 = request.arguments[@"template"];
   NSNumber *threshold = request.arguments[@"threshold"] ?: @(0.8);
@@ -878,11 +860,15 @@ static NSCache *_templateImageCache = nil;
                               traceback:nil]);
   }
 
-  // 解码截图
-  NSData *screenshotData = [[NSData alloc]
-      initWithBase64EncodedString:screenshotBase64
-                          options:NSDataBase64DecodingIgnoreUnknownCharacters];
-  UIImage *screenshot = [UIImage imageWithData:screenshotData];
+  // 解码截图（用完即释放）
+  UIImage *screenshot = nil;
+  {
+    NSData *screenshotData = [[NSData alloc]
+        initWithBase64EncodedString:screenshotBase64
+                            options:NSDataBase64DecodingIgnoreUnknownCharacters];
+    screenshot = [UIImage imageWithData:screenshotData];
+    // screenshotData 在此作用域结束后被 ARC 立刻释放，节省 ~3-5MB
+  }
   if (!screenshot) {
     return FBResponseWithStatus([FBCommandStatus
         invalidArgumentErrorWithMessage:@"Invalid screenshot image data"
@@ -945,13 +931,13 @@ static NSCache *_templateImageCache = nil;
       finalRes[@"height"] = @([result[@"height"] doubleValue] / scale);
     }
     return FBResponseWithObject(@{@"value" : finalRes});
-  } else if (result) {
-    return FBResponseWithObject(@{@"value" : result});
   } else {
     return FBResponseWithStatus([FBCommandStatus
         unknownErrorWithMessage:@"Match image failed"
                       traceback:nil]);
   }
+
+  } // @autoreleasepool
 }
 
 #pragma mark - Touch Actions
@@ -1094,27 +1080,31 @@ static NSCache *_templateImageCache = nil;
   }
 
   // 防卡死重构：废弃 Accessibility Tree 遍历，改用 OCR 截图路径
-  // 原方案 fb_descendantsMatchingPredicate 在 TikTok 等复杂 UI
-  // 中会遍历数千节点，耗时 10-30s 导致冻屏
+  // 优先使用 IOSurface 物理显存直读，完全免疫视频动画带来的 XCTest IPC 死锁阻塞
   __block NSData *screenshotData = nil;
   __block NSError *screenshotError = nil;
-  dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+  
+  NSError *fallbackError = nil;
+  screenshotData = [FBScreenshotFallback takeScreenshotWithCompressionQuality:0.9 error:&fallbackError];
 
-  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-    NSError *error = nil;
-    screenshotData = [FBScreenshot takeInOriginalResolutionWithQuality:2
-                                                                 error:&error];
-    screenshotError = error;
-    dispatch_semaphore_signal(sema);
-  });
+  if (!screenshotData) {
+    NSLog(@"[ECWDA] ⚠️ clickText IOSurface 取图失败: %@, 降级至 XCTest 慢速通道", fallbackError);
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+      NSError *error = nil;
+      screenshotData = [FBScreenshot takeInOriginalResolutionWithScreenID:[(NSNumber *)[[XCUIScreen mainScreen] valueForKey:@"displayID"] longLongValue] compressionQuality:1.0 uti:UTTypePNG timeout:10.0 error:&error];
+      screenshotError = error;
+      dispatch_semaphore_signal(sema);
+    });
 
-  long waitResult = dispatch_semaphore_wait(
-      sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)));
+    long waitResult = dispatch_semaphore_wait(
+        sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)));
 
-  if (waitResult != 0) {
-    NSLog(@"[ECWDA] ⚠️ clickText 截图超时(10s)");
-    return FBResponseWithObject(
-        @{@"success" : @NO, @"message" : @"Screenshot timed out (10s)"});
+    if (waitResult != 0) {
+      NSLog(@"[ECWDA] ⚠️ clickText 降级截图超时(10s)");
+      return FBResponseWithObject(
+          @{@"success" : @NO, @"message" : @"Screenshot timed out (10s)"});
+    }
   }
 
   if (!screenshotData) {
@@ -1130,12 +1120,9 @@ static NSCache *_templateImageCache = nil;
         @{@"success" : @NO, @"message" : @"Text not found via OCR"});
   }
 
-  // 计算文字中心坐标并点击
-  CGFloat scale = [UIScreen mainScreen].scale;
-  CGFloat centerX =
-      (result.frame.origin.x + result.frame.size.width / 2.0) / scale;
-  CGFloat centerY =
-      (result.frame.origin.y + result.frame.size.height / 2.0) / scale;
+  // 计算文字中心坐标并点击 (坐标已在底层处理为 Point，切勿双重除以 Scale)
+  CGFloat centerX = result.frame.origin.x + result.frame.size.width / 2.0;
+  CGFloat centerY = result.frame.origin.y + result.frame.size.height / 2.0;
 
   CGPoint targetPoint = CGPointMake(centerX, centerY);
   XCPointerEventPath *path =
@@ -1429,7 +1416,7 @@ static NSCache *_templateImageCache = nil;
 + (id<FBResponsePayload>)handleQRCodeScan:(FBRouteRequest *)request {
   NSError *error;
   NSData *screenshotData =
-      [FBScreenshot takeInOriginalResolutionWithQuality:2 error:&error];
+      [FBScreenshot takeInOriginalResolutionWithScreenID:[(NSNumber *)[[XCUIScreen mainScreen] valueForKey:@"displayID"] longLongValue] compressionQuality:1.0 uti:UTTypePNG timeout:10.0 error:&error];
   if (!screenshotData) {
     return FBResponseWithUnknownError(error);
   }
@@ -1853,7 +1840,7 @@ static NSCache *_templateImageCache = nil;
 + (id<FBResponsePayload>)handleSaveToAlbum:(FBRouteRequest *)request {
   NSError *error;
   NSData *screenshotData =
-      [FBScreenshot takeInOriginalResolutionWithQuality:2 error:&error];
+      [FBScreenshot takeInOriginalResolutionWithScreenID:[(NSNumber *)[[XCUIScreen mainScreen] valueForKey:@"displayID"] longLongValue] compressionQuality:1.0 uti:UTTypePNG timeout:10.0 error:&error];
   if (!screenshotData) {
     return FBResponseWithUnknownError(error);
   }

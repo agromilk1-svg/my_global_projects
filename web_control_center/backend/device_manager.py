@@ -84,6 +84,7 @@ class PortPool:
 
 class DeviceState:
     def __init__(self, display_id, hardware_udid, wda_port, mjpeg_port, script_port):
+        self.sync_lock = threading.Lock()  # [v1780] 线程同步锁 (健康检查与主逻辑状态一致性)
         self.udid = display_id          # 逻辑 ID (SerialNumber, 如 8ded2e7b)
         self.hardware_udid = hardware_udid  # 物理 ID (40-char UDID)
         self.wda_port = wda_port
@@ -148,6 +149,9 @@ class DeviceManager:
         self._rebuild_locks = {}
         self._rebuild_lock_guard = threading.Lock()
         
+        # 物理断开防抖计数器
+        self.disconnect_counters = {}
+        
         self.running = True
         self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self.monitor_thread.start()
@@ -205,10 +209,19 @@ class DeviceManager:
                 current_managed_hw_udids = list(self.hardware_to_logical.keys())
                 for hw_udid in current_managed_hw_udids:
                     if hw_udid not in online_hardware_udids:
-                        logical_id = self.hardware_to_logical[hw_udid]
-                        logger.info(f"设备物理断开: {hw_udid} (SN:{logical_id})")
-                        self._teardown_device(logical_id)
-                        del self.hardware_to_logical[hw_udid]
+                        self.disconnect_counters[hw_udid] = self.disconnect_counters.get(hw_udid, 0) + 1
+                        if self.disconnect_counters[hw_udid] >= 3:
+                            logical_id = self.hardware_to_logical[hw_udid]
+                            logger.info(f"设备物理断开确认: {hw_udid} (SN:{logical_id})")
+                            self._teardown_device(logical_id)
+                            del self.hardware_to_logical[hw_udid]
+                            del self.disconnect_counters[hw_udid]
+                        else:
+                            logger.warning(f"设备 {hw_udid} 疑似物理闪断 (防抖计数: {self.disconnect_counters[hw_udid]}/3)")
+                    else:
+                        if hw_udid in self.disconnect_counters:
+                            logger.info(f"设备 {hw_udid} 物理连接已恢复，取消防抖断开")
+                            del self.disconnect_counters[hw_udid]
 
             except Exception as e:
                 logger.error(f"设备监控循环异常: {e}")
@@ -307,20 +320,23 @@ class DeviceManager:
             
             try:
                 if req_lib.get(f"http://127.0.0.1:{state.wda_port}/status", timeout=2).status_code == 200:
-                    state.is_wda_ready = True
+                    with state.sync_lock:
+                        state.is_wda_ready = True
             except:
                 pass
             try:
                 test_payload = {"type": "SCRIPT", "payload": "// Probe"}
                 if req_lib.post(f"http://127.0.0.1:{state.script_port}/task", json=test_payload, timeout=2.5).status_code == 200:
-                    state.is_ecmain_ready = True
+                    with state.sync_lock:
+                        state.is_ecmain_ready = True
             except:
                 pass
-            
-            if state.is_wda_ready and state.is_ecmain_ready:
-                state.last_health_ok = time.time()
-                logger.info(f"设备 {logical_id} 隧道全部就绪 (WDA:{state.wda_port})")
-                break
+
+            with state.sync_lock:
+                if state.is_wda_ready and state.is_ecmain_ready:
+                    state.last_health_ok = time.time()
+                    logger.info(f"设备 {logical_id} 隧道全部就绪 (WDA:{state.wda_port})")
+                    break
         
         # 常态巡检阶段
         while self.running:
@@ -347,10 +363,12 @@ class DeviceManager:
             )
             
             if wda_ok and relay_alive:
-                state.is_wda_ready = True
-                state.last_health_ok = time.time()
+                with state.sync_lock:
+                    state.is_wda_ready = True
+                    state.last_health_ok = time.time()
             else:
-                state.is_wda_ready = False
+                with state.sync_lock:
+                    state.is_wda_ready = False
                 elapsed = time.time() - state.last_health_ok
                 
                 if elapsed > self.HEALTH_TIMEOUT:

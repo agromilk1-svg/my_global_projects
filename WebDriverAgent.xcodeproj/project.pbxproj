@@ -520,6 +520,10 @@
 		71C9EAAD25E8415A00470CD8 /* FBScreenshot.h in Headers */ = {isa = PBXBuildFile; fileRef = 71C9EAAA25E8415A00470CD8 /* FBScreenshot.h */; };
 		71C9EAAE25E8415A00470CD8 /* FBScreenshot.m in Sources */ = {isa = PBXBuildFile; fileRef = 71C9EAAB25E8415A00470CD8 /* FBScreenshot.m */; };
 		71C9EAAF25E8415A00470CD8 /* FBScreenshot.m in Sources */ = {isa = PBXBuildFile; fileRef = 71C9EAAB25E8415A00470CD8 /* FBScreenshot.m */; };
+		E8877FA80D3A4AEA92525BF0 /* FBScreenshotFallback.h in Headers */ = {isa = PBXBuildFile; fileRef = F547D075102B4C39BA320748 /* FBScreenshotFallback.h */; };
+		73F270D54596409094BEFBAA /* FBScreenshotFallback.h in Headers */ = {isa = PBXBuildFile; fileRef = F547D075102B4C39BA320748 /* FBScreenshotFallback.h */; };
+		7975F962148240C6A0FCC957 /* FBScreenshotFallback.m in Sources */ = {isa = PBXBuildFile; fileRef = 58D8782610D148B7A3157A1B /* FBScreenshotFallback.m */; };
+		7F7B3692A73E4FF0B517FFEE /* FBScreenshotFallback.m in Sources */ = {isa = PBXBuildFile; fileRef = 58D8782610D148B7A3157A1B /* FBScreenshotFallback.m */; };
 		71D04DC825356C43008A052C /* XCUIElement+FBCaching.h in Headers */ = {isa = PBXBuildFile; fileRef = 71D04DC625356C43008A052C /* XCUIElement+FBCaching.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		71D04DC925356C43008A052C /* XCUIElement+FBCaching.h in Headers */ = {isa = PBXBuildFile; fileRef = 71D04DC625356C43008A052C /* XCUIElement+FBCaching.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		71D04DCA25356C43008A052C /* XCUIElement+FBCaching.m in Sources */ = {isa = PBXBuildFile; fileRef = 71D04DC725356C43008A052C /* XCUIElement+FBCaching.m */; };
@@ -1152,6 +1156,8 @@
 		71C8E55025399A6B008572C1 /* XCUIApplication+FBQuiescence.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "XCUIApplication+FBQuiescence.m"; sourceTree = "<group>"; };
 		71C9EAAA25E8415A00470CD8 /* FBScreenshot.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FBScreenshot.h; sourceTree = "<group>"; };
 		71C9EAAB25E8415A00470CD8 /* FBScreenshot.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = FBScreenshot.m; sourceTree = "<group>"; };
+		F547D075102B4C39BA320748 /* FBScreenshotFallback.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FBScreenshotFallback.h; sourceTree = "<group>"; };
+		58D8782610D148B7A3157A1B /* FBScreenshotFallback.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = FBScreenshotFallback.m; sourceTree = "<group>"; };
 		71D04DC625356C43008A052C /* XCUIElement+FBCaching.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "XCUIElement+FBCaching.h"; sourceTree = "<group>"; };
 		71D04DC725356C43008A052C /* XCUIElement+FBCaching.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "XCUIElement+FBCaching.m"; sourceTree = "<group>"; };
 		71D3B3D3267FC7260076473D /* XCUIElement+FBResolve.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "XCUIElement+FBResolve.h"; sourceTree = "<group>"; };
@@ -2083,6 +2089,8 @@
 				715AFAC01FFA29180053896D /* FBScreen.m */,
 				71C9EAAA25E8415A00470CD8 /* FBScreenshot.h */,
 				71C9EAAB25E8415A00470CD8 /* FBScreenshot.m */,
+				F547D075102B4C39BA320748 /* FBScreenshotFallback.h */,
+				58D8782610D148B7A3157A1B /* FBScreenshotFallback.m */,
 				641EE70A2240CE2D00173FCB /* FBTVNavigationTracker.h */,
 				64B26509228CE4FF002A5025 /* FBTVNavigationTracker-Private.h */,
 				641EE70D2240CE4800173FCB /* FBTVNavigationTracker.m */,
@@ -2598,6 +2606,7 @@
 				641EE6AD2240C5CA00173FCB /* XCTWaiterManagement-Protocol.h in Headers */,
 				641EE6AF2240C5CA00173FCB /* XCTestContext.h in Headers */,
 				71C9EAAD25E8415A00470CD8 /* FBScreenshot.h in Headers */,
+				73F270D54596409094BEFBAA /* FBScreenshotFallback.h in Headers */,
 				641EE6B12240C5CA00173FCB /* XCTWaiterDelegate-Protocol.h in Headers */,
 				641EE6B22240C5CA00173FCB /* _XCTestExpectationImplementation.h in Headers */,
 				641EE6B32240C5CA00173FCB /* XCAXClient_iOS.h in Headers */,
@@ -2791,6 +2800,7 @@
 				EE35AD5F1E3B77D600A02D78 /* XCTRunnerAutomationSession.h in Headers */,
 				13DE7A4F287C46BB003243C6 /* FBXCElementSnapshot.h in Headers */,
 				71C9EAAC25E8415A00470CD8 /* FBScreenshot.h in Headers */,
+				E8877FA80D3A4AEA92525BF0 /* FBScreenshotFallback.h in Headers */,
 				EE35AD371E3B77D600A02D78 /* XCSourceCodeTreeNodeEnumerator.h in Headers */,
 				EE158AB01CBD456F00A3E3F0 /* XCUIElement+FBIsVisible.h in Headers */,
 				71414ED42670A1EE003A8C5D /* LRUCache.h in Headers */,
@@ -3374,6 +3384,7 @@
 				641EE5E02240C5CA00173FCB /* FBTCPSocket.m in Sources */,
 				641EE5E12240C5CA00173FCB /* FBErrorBuilder.m in Sources */,
 				71C9EAAF25E8415A00470CD8 /* FBScreenshot.m in Sources */,
+				7F7B3692A73E4FF0B517FFEE /* FBScreenshotFallback.m in Sources */,
 				641EE5E22240C5CA00173FCB /* XCUIElement+FBClassChain.m in Sources */,
 				13DE7A4C287C4005003243C6 /* FBXCDeviceEvent.m in Sources */,
 				641EE5E32240C5CA00173FCB /* NSExpression+FBFormat.m in Sources */,
@@ -3564,6 +3575,7 @@
 				71F5BE25252E576C00EE9EBA /* XCUIElement+FBSwiping.m in Sources */,
 				EE158AE51CBD456F00A3E3F0 /* FBSession.m in Sources */,
 				71C9EAAE25E8415A00470CD8 /* FBScreenshot.m in Sources */,
+				7975F962148240C6A0FCC957 /* FBScreenshotFallback.m in Sources */,
 				E444DCB224913C220060D7EB /* RoutingConnection.m in Sources */,
 				EE158AC11CBD456F00A3E3F0 /* FBFindElementCommands.m in Sources */,
 				EE7E271D1D06C69F001BEC7B /* FBDebugLogDelegateDecorator.m in Sources */,

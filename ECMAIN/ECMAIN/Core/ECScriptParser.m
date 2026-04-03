@@ -838,23 +838,42 @@ static NSString *gActiveWDASessionId = nil;
 - (BOOL)connectProxy:(NSString *)keyword {
   NSLog(@"[ECScriptEngine] Executing: connectProxy %@", keyword);
   [self log:[NSString stringWithFormat:@"尝试连接代理: %@",
-                                       keyword ?: @"(重新连接上次节点)"]];
+                                       (keyword && keyword.length > 0) ? keyword : @"(寻找默认节点)"]];
 
   if (!keyword || keyword.length == 0) {
-    NSString *lastNodeID = [[ECVPNConfigManager sharedManager] activeNodeID];
+    ECVPNConfigManager *mgr = [ECVPNConfigManager sharedManager];
+    NSString *lastNodeID = [mgr activeNodeID];
+    NSDictionary *targetNode = nil;
+    
+    // 1. 先尝试获取上一次记录的活跃节点
     if (lastNodeID) {
-      NSDictionary *lastNode =
-          [[ECVPNConfigManager sharedManager] nodeWithID:lastNodeID];
-      if (lastNode) {
-        NSString *matchName = lastNode[@"name"] ?: lastNode[@"remark"] ?: @"Unknown";
-        [self log:[NSString stringWithFormat:@"✅ 找到上次使用的节点: %@",
-                                             matchName]];
-        [[ECBackgroundManager sharedManager] connectVPNWithConfig:lastNode];
-        return YES;
+      targetNode = [mgr nodeWithID:lastNodeID];
+    }
+    
+    // 2. 如果上一次节点丢失（如重启或清空导致找不到），降级取列表里第一个（默认选中的那个）
+    if (!targetNode) {
+      NSArray *all = [mgr allNodes];
+      if (all && all.count > 0) {
+        targetNode = all.firstObject;
+        [self log:@"🔄 上次使用的节点已失效，自动降级选择节点列表第一项"];
       }
     }
 
-    [self log:@"❌ 未找到上次连接的节点记录"];
+    if (targetNode) {
+      NSString *matchName = targetNode[@"name"] ?: targetNode[@"remark"] ?: @"Unknown";
+      [self log:[NSString stringWithFormat:@"✅ 自动选择代理节点: %@", matchName]];
+      
+      // 顺便把状态存回去，以便下次直接命中
+      NSString *nid = targetNode[@"id"];
+      if (nid) {
+        [mgr setActiveNodeID:nid];
+      }
+      
+      [[ECBackgroundManager sharedManager] connectVPNWithConfig:targetNode];
+      return YES;
+    }
+
+    [self log:@"❌ 无法连接代理: 未找到上次连接记录，且代理节点列表为空"];
     return NO;
   }
 
@@ -929,9 +948,49 @@ static NSString *gActiveWDASessionId = nil;
 }
 
 - (BOOL)tapText:(NSString *)text {
-  return [self performWDAAction:@"tapText"
-                       endpoint:@"/wda/clickText"
-                           body:@{@"text" : text ?: @""}];
+  // 使用 findText+随机点击的模式重构，替代 WDA 硬编码的无偏移定点点击
+  NSDictionary *res = [self findText:text];
+  if ([res[@"found"] boolValue]) {
+    NSDictionary *rectData = res[@"result"];
+    if (!rectData) {
+      // 兼容较老版本 WDA 如果直接平铺了 x/y 属性的情况
+      if (res[@"x"]) {
+        rectData = res;
+      } else {
+        return NO;
+      }
+    }
+    
+    double baseX = [rectData[@"x"] doubleValue];
+    double baseY = [rectData[@"y"] doubleValue];
+    double width = [rectData[@"width"] doubleValue];
+    double height = [rectData[@"height"] doubleValue];
+    
+    // [防风控]: 留出 10% 的内缩安全边距，确保随机点击的落点始终真实且处在元素可交互区内
+    double paddingX = width * 0.1;
+    double paddingY = height * 0.1;
+    
+    double safeWidth = width - paddingX * 2;
+    double safeHeight = height - paddingY * 2;
+    if (safeWidth <= 0) safeWidth = 1;
+    if (safeHeight <= 0) safeHeight = 1;
+    
+    double randomOffsetX = [self random:paddingX max:(paddingX + safeWidth)];
+    double randomOffsetY = [self random:paddingY max:(paddingY + safeHeight)];
+    
+    double targetX = baseX + randomOffsetX;
+    double targetY = baseY + randomOffsetY;
+    
+    [self log:[NSString stringWithFormat:@"✅ tapText 命中 '%@', 随机落点坐标: (%.1f, %.1f) [目标区域: %.1fx%.1f]", text, targetX, targetY, width, height]];
+    
+    NSDictionary *tapRes = [self performWDAActionWithResult:@"tap"
+                                                   endpoint:@"/wda/tapByCoord"
+                                                       body:@{@"x": @(targetX), @"y": @(targetY)}];
+    return [tapRes[@"status"] integerValue] == 0;
+  }
+  
+  [self log:[NSString stringWithFormat:@"❌ tapText 未命中文字: %@", text]];
+  return NO;
 }
 
 - (NSDictionary *)ocr {
@@ -1031,8 +1090,15 @@ static NSString *gActiveWDASessionId = nil;
 
 - (NSDictionary *)findImage:(NSString *)templateB64
                    threshold:(NSNumber *)threshold {
+  // ── 截图短期缓存（同一轮连续 findImage 调用复用同一截图，大幅减少 WDA 请求）──
+  static NSString *sCachedScreenshotB64 = nil;
+  static CFAbsoluteTime sCachedScreenshotTime = 0;
+  const CFAbsoluteTime kScreenshotCacheTTL = 0.5; // 500ms 有效期
+
   if ([self _checkInterrupt])
     return @{@"found" : @NO};
+
+  @autoreleasepool { // 每次调用后立刻释放截图 Base64 等大对象，防止内存堆积
 
   // === 预处理：剥离 Base64 Data URI 前缀（例如 data:image/png;base64,）===
   NSString *template = templateB64;
@@ -1044,21 +1110,37 @@ static NSString *gActiveWDASessionId = nil;
   }
   template = [template stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 
-  // === 第 1 步：获取截图（带重试机制，针对内存分配失败场景）===
+  // === 第 1 步：获取截图（优先复用缓存，500ms 内不重复请求 WDA）===
   NSString *screenshotBase64 = nil;
-  int retry = 0;
-  while (retry < 2) {
-    NSDictionary *screenshotResult = [self performWDAActionWithResult:@"screenshot"
-                                                              endpoint:@"/screenshot"
-                                                                  body:nil];
-    if (screenshotResult[@"value"] && [screenshotResult[@"value"] isKindOfClass:[NSString class]]) {
-      screenshotBase64 = screenshotResult[@"value"];
-      if (screenshotBase64.length > 0) break;
+  CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+
+  if (sCachedScreenshotB64.length > 0 && (now - sCachedScreenshotTime) < kScreenshotCacheTTL) {
+    // 缓存命中：直接复用，省去一次 WDA /screenshot 往返
+    screenshotBase64 = sCachedScreenshotB64;
+  } else {
+    // 缓存过期或为空，重新截图
+    sCachedScreenshotB64 = nil; // 先主动释放旧截图内存
+
+    int retry = 0;
+    while (retry < 2) {
+      NSDictionary *screenshotResult = [self performWDAActionWithResult:@"screenshot"
+                                                                endpoint:@"/screenshot"
+                                                                    body:nil];
+      if (screenshotResult[@"value"] && [screenshotResult[@"value"] isKindOfClass:[NSString class]]) {
+        screenshotBase64 = screenshotResult[@"value"];
+        if (screenshotBase64.length > 0) break;
+      }
+      retry++;
+      if (retry < 2) {
+        [self log:@"⚠️ 截图为空(可能系统内存不足)，500ms 后重试..."];
+        usleep(500000);
+      }
     }
-    retry++;
-    if (retry < 2) {
-      [self log:@"⚠️ 截图为空(可能系统内存不足)，500ms 后重试..."];
-      usleep(500000);
+
+    // 更新缓存
+    if (screenshotBase64.length > 0) {
+      sCachedScreenshotB64 = screenshotBase64;
+      sCachedScreenshotTime = CFAbsoluteTimeGetCurrent();
     }
   }
 
@@ -1116,7 +1198,24 @@ static NSString *gActiveWDASessionId = nil;
                                          sW, sH, tW, tH]];
   }
 
-  return result ?: @{@"found" : @NO};
+  // === 第 4 步：兼容老脚本对 res.value.found / res.value.x 的调用格式 ===
+  NSMutableDictionary *jsResult = [NSMutableDictionary dictionaryWithDictionary:(result ?: @{@"found" : @NO})];
+  if (!jsResult[@"value"]) {
+      NSMutableDictionary *valDict = [NSMutableDictionary dictionary];
+      if (jsResult[@"rect"]) {
+          valDict[@"rect"] = jsResult[@"rect"];
+          // 展开 rect 以便支持 res.value.x 取值
+          if ([jsResult[@"rect"] isKindOfClass:[NSDictionary class]]) {
+              [valDict addEntriesFromDictionary:jsResult[@"rect"]];
+          }
+      }
+      valDict[@"found"] = jsResult[@"found"] ?: @NO;
+      valDict[@"confidence"] = jsResult[@"confidence"] ?: @0;
+      jsResult[@"value"] = valDict;
+  }
+
+  return jsResult;
+  } // @autoreleasepool
 }
 
 - (NSString *)getColorAt:(NSNumber *)x y:(NSNumber *)y {
@@ -1130,7 +1229,7 @@ static NSString *gActiveWDASessionId = nil;
   return result[@"color"] ?: @"#000000";
 }
 
-- (NSDictionary *)findMultiColor:(NSString *)colors {
+- (NSDictionary *)findMultiColor:(NSString *)colors sim:(NSNumber *)sim {
   if (!colors || colors.length == 0) {
     return @{@"found" : @NO};
   }
@@ -1161,9 +1260,21 @@ static NSString *gActiveWDASessionId = nil;
                               endpoint:@"/wda/findMultiColor"
                                   body:@{
                                     @"firstColor" : firstColor,
-                                    @"offsets" : offsets ?: @[]
+                                    @"offsetColors" : offsets ?: @[], // [v1769] WDA 期望的键名是 offsetColors
+                                    @"similarity" : sim ?: @(0.9)
                                   }];
-  return result ?: @{@"found" : @NO};
+  
+  // [v1770] 强制统一数据结构：使其返回值格式与 findImage 完全一致 (包含 value 嵌套封装)
+  NSMutableDictionary *jsResult = [NSMutableDictionary dictionary];
+  jsResult[@"found"] = result[@"found"] ?: @NO;
+  
+  NSMutableDictionary *valDict = [NSMutableDictionary dictionaryWithDictionary:(result ?: @{})];
+  valDict[@"found"] = result[@"found"] ?: @NO;
+  valDict[@"width"] = result[@"width"] ?: @0;
+  valDict[@"height"] = result[@"height"] ?: @0;
+  jsResult[@"value"] = valDict;
+  
+  return jsResult;
 }
 
 #pragma mark - Helper Methods

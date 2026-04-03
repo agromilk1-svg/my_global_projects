@@ -526,14 +526,8 @@
 
 + (id<FBResponsePayload>)handleGetWindowSize:(FBRouteRequest *)request
 {
-  XCUIApplication *app = request.session.activeApplication ?: XCUIApplication.fb_activeApplication;
-
-  CGRect frame = app.wdFrame;
-#if TARGET_OS_TV
-  CGSize screenSize = frame.size;
-#else
-  CGSize screenSize = FBAdjustDimensionsForApplication(frame.size, app.interfaceOrientation);
-#endif
+  // [v1776] 绕过 XCUIApplication 耗时的无障碍查询，防止在 TikTok 等高频刷新应用中查询 wdFrame 导致 XPC 死锁
+  CGSize screenSize = [UIScreen mainScreen].bounds.size;
   return FBResponseWithObject(@{
     @"width": @(screenSize.width),
     @"height": @(screenSize.height),
@@ -543,19 +537,13 @@
 
 + (id<FBResponsePayload>)handleGetWindowRect:(FBRouteRequest *)request
 {
-  XCUIApplication *app = request.session.activeApplication ?: XCUIApplication.fb_activeApplication;
-
-  CGRect frame = app.wdFrame;
-#if TARGET_OS_TV
-  CGSize screenSize = frame.size;
-#else
-  CGSize screenSize = FBAdjustDimensionsForApplication(frame.size, app.interfaceOrientation);
-#endif
+  // [v1776] 同样绕过，提升重连 probe_size 速度
+  CGRect frame = [UIScreen mainScreen].bounds;
   return FBResponseWithObject(@{
     @"x": @(frame.origin.x),
     @"y": @(frame.origin.y),
-    @"width": @(screenSize.width),
-    @"height": @(screenSize.height),
+    @"width": @(frame.size.width),
+    @"height": @(frame.size.height),
   });
 }
 
