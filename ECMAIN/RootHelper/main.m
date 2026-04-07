@@ -536,10 +536,14 @@ NSString *get_udid_iokit(void) {
   return nil;
 }
 
-int runLdid(NSArray *args, NSString **output, NSString **errorOutput) {
-  NSString *ldidPath = getLdidPath();
+int runBinaryAtPath(NSString *binaryPath, NSArray *args, NSString **output, NSString **errorOutput) {
+  if (![[NSFileManager defaultManager] fileExistsAtPath:binaryPath]) {
+    NSLog(@"[RootHelper] Error: Binary not found at %@", binaryPath);
+    return -100;
+  }
+
   NSMutableArray *argsM = args.mutableCopy ?: [NSMutableArray new];
-  [argsM insertObject:ldidPath.lastPathComponent atIndex:0];
+  [argsM insertObject:binaryPath.lastPathComponent atIndex:0];
 
   NSUInteger argCount = [argsM count];
   char **argsC = (char **)malloc((argCount + 1) * sizeof(char *));
@@ -564,8 +568,8 @@ int runLdid(NSArray *args, NSString **output, NSString **errorOutput) {
 
   pid_t task_pid;
   int status = -200;
-  NSLog(@"About to spawn ldid (%@) with args %@", ldidPath, args);
-  int spawnError = posix_spawn(&task_pid, [ldidPath fileSystemRepresentation],
+  NSLog(@"[RootHelper] Spawning %@ with args %@", binaryPath, args);
+  int spawnError = posix_spawn(&task_pid, [binaryPath fileSystemRepresentation],
                                &action, NULL, (char *const *)argsC, NULL);
   for (NSUInteger i = 0; i < argCount; i++) {
     free(argsC[i]);
@@ -573,16 +577,19 @@ int runLdid(NSArray *args, NSString **output, NSString **errorOutput) {
   free(argsC);
 
   if (spawnError != 0) {
-    NSLog(@"ldid failed to spawn with error %d (%s)\n", spawnError,
-          strerror(spawnError));
+    NSLog(@"[RootHelper] Failed to spawn %@ with error %d (%s)\n", binaryPath, spawnError, strerror(spawnError));
+    posix_spawn_file_actions_destroy(&action);
+    close(out[1]); close(outErr[1]);
+    close(out[0]); close(outErr[0]);
     return spawnError;
   }
 
   do {
-    if (waitpid(task_pid, &status, 0) != -1) {
-      // printf("Child status %dn", WEXITSTATUS(status));
-    } else {
+    if (waitpid(task_pid, &status, 0) == -1) {
       perror("waitpid");
+      posix_spawn_file_actions_destroy(&action);
+      close(out[1]); close(outErr[1]);
+      close(out[0]); close(outErr[0]);
       return -222;
     }
   } while (!WIFEXITED(status) && !WIFSIGNALED(status));
@@ -590,17 +597,134 @@ int runLdid(NSArray *args, NSString **output, NSString **errorOutput) {
   close(outErr[1]);
   close(out[1]);
 
-  NSString *ldidOutput = getNSStringFromFile(out[0]);
-  if (output) {
-    *output = ldidOutput;
-  }
+  NSString *binaryOutput = getNSStringFromFile(out[0]);
+  if (output) { *output = binaryOutput; }
 
-  NSString *ldidErrorOutput = getNSStringFromFile(outErr[0]);
-  if (errorOutput) {
-    *errorOutput = ldidErrorOutput;
-  }
+  NSString *binaryErrorOutput = getNSStringFromFile(outErr[0]);
+  if (errorOutput) { *errorOutput = binaryErrorOutput; }
+
+  close(out[0]);
+  close(outErr[0]);
+  posix_spawn_file_actions_destroy(&action);
 
   return WEXITSTATUS(status);
+}
+
+// [v1803] 支持传递环境变量的版本，用于 mount-ddi 向 go-ios 传递 USBMUXD_SOCKET_ADDRESS
+int runBinaryAtPathWithEnv(NSString *binaryPath, NSArray *args, NSDictionary *extraEnv,
+                           NSString **output, NSString **errorOutput) {
+  if (![[NSFileManager defaultManager] fileExistsAtPath:binaryPath]) {
+    NSLog(@"[RootHelper] Error: Binary not found at %@", binaryPath);
+    return -100;
+  }
+
+  NSMutableArray *argsM = args.mutableCopy ?: [NSMutableArray new];
+  [argsM insertObject:binaryPath.lastPathComponent atIndex:0];
+
+  NSUInteger argCount = [argsM count];
+  char **argsC = (char **)malloc((argCount + 1) * sizeof(char *));
+  for (NSUInteger i = 0; i < argCount; i++) {
+    argsC[i] = strdup([[argsM objectAtIndex:i] UTF8String]);
+  }
+  argsC[argCount] = NULL;
+
+  // 构建环境变量数组：继承当前 environ + 追加 extraEnv
+  extern char **environ;
+  NSMutableArray *envArray = [NSMutableArray new];
+  if (environ) {
+    for (int i = 0; environ[i]; i++) {
+      NSString *entry = [NSString stringWithUTF8String:environ[i]];
+      // 如果 extraEnv 中有同名 key，跳过旧值
+      BOOL overridden = NO;
+      for (NSString *key in extraEnv) {
+        if ([entry hasPrefix:[NSString stringWithFormat:@"%@=", key]]) {
+          overridden = YES;
+          break;
+        }
+      }
+      if (!overridden) [envArray addObject:entry];
+    }
+  }
+  for (NSString *key in extraEnv) {
+    [envArray addObject:[NSString stringWithFormat:@"%@=%@", key, extraEnv[key]]];
+  }
+
+  char **envC = (char **)malloc((envArray.count + 1) * sizeof(char *));
+  for (NSUInteger i = 0; i < envArray.count; i++) {
+    envC[i] = strdup([envArray[i] UTF8String]);
+  }
+  envC[envArray.count] = NULL;
+
+  posix_spawn_file_actions_t action;
+  posix_spawn_file_actions_init(&action);
+
+  int outErr[2];
+  pipe(outErr);
+  posix_spawn_file_actions_adddup2(&action, outErr[1], STDERR_FILENO);
+  posix_spawn_file_actions_addclose(&action, outErr[0]);
+
+  int out[2];
+  pipe(out);
+  posix_spawn_file_actions_adddup2(&action, out[1], STDOUT_FILENO);
+  posix_spawn_file_actions_addclose(&action, out[0]);
+
+  pid_t task_pid;
+  int status = -200;
+  NSLog(@"[RootHelper] Spawning %@ with args %@ env: %@", binaryPath, args, extraEnv);
+  int spawnError = posix_spawn(&task_pid, [binaryPath fileSystemRepresentation],
+                               &action, NULL, (char *const *)argsC, envC);
+  for (NSUInteger i = 0; i < argCount; i++) free(argsC[i]);
+  free(argsC);
+  for (NSUInteger i = 0; i < envArray.count; i++) free(envC[i]);
+  free(envC);
+
+  if (spawnError != 0) {
+    NSLog(@"[RootHelper] Failed to spawn %@ with error %d (%s)\n", binaryPath, spawnError, strerror(spawnError));
+    posix_spawn_file_actions_destroy(&action);
+    close(out[1]); close(outErr[1]);
+    close(out[0]); close(outErr[0]);
+    return spawnError;
+  }
+
+  do {
+    if (waitpid(task_pid, &status, 0) == -1) {
+      perror("waitpid");
+      posix_spawn_file_actions_destroy(&action);
+      close(out[1]); close(outErr[1]);
+      close(out[0]); close(outErr[0]);
+      return -222;
+    }
+  } while (!WIFEXITED(status) && !WIFSIGNALED(status));
+
+  close(outErr[1]);
+  close(out[1]);
+
+  // [v1803-fix] 读取全部输出而非仅第一行（getNSStringFromFile 遇到 \n 即停止）
+  NSMutableData *outData = [NSMutableData data];
+  char buf[4096];
+  ssize_t n;
+  while ((n = read(out[0], buf, sizeof(buf))) > 0) {
+    [outData appendBytes:buf length:n];
+  }
+  NSString *binaryOutput = [[NSString alloc] initWithData:outData encoding:NSUTF8StringEncoding] ?: @"";
+  if (output) { *output = binaryOutput; }
+
+  NSMutableData *errData = [NSMutableData data];
+  while ((n = read(outErr[0], buf, sizeof(buf))) > 0) {
+    [errData appendBytes:buf length:n];
+  }
+  NSString *binaryErrorOutput = [[NSString alloc] initWithData:errData encoding:NSUTF8StringEncoding] ?: @"";
+  if (errorOutput) { *errorOutput = binaryErrorOutput; }
+
+  close(out[0]);
+  close(outErr[0]);
+  posix_spawn_file_actions_destroy(&action);
+
+  return WEXITSTATUS(status);
+}
+
+int runLdid(NSArray *args, NSString **output, NSString **errorOutput) {
+  return runBinaryAtPath(getLdidPath(), args, output, errorOutput);
 }
 
 BOOL certificateHasDataForExtensionOID(SecCertificateRef certificate,
@@ -2415,6 +2539,41 @@ static BOOL isDDImounted() {
         }
     }
     return NO;
+}
+
+// [v1803] DDI 文件多路径搜索：按优先级查找 DeveloperDiskImage.dmg
+static NSString *findDDIDmgPath(NSString *helperDir) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray *candidates = @[
+        // 1. echelper 同目录（标准位置）
+        [helperDir stringByAppendingPathComponent:@"DeveloperDiskImage.dmg"],
+        // 2. ECMAIN.app 内的持久存储
+        @"/var/mobile/Media/ECMAIN/DeveloperDiskImage.dmg",
+        // 3. 备用固定路径
+        @"/var/mobile/Documents/DeveloperDiskImage.dmg",
+    ];
+    for (NSString *path in candidates) {
+        if ([fm fileExistsAtPath:path]) {
+            NSLog(@"[mount-ddi] 📂 找到 DDI 文件: %@", path);
+            return path;
+        }
+    }
+    NSLog(@"[mount-ddi] ❌ 在所有候选路径中均未找到 DeveloperDiskImage.dmg");
+    return nil;
+}
+
+// [v1803] 获取设备 UDID 的通用函数
+static NSString *getDeviceUDID(void) {
+    NSString *udid = nil;
+    void *mgLib = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_LAZY);
+    if (mgLib) {
+        CFStringRef (*MGCopyAnswer)(CFStringRef) = (CFStringRef (*)(CFStringRef))dlsym(mgLib, "MGCopyAnswer");
+        if (MGCopyAnswer) {
+            udid = (__bridge_transfer NSString *)MGCopyAnswer(CFSTR("SerialNumber"));
+        }
+        dlclose(mgLib);
+    }
+    return udid;
 }
 
 // 【v1555】WDA 探针端口修正为 10088
@@ -4578,7 +4737,7 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
       freopen("/var/mobile/Media/go-ios.log", "a", stderr);
       
       NSLog(@"========================");
-      NSLog(@"[run-wda-daemon] WDA 原生 XCTest 启动代理 (v1596 - The Last Stand)");
+      NSLog(@"[run-wda-daemon] WDA 原生 XCTest 启动代理 (v1803-Antigravity-Wireless)");
 
       NSString *bundleId = @"com.apple.accessibility.ecwda";
       if (argc > 2) bundleId = [NSString stringWithUTF8String:argv[2]];
@@ -4609,10 +4768,23 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
       signal(SIGTERM, handle_daemon_exit_signal);
       signal(SIGINT, handle_daemon_exit_signal);
 
-      // 2. 检查 DDI
+      // 2. 检查 DDI，未挂载则自动尝试挂载
       if (!isDDImounted()) {
-          NSLog(@"[run-wda-daemon] ❌ DDI 未挂载！WDA 无法在脱机模式下建立测试会话。请先挂载 DDI。");
-          return 201;
+          NSLog(@"[run-wda-daemon] ⚠️ DDI 未挂载，正在自动尝试本地挂载...");
+          NSString *helperPathForMount = [[NSProcessInfo processInfo] arguments].firstObject;
+          char *mArgv[] = { (char *)[helperPathForMount UTF8String], "mount-ddi", NULL };
+          pid_t mPid;
+          extern char **environ;
+          posix_spawn(&mPid, [helperPathForMount UTF8String], NULL, NULL, mArgv, environ);
+          int mStatus;
+          waitpid(mPid, &mStatus, 0);
+
+          if (WEXITSTATUS(mStatus) == 0 && isDDImounted()) {
+              NSLog(@"[run-wda-daemon] ✅ DDI 自动挂载成功！");
+          } else {
+              NSLog(@"[run-wda-daemon] ❌ DDI 自动挂载失败 (status: %d)。WDA 无法建立测试会话。", WEXITSTATUS(mStatus));
+              return 201;
+          }
       }
 
       // 3. 启动 usbmuxd 仿射代理
@@ -4713,69 +4885,98 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
     }
 
     if ([cmd isEqualToString:@"mount-ddi"]) {
-        NSLog(@"[mount-ddi] 开始执行本地 DDI 自挂载流程 (v1580)");
-        
+        NSLog(@"[mount-ddi] 开始执行本地 DDI 自挂载流程 (v1803-Antigravity-Wireless)");
+
+        // 0. 如果已经挂载，直接返回成功
+        if (isDDImounted()) {
+            NSLog(@"[mount-ddi] ✅ DDI 已处于挂载状态，无需重复挂载。");
+            return 0;
+        }
+
         NSString *helperPath = [[NSProcessInfo processInfo] arguments].firstObject;
         NSString *helperDir = [helperPath stringByDeletingLastPathComponent];
         NSString *goIosPath = [helperDir stringByAppendingPathComponent:@"go-ios-arm64"];
-        NSString *dmgPath = [helperDir stringByAppendingPathComponent:@"DeveloperDiskImage.dmg"];
-        NSString *sigPath = [helperDir stringByAppendingPathComponent:@"DeveloperDiskImage.dmg.signature"];
-        
-        if (![[NSFileManager defaultManager] fileExistsAtPath:goIosPath]) {
-            NSLog(@"[mount-ddi] ❌ 错误：找不到 go-ios-arm64 核心，请检查 App 安装包！");
-            return 101;
-        }
-        if (![[NSFileManager defaultManager] fileExistsAtPath:dmgPath]) {
-            NSLog(@"[mount-ddi] ❌ 错误：找不到 DDI 镜像。");
-            return 102;
+
+        // 1. 多路径搜索 DDI 文件
+        NSString *dmgPath = findDDIDmgPath(helperDir);
+        if (!dmgPath) {
+            NSLog(@"[mount-ddi] ❌ 致命错误：找不到 DeveloperDiskImage.dmg 文件");
+            return 110;
         }
 
-        // [v1611] 自愈尝试：强制卸载残留路径，为重新挂载扫清障碍
-        NSLog(@"[mount-ddi] 🛡 正在尝试强制卸载 /Developer 以准备重新挂载...");
-        unmount("/Developer", MNT_FORCE);
-        usleep(500000); // 等待系统释放
+        // 2. 获取设备 UDID（usbmuxd_shim 需要）
+        NSString *udid = getDeviceUDID();
+        if (!udid) {
+            NSLog(@"[mount-ddi] ⚠️ 无法获取 UDID，使用占位符继续...");
+            udid = @"00000000-0000000000000000";
+        }
+        NSLog(@"[mount-ddi] 📱 设备 UDID: %@", udid);
 
-        NSLog(@"[mount-ddi] 🚩 正在调用 go-ios 引擎执行镜像挂载...");
-        char *goArgv[] = {
-            (char *)"ios",
-            (char *)"image",
-            (char *)"mount",
-            (char *)"--path", (char *)[dmgPath UTF8String],
-            NULL
-        };
-        
-        pid_t pid;
-        extern char **environ;
-        int ret = posix_spawn(&pid, [goIosPath UTF8String], NULL, NULL, goArgv, environ);
-        if (ret == 0) {
-            int status;
-            waitpid(pid, &status, 0);
-            if (WEXITSTATUS(status) == 0) {
-                if (isDDImounted()) {
-                    NSLog(@"[mount-ddi] ✅ 恭喜！DDI 已成功本地挂载。WDA 具备冷启动条件。");
-                    return 0;
-                } else {
-                    NSLog(@"[mount-ddi] ⚠️ go-ios 返回成功但 /Developer 未见，请检查磁盘空间。");
-                    return 105;
-                }
+        // 3. 启动 usbmuxd_shim（关键：让 go-ios 在无 USB 时也能连上设备）
+        NSLog(@"[mount-ddi] 🔌 正在启动 usbmuxd 仿射代理...");
+        BOOL shimStarted = startUsbmuxdShimWithUDID(udid);
+        if (!shimStarted) {
+            NSLog(@"[mount-ddi] ⚠️ usbmuxd_shim 启动失败，将尝试直接挂载（可能仅在 USB 连接时成功）");
+        } else {
+            NSLog(@"[mount-ddi] ✅ usbmuxd_shim 已就绪 (/var/run/usbmuxd_shim.sock)");
+        }
+
+        // 4. 确保伪造的配对目录存在
+        NSString *fakeLockdown = @"/tmp/lockdown";
+        [[NSFileManager defaultManager] createDirectoryAtPath:fakeLockdown withIntermediateDirectories:YES attributes:nil error:nil];
+        chmod(fakeLockdown.UTF8String, 0755);
+        chown(fakeLockdown.UTF8String, 0, 0);
+
+        NSLog(@"[mount-ddi] 🚩 正在调用 go-ios 引擎 (通过本地 shim 代理)...");
+
+        // [v1805-fix] go-ios 使用 docopt，ParseDoc 读取 os.Args[1:]
+        // runBinaryAtPathWithEnv 已自动设置 argv[0]=程序名，
+        // usage pattern "ios image mount ..." 中 "ios" 是程序名占位符，docopt 会跳过，
+        // 所以 goArgs 不应包含 "ios"，否则 docopt 多收到一个 "ios" 导致解析失败
+        NSString *pathArg = [NSString stringWithFormat:@"--path=%@", dmgPath];
+        NSString *udidArg = [NSString stringWithFormat:@"--udid=%@", udid];
+        NSArray *goArgs = @[
+            @"image",
+            @"mount",
+            pathArg,
+            udidArg
+        ];
+
+        // 5. 通过环境变量告诉 go-ios 使用 shim socket
+        NSDictionary *env = shimStarted
+            ? @{ @"USBMUXD_SOCKET_ADDRESS" : @"/var/run/usbmuxd_shim.sock" }
+            : @{};
+
+        NSString *output = nil;
+        NSString *errorOutput = nil;
+        int status = runBinaryAtPathWithEnv(goIosPath, goArgs, env, &output, &errorOutput);
+
+        if (output) NSLog(@"[mount-ddi] STDOUT: %@", output);
+        if (errorOutput) NSLog(@"[mount-ddi] STDERR: %@", errorOutput);
+
+        // 6. 清理 shim（mount-ddi 是一次性操作，不需要保持 shim）
+        if (shimStarted) {
+            stopUsbmuxdShim();
+            NSLog(@"[mount-ddi] 🧹 usbmuxd_shim 已清理");
+        }
+
+        if (status == 0) {
+            if (isDDImounted()) {
+                NSLog(@"[mount-ddi] ✅ 恭喜！DDI 已成功本地挂载（无需 USB）。");
+                return 0;
             } else {
-                NSLog(@"[mount-ddi] ❌ 内部挂载错误 (Status: %d)，可能是配对记录失效或已手动挂载。", WEXITSTATUS(status));
-                // 如果 go-ios 报错但最终 statfs 检查通过，我们也认为 OK (容错处理)
-                if (isDDImounted()) {
-                    NSLog(@"[mount-ddi] ℹ️ 虽然 go-ios 报错，但检测到 /Developer 已挂载，允许流程继续。");
-                    return 0;
-                }
-                return 103;
+                NSLog(@"[mount-ddi] ⚠️ go-ios 返回 0 但 /Developer 仍未挂载。");
+                return 105;
             }
         } else {
-            NSLog(@"[mount-ddi] ❌ 无法唤醒挂载引擎: %s", strerror(ret));
-            return 104;
+            NSLog(@"[mount-ddi] ❌ 挂载引擎报错: %d", status);
+            return status;
         }
     }
 
     if ([cmd isEqualToString:@"start-wda"]) {
-      freopen("/var/mobile/Media/go-ios.log", "a", stdout);
-      freopen("/var/mobile/Media/go-ios.log", "a", stderr);
+      // freopen("/var/mobile/Media/go-ios.log", "a", stdout);
+      // freopen("/var/mobile/Media/go-ios.log", "a", stderr);
       NSLog(@"========================");
       NSLog(@"[start-wda] ROOT HELPER INVOKED (v7 - DDI Guard)");
       
@@ -4794,8 +4995,8 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
           if (WEXITSTATUS(mStatus) == 0 && isDDImounted()) {
               NSLog(@"[start-wda] ✅ 自动挂载成功。");
           } else {
-              NSLog(@"[start-wda] ❌ DDI 自动挂载失败！请务必通过 USB 连接电脑激活一次挂载环境。WDA 启动已中止。");
-              return 201;
+              NSLog(@"[start-wda] ⚠️ DDI 自动挂载检查未通过，但我们将尝试强制启动 WDA (Antigravity Force Mode).");
+              // 不再直接 return 201，允许流程继续尝试
           }
       }
       

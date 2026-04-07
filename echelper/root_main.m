@@ -25,6 +25,10 @@
 #import <FrontBoardServices/FBSSystemService.h>
 #import <Security/Security.h>
 #import <SpringBoardServices/SpringBoardServices.h>
+#import <sys/mount.h>
+
+// MobileGestalt for UDID
+extern CFTypeRef MGCopyAnswer(CFStringRef question);
 #import <libroot.h>
 #import <mach/mach_time.h>
 
@@ -539,10 +543,14 @@ NSString *getLdidPath(void) {
 
 #endif
 
-int runLdid(NSArray *args, NSString **output, NSString **errorOutput) {
-  NSString *ldidPath = getLdidPath();
+int runBinaryAtPath(NSString *binaryPath, NSArray *args, NSString **output, NSString **errorOutput) {
+  if (![[NSFileManager defaultManager] fileExistsAtPath:binaryPath]) {
+    NSLog(@"[RootHelper] Error: Binary not found at %@", binaryPath);
+    return -100;
+  }
+
   NSMutableArray *argsM = args.mutableCopy ?: [NSMutableArray new];
-  [argsM insertObject:ldidPath.lastPathComponent atIndex:0];
+  [argsM insertObject:binaryPath.lastPathComponent atIndex:0];
 
   NSUInteger argCount = [argsM count];
   char **argsC = (char **)malloc((argCount + 1) * sizeof(char *));
@@ -567,8 +575,8 @@ int runLdid(NSArray *args, NSString **output, NSString **errorOutput) {
 
   pid_t task_pid;
   int status = -200;
-  NSLog(@"About to spawn ldid (%@) with args %@", ldidPath, args);
-  int spawnError = posix_spawn(&task_pid, [ldidPath fileSystemRepresentation],
+  NSLog(@"[RootHelper] Spawning %@ with args %@", binaryPath, args);
+  int spawnError = posix_spawn(&task_pid, [binaryPath fileSystemRepresentation],
                                &action, NULL, (char *const *)argsC, NULL);
   for (NSUInteger i = 0; i < argCount; i++) {
     free(argsC[i]);
@@ -576,16 +584,19 @@ int runLdid(NSArray *args, NSString **output, NSString **errorOutput) {
   free(argsC);
 
   if (spawnError != 0) {
-    NSLog(@"ldid failed to spawn with error %d (%s)\n", spawnError,
-          strerror(spawnError));
+    NSLog(@"[RootHelper] Failed to spawn %@ with error %d (%s)\n", binaryPath, spawnError, strerror(spawnError));
+    posix_spawn_file_actions_destroy(&action);
+    close(out[1]); close(outErr[1]);
+    close(out[0]); close(outErr[0]);
     return spawnError;
   }
 
   do {
-    if (waitpid(task_pid, &status, 0) != -1) {
-      // printf("Child status %dn", WEXITSTATUS(status));
-    } else {
+    if (waitpid(task_pid, &status, 0) == -1) {
       perror("waitpid");
+      posix_spawn_file_actions_destroy(&action);
+      close(out[1]); close(outErr[1]);
+      close(out[0]); close(outErr[0]);
       return -222;
     }
   } while (!WIFEXITED(status) && !WIFSIGNALED(status));
@@ -593,17 +604,21 @@ int runLdid(NSArray *args, NSString **output, NSString **errorOutput) {
   close(outErr[1]);
   close(out[1]);
 
-  NSString *ldidOutput = getNSStringFromFile(out[0]);
-  if (output) {
-    *output = ldidOutput;
-  }
+  NSString *binaryOutput = getNSStringFromFile(out[0]);
+  if (output) { *output = binaryOutput; }
 
-  NSString *ldidErrorOutput = getNSStringFromFile(outErr[0]);
-  if (errorOutput) {
-    *errorOutput = ldidErrorOutput;
-  }
+  NSString *binaryErrorOutput = getNSStringFromFile(outErr[0]);
+  if (errorOutput) { *errorOutput = binaryErrorOutput; }
+
+  close(out[0]);
+  close(outErr[0]);
+  posix_spawn_file_actions_destroy(&action);
 
   return WEXITSTATUS(status);
+}
+
+int runLdid(NSArray *args, NSString **output, NSString **errorOutput) {
+  return runBinaryAtPath(getLdidPath(), args, output, errorOutput);
 }
 
 BOOL certificateHasDataForExtensionOID(SecCertificateRef certificate,
@@ -2587,6 +2602,87 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
         }
       } else {
         ret = 1;
+      }
+    } else if ([cmd isEqualToString:@"start-wda"]) {
+      // --- ANTIGRAVITY FIX: ROBUST STANDALONE WDA BOOTSTRAP V3 (With Debug Logging) ---
+      NSLog(@"[RootHelper] Received start-wda command. Starting V3 bootstrap...");
+
+      NSString *binaryPath = [NSString stringWithUTF8String:argv[0]];
+      NSString *appDir = [binaryPath stringByDeletingLastPathComponent];
+
+      NSString *ddiDmg = [appDir stringByAppendingPathComponent:@"DeveloperDiskImage.dmg"];
+      NSString *ddiSig = [appDir stringByAppendingPathComponent:@"DeveloperDiskImage.dmg.signature"];
+      NSString *goIos = [appDir stringByAppendingPathComponent:@"go-ios-arm64"];
+      NSString *pairRecordSrc = [appDir stringByAppendingPathComponent:@"ecwda_pair_record.plist"];
+      NSString *wdaBundleId = @"com.apple.accessibility.ecwda";
+
+      // 1. Cleanup old mount
+      NSLog(@"[RootHelper] Force unmounting /Developer...");
+      unmount("/Developer", MNT_FORCE);
+
+      // 2. Prepare forged lockdownd record
+      CFStringRef udid = (CFStringRef)MGCopyAnswer(CFSTR("UniqueDeviceID"));
+      if (udid) {
+          NSString *udidStr = (__bridge NSString *)udid;
+          NSString *recordDir = @"/tmp/lockdown";
+          NSString *recordPath = [recordDir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.plist", udidStr]];
+
+          [[NSFileManager defaultManager] createDirectoryAtPath:recordDir withIntermediateDirectories:YES attributes:nil error:nil];
+          // Fix permissions of recordDir to ensure libimobiledevice can read it
+          chmod(recordDir.UTF8String, 0755);
+          chown(recordDir.UTF8String, 0, 0);
+
+          if ([[NSFileManager defaultManager] fileExistsAtPath:pairRecordSrc]) {
+              if ([[NSFileManager defaultManager] fileExistsAtPath:recordPath]) {
+                  [[NSFileManager defaultManager] removeItemAtPath:recordPath error:nil];
+              }
+              [[NSFileManager defaultManager] copyItemAtPath:pairRecordSrc toPath:recordPath error:nil];
+              chmod(recordPath.UTF8String, 0644);
+              chown(recordPath.UTF8String, 0, 0);
+
+              setenv("LIBIMOBILEDEVICE_RECORDS_PATH", [recordDir UTF8String], 1);
+              NSLog(@"[RootHelper] Pair record injected for UDID: %@ in %@", udidStr, recordDir);
+          } else {
+              NSLog(@"[RootHelper] Warning: Pair record template missing at %@", pairRecordSrc);
+          }
+          CFRelease(udid);
+      }
+
+      // 3. Mount DDI with precise logging
+      if ([[NSFileManager defaultManager] fileExistsAtPath:goIos]) {
+          NSLog(@"[RootHelper] Executing go-ios mount...");
+          NSArray *mountArgs = @[@"mount", ddiDmg, ddiSig];
+          NSString *mountLog = nil;
+          NSString *mountErr = nil;
+          int mountStatus = runLdid(mountArgs, &mountLog, &mountErr); // Reuse runLdid as a generic runner for logs
+
+          if (mountLog.length > 0) NSLog(@"[RootHelper] Mount Output: %@", mountLog);
+          if (mountStatus != 0) {
+              NSLog(@"[RootHelper] Mount Failed (%d): %@", mountStatus, mountErr);
+          } else {
+              NSLog(@"[RootHelper] Mount Success!");
+          }
+      }
+
+      // 4. 清理旧进程
+      killall(@"WebDriverAgentRunner-Runner", YES);
+      killall(@"go-ios-arm64", YES);
+      sleep(1);
+
+      // 5. 启动 WDA
+      if ([[NSFileManager defaultManager] fileExistsAtPath:goIos]) {
+          char *spawn_argv[] = { (char *)[goIos UTF8String], "run-test", (char *)[wdaBundleId UTF8String], NULL };
+          pid_t pid;
+          posix_spawnattr_t attr;
+          posix_spawnattr_init(&attr);
+          posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID); // 脱离会话，确保 App 退出后 WDA 继续运行
+
+          int spawn_ret = posix_spawn(&pid, [goIos UTF8String], NULL, &attr, spawn_argv, envp);
+          posix_spawnattr_destroy(&attr);
+          ret = spawn_ret;
+          if (ret == 0) NSLog(@"[RootHelper] WDA activated independently. PID: %d", pid);
+      } else {
+          ret = 444; // go-ios missing
       }
     }
 #endif

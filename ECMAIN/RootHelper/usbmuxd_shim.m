@@ -27,6 +27,7 @@ typedef struct {
 
 static const char *SOCKET_PATH = "/var/run/usbmuxd_shim.sock";
 static NSString *FAKE_UDID = @"00000000-0000000000000000";
+static NSString *g_bundleDir = nil; // [v1806] echelper 所在目录，用于查找内嵌配对记录
 static int g_serverFd = -1;
 static volatile BOOL g_running = NO;
 static pthread_t g_listenThread;
@@ -371,8 +372,16 @@ static void handleClient(int c) {
       NSDictionary *dev = @{@"DeviceID":@(1),@"MessageType":@"Attached",@"Properties":@{@"SerialNumber":FAKE_UDID,@"ConnectionType":@"USB",@"DeviceID":@(1),@"ProductID":@(4776),@"LocationID":@(0)}};
       sendMuxResponse(c, h.tag, [NSPropertyListSerialization dataWithPropertyList:@{@"MessageType":@"DeviceList",@"DeviceList":@[dev]} format:NSPropertyListXMLFormat_v1_0 options:0 error:nil]);
     } else if ([mt isEqualToString:@"ReadPairRecord"]) {
-      NSString *path = [NSString stringWithFormat:@"/var/db/lockdown/%@.plist", req[@"PairRecordID"] ?: FAKE_UDID];
+      // [v1806] 优先读系统配对记录，找不到则回退到 app bundle 内嵌的 ecwda_pair_record.plist
+      NSString *pairId = req[@"PairRecordID"] ?: FAKE_UDID;
+      NSString *path = [NSString stringWithFormat:@"/var/db/lockdown/%@.plist", pairId];
       NSData *rd = [NSData dataWithContentsOfFile:path];
+      if (!rd && g_bundleDir) {
+        // 回退：尝试 echelper 同目录下打包的配对记录
+        NSString *bundlePair = [g_bundleDir stringByAppendingPathComponent:@"ecwda_pair_record.plist"];
+        rd = [NSData dataWithContentsOfFile:bundlePair];
+        if (rd) NSLog(@"[usbmuxd_shim] ReadPairRecord: 系统记录不存在，使用 bundle 内嵌配对记录: %@", bundlePair);
+      }
       if (rd) sendMuxResponse(c, h.tag, [NSPropertyListSerialization dataWithPropertyList:@{@"MessageType":@"Result",@"Number":@(0),@"PairRecordData":rd} format:NSPropertyListXMLFormat_v1_0 options:0 error:nil]);
       else sendMuxResponse(c, h.tag, buildMuxResult(1));
     } else if ([mt isEqualToString:@"SavePairRecord"] || [mt isEqualToString:@"DeletePairRecord"]) {
@@ -396,6 +405,9 @@ static void *listenThreadFunc(void *arg) {
 
 BOOL startUsbmuxdShimWithUDID(NSString *udid) {
   if (udid) FAKE_UDID = [udid copy];
+  // [v1806] 记录 echelper 所在目录，用于查找内嵌的 ecwda_pair_record.plist
+  NSString *execPath = [[NSProcessInfo processInfo] arguments].firstObject;
+  if (execPath) g_bundleDir = [execPath stringByDeletingLastPathComponent];
   g_servicePortCount = 0;
   unlink(SOCKET_PATH);
   g_serverFd = socket(AF_UNIX, SOCK_STREAM, 0);

@@ -2002,8 +2002,18 @@ def handle_heartbeat(req: HeartbeatRequest):
             "config_checksum": server_checksum
         }
     
+    # 判断当前设备是否有任务正在执行（task_status 非空且非空数组）
+    _has_running_task = False
+    if req.task_status:
+        try:
+            _ts = json.loads(req.task_status)
+            _has_running_task = isinstance(_ts, list) and len(_ts) > 0
+        except Exception:
+            _has_running_task = bool(req.task_status.strip())
+
     # 版本检查：如果客户端上报了版本号，则对比服务器最新版本
-    if req.app_version > 0:
+    # [任务保护] 有任务执行中时跳过 OTA，避免更新打断正在运行的任务
+    if req.app_version > 0 and not _has_running_task:
         latest = _get_latest_ecmain_version()
         if latest and latest.get("version", 0) > req.app_version:
             update_data = {
@@ -2015,9 +2025,12 @@ def handle_heartbeat(req: HeartbeatRequest):
             # 兼容 ViewController.m 中的 PING 检查逻辑 (TEST-PING)
             response["version_url"] = "/api/ecmain/download"
             response["new_version_url"] = "/api/ecmain/download"
+    elif req.app_version > 0 and _has_running_task:
+        logging.info(f"[OTA跳过] 设备 {req.udid[:8]} 有任务执行中，跳过 ECMAIN OTA 检查")
     
     # ECWDA 版本检查：对比本地 ECWDA 版本和服务器最新版本
-    if req.ecwda_version >= 0:
+    # [任务保护] 有任务执行中时同样跳过 ECWDA OTA
+    if req.ecwda_version >= 0 and not _has_running_task:
         latest_wda = _get_latest_ecwda_version()
         if latest_wda and latest_wda.get("version", 0) > req.ecwda_version:
             response["ecwda_update"] = {
@@ -2025,6 +2038,8 @@ def handle_heartbeat(req: HeartbeatRequest):
                 "build_date": latest_wda.get("build_date", ""),
                 "download_url": "/api/ecwda/download"
             }
+    elif req.ecwda_version >= 0 and _has_running_task:
+        logging.info(f"[OTA跳过] 设备 {req.udid[:8]} 有任务执行中，跳过 ECWDA OTA 检查")
     
     # 立即查询是否有这台机器的专属待办 JS 任务
     tasks = database.pop_pending_tasks(req.udid, limit=1)
@@ -2101,8 +2116,32 @@ async def api_create_task(req: CreateTaskRequest, user: dict = Depends(get_curre
 # ==================== ECMAIN 自动更新系统 ====================
 
 @app.get("/api/ecmain/version")
-def api_ecmain_version():
-    """返回服务器上最新的 ECMAIN 版本信息"""
+def api_ecmain_version(udid: str = None):
+    """返回服务器上最新的 ECMAIN 版本信息（支持防打断任务保护）"""
+    
+    # [任务保护] 如果传了设备的唯一识别码(由于前端命名遗留问题仍叫udid)，查是否正在跑任务
+    if udid:
+        try:
+            with sqlite3.connect(database.DB_PATH, timeout=5) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT task_status FROM ec_devices WHERE udid = ?', (udid,))
+                row = cursor.fetchone()
+                if row and row[0]:
+                    import json
+                    ts_raw = row[0]
+                    _has_running_task = False
+                    try:
+                        _ts = json.loads(ts_raw)
+                        _has_running_task = isinstance(_ts, list) and len(_ts) > 0
+                    except Exception:
+                        _has_running_task = bool(ts_raw.strip())
+                    
+                    if _has_running_task:
+                        logging.info(f"[主动OTA跳过] 设备 {udid[:8]} 主动请求版本，但有任务运行中，拒绝下发更新。")
+                        return {"status": "error", "msg": "有任务正在执行，暂停升级"}
+        except Exception as e:
+            logging.error(f"检查主动 OTA 任务状态出错: {e}")
+
     latest = _get_latest_ecmain_version()
     if latest:
         return {"status": "ok", **latest}
@@ -2134,8 +2173,32 @@ async def api_ecmain_download():
 # ==================== ECWDA 自动更新系统 ====================
 
 @app.get("/api/ecwda/version")
-def api_ecwda_version():
-    """返回服务器上最新的 ECWDA 版本信息"""
+def api_ecwda_version(udid: str = None):
+    """返回服务器上最新的 ECWDA 版本信息（支持防打断任务保护）"""
+    
+    # [任务保护]
+    if udid:
+        try:
+            with sqlite3.connect(database.DB_PATH, timeout=5) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT task_status FROM ec_devices WHERE udid = ?', (udid,))
+                row = cursor.fetchone()
+                if row and row[0]:
+                    import json
+                    ts_raw = row[0]
+                    _has_running_task = False
+                    try:
+                        _ts = json.loads(ts_raw)
+                        _has_running_task = isinstance(_ts, list) and len(_ts) > 0
+                    except Exception:
+                        _has_running_task = bool(ts_raw.strip())
+                    
+                    if _has_running_task:
+                        logging.info(f"[主动OTA跳过] 设备 {udid[:8]} 主动请求ECWDA版本，但有任务运行中，拒绝下发更新。")
+                        return {"status": "error", "msg": "有任务正在执行，暂停升级"}
+        except Exception as e:
+            logging.error(f"检查主动 OTA(ECWDA) 任务状态出错: {e}")
+
     latest = _get_latest_ecwda_version()
     if latest:
         return {"status": "ok", **latest}
