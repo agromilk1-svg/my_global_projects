@@ -1,0 +1,460 @@
+{
+  "agents": {
+    "defaults": {
+      "maxConcurrent": 4,
+      "model": {
+        "primary": "custom/gemini-3-flash"
+      },
+      "models": {
+        "anthropic/claude-opus-4-6": {
+          "alias": "opus"
+        },
+        "custom/claude-opus-4-6-thinking": {},
+        "custom/claude-sonnet-4-6": {},
+        "custom/gemini-2.5-flash": {},
+        "custom/gemini-2.5-flash-lite": {},
+        "custom/gemini-2.5-flash-thinking": {},
+        "custom/gemini-2.5-pro": {},
+        "custom/gemini-3-flash": {
+          "alias": "local"
+        },
+        "custom/gemini-3-flash-agent": {},
+        "custom/gemini-3-pro-high": {},
+        "custom/gemini-3-pro-image": {},
+        "custom/gemini-3-pro-low": {},
+        "custom/gemini-3.1-flash-image": {},
+        "custom/gemini-3.1-flash-lite": {},
+        "custom/gemini-3.1-pro-high": {},
+        "custom/gemini-3.1-pro-low": {},
+        "custom/gpt-oss-120b-medium": {}
+      },
+      "subagents": {
+        "maxConcurrent": 8
+      },
+      "workspace": "/Users/hh/.openclaw/workspace",
+      "compaction": {
+        "mode": "safeguard"
+      }
+    }
+  },
+  "cli": {
+    "banner": {
+      "taglineMode": "default"
+    }
+  },
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "ownerDisplay": "raw",
+    "restart": true
+  },
+  "gateway": {
+    "bind": "loopback",
+    "mode": "local",
+    "nodes": {
+      "denyCommands": [
+        "camera.snap",
+        "camera.clip",
+        "screen.record",
+        "contacts.add",
+        "calendar.add",
+        "reminders.add",
+        "sms.send"
+      ]
+    },
+    "port": 18789,
+    "tailscale": {
+      "mode": "off",
+      "resetOnExit": false
+    },
+    "auth": {
+      "mode": "token",
+      "token": "877fdff334d05e40750b7855de184089075849b55ba4600a"
+    }
+  },
+  "memory": {
+    "backend": "qmd"
+  },
+  "messages": {
+    "ackReactionScope": "all"
+  },
+  "meta": {
+    "lastTouchedAt": "2026-04-07T13:22:57.832Z",
+    "lastTouchedVersion": "2026.4.5"
+  },
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "custom": {
+        "api": "openai-completions",
+        "apiKey": "__OPENCLAW_REDACTED__",
+        "baseUrl": "http://127.0.0.1:8045/v1",
+        "models": [
+          {
+            "api": "openai-completions",
+            "contextWindow": 128000,
+            "cost": {
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "input": 0,
+              "output": 0
+            },
+            "id": "gemini-3-flash-agent",
+            "input": [
+              "text",
+              "image"
+            ],
+            "maxTokens": 8192,
+            "name": "Gemini 3 Flash (Agent)",
+            "reasoning": false
+          },
+          {
+            "api": "openai-completions",
+            "contextWindow": 128000,
+            "cost": {
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "input": 0,
+              "output": 0
+            },
+            "id": "gemini-2.5-flash-thinking",
+            "input": [
+              "text",
+              "image"
+            ],
+            "maxTokens": 16384,
+            "name": "Gemini 3.1 Flash Lite (Thinking)",
+            "reasoning": true
+          },
+          {
+            "api": "openai-completions",
+            "contextWindow": 128000,
+            "cost": {
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "input": 0,
+              "output": 0
+            },
+            "id": "claude-sonnet-4-6",
+            "input": [
+              "text",
+              "image"
+            ],
+            "maxTokens": 16000,
+            "name": "Claude Sonnet 4.6 (Thinking)",
+            "reasoning": true
+          },
+          {
+            "api": "openai-completions",
+            "contextWindow": 128000,
+            "cost": {
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "input": 0,
+              "output": 0
+            },
+            "id": "gemini-2.5-flash",
+            "input": [
+              "text",
+              "image"
+            ],
+            "maxTokens": 16384,
+            "name": "Gemini 3.1 Flash Lite (2.5)",
+            "reasoning": false
+          },
+          {
+            "api": "openai-completions",
+            "contextWindow": 128000,
+            "cost": {
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "input": 0,
+              "output": 0
+            },
+            "id": "gemini-2.5-pro",
+            "input": [
+              "text",
+              "image"
+            ],
+            "maxTokens": 65536,
+            "name": "Gemini 2.5 Pro",
+            "reasoning": false
+          },
+          {
+            "api": "openai-completions",
+            "contextWindow": 128000,
+            "cost": {
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "input": 0,
+              "output": 0
+            },
+            "id": "gemini-3.1-flash-lite",
+            "input": [
+              "text",
+              "image"
+            ],
+            "maxTokens": 8192,
+            "name": "Gemini 3.1 Flash Lite",
+            "reasoning": false
+          },
+          {
+            "api": "openai-completions",
+            "contextWindow": 128000,
+            "cost": {
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "input": 0,
+              "output": 0
+            },
+            "id": "gemini-3-pro-low",
+            "input": [
+              "text",
+              "image"
+            ],
+            "maxTokens": 32768,
+            "name": "Gemini 3 Pro (Low)",
+            "reasoning": false
+          },
+          {
+            "api": "openai-completions",
+            "contextWindow": 128000,
+            "cost": {
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "input": 0,
+              "output": 0
+            },
+            "id": "gemini-3-flash",
+            "input": [
+              "text",
+              "image"
+            ],
+            "maxTokens": 8192,
+            "name": "Gemini 3 Flash",
+            "reasoning": false
+          },
+          {
+            "api": "openai-completions",
+            "contextWindow": 128000,
+            "cost": {
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "input": 0,
+              "output": 0
+            },
+            "id": "gemini-3.1-flash-image",
+            "input": [
+              "text",
+              "image"
+            ],
+            "maxTokens": 8192,
+            "name": "Gemini 3.1 Flash Image",
+            "reasoning": false
+          },
+          {
+            "api": "openai-completions",
+            "contextWindow": 128000,
+            "cost": {
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "input": 0,
+              "output": 0
+            },
+            "id": "gemini-3.1-pro-low",
+            "input": [
+              "text",
+              "image"
+            ],
+            "maxTokens": 32768,
+            "name": "Gemini 3.1 Pro (Low)",
+            "reasoning": false
+          },
+          {
+            "api": "openai-completions",
+            "contextWindow": 128000,
+            "cost": {
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "input": 0,
+              "output": 0
+            },
+            "id": "gemini-2.5-flash-lite",
+            "input": [
+              "text",
+              "image"
+            ],
+            "maxTokens": 8192,
+            "name": "Gemini 3.1 Flash Lite (2.5 Lite)",
+            "reasoning": false
+          },
+          {
+            "api": "openai-completions",
+            "contextWindow": 128000,
+            "cost": {
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "input": 0,
+              "output": 0
+            },
+            "id": "gpt-oss-120b-medium",
+            "input": [
+              "text",
+              "image"
+            ],
+            "maxTokens": 16384,
+            "name": "GPT-OSS 120B (Medium)",
+            "reasoning": false
+          },
+          {
+            "api": "openai-completions",
+            "contextWindow": 128000,
+            "cost": {
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "input": 0,
+              "output": 0
+            },
+            "id": "gemini-3.1-pro-high",
+            "input": [
+              "text",
+              "image"
+            ],
+            "maxTokens": 32768,
+            "name": "Gemini 3.1 Pro (High)",
+            "reasoning": false
+          },
+          {
+            "api": "openai-completions",
+            "contextWindow": 128000,
+            "cost": {
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "input": 0,
+              "output": 0
+            },
+            "id": "claude-opus-4-6-thinking",
+            "input": [
+              "text",
+              "image"
+            ],
+            "maxTokens": 32000,
+            "name": "Claude Opus 4.6 (Thinking)",
+            "reasoning": true
+          },
+          {
+            "api": "openai-completions",
+            "contextWindow": 128000,
+            "cost": {
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "input": 0,
+              "output": 0
+            },
+            "id": "gemini-3-pro-high",
+            "input": [
+              "text",
+              "image"
+            ],
+            "maxTokens": 32768,
+            "name": "Gemini 3 Pro (High)",
+            "reasoning": false
+          },
+          {
+            "api": "openai-completions",
+            "contextWindow": 128000,
+            "cost": {
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "input": 0,
+              "output": 0
+            },
+            "id": "gemini-3-pro-image",
+            "input": [
+              "text",
+              "image"
+            ],
+            "maxTokens": 4096,
+            "name": "图片生成 (1:1)",
+            "reasoning": false
+          }
+        ]
+      }
+    }
+  },
+  "session": {
+    "dmScope": "per-channel-peer"
+  },
+  "tools": {
+    "profile": "coding",
+    "alsoAllow": []
+  },
+  "wizard": {
+    "lastRunAt": "2026-04-07T10:51:04.189Z",
+    "lastRunCommand": "configure",
+    "lastRunMode": "local",
+    "lastRunVersion": "2026.4.5"
+  },
+  "plugins": {
+    "entries": {
+      "anthropic": {
+        "enabled": true
+      },
+      "feishu": {
+        "enabled": false
+      },
+      "openclaw-lark": {
+        "enabled": true
+      }
+    },
+    "allow": [
+      "anthropic",
+      "openclaw-lark"
+    ],
+    "installs": {
+      "openclaw-lark": {
+        "source": "archive",
+        "sourcePath": "/var/folders/2l/jxpnvxm933b19_cscb0vgyw40000gn/T/openclaw-lark-1Vb8Uo/larksuite-openclaw-lark-2026.4.1.tgz",
+        "installPath": "/Users/hh/.openclaw/extensions/openclaw-lark",
+        "version": "2026.4.1",
+        "installedAt": "2026-04-07T10:40:28.707Z"
+      }
+    }
+  },
+  "channels": {
+    "feishu": {
+      "enabled": true,
+      "appId": "cli_a95e7a8914ba5cc2",
+      "appSecret": "FnzZDL7YmMnFB2Pr1rXovcitjz6Cv13V",
+      "backup_appSecret": {
+        "source": "file",
+        "provider": "lark-secrets",
+        "id": "lark.appSecret"
+      },
+      "domain": "feishu",
+      "connectionMode": "websocket",
+      "requireMention": true,
+      "dmPolicy": "allowlist",
+      "allowFrom": [
+        "ou_c65f46d42e5ef0e484b26d11bfc7249a"
+      ],
+      "groupAllowFrom": [
+        "ou_c65f46d42e5ef0e484b26d11bfc7249a"
+      ],
+      "groupPolicy": "allowlist",
+      "groups": {
+        "*": {
+          "enabled": true
+        }
+      }
+    }
+  },
+  "secrets": {
+    "providers": {
+      "lark-secrets": {
+        "source": "file",
+        "path": "~/.openclaw/credentials/lark.secrets.json"
+      }
+    }
+  }
+}

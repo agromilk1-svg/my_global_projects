@@ -1,0 +1,10 @@
+collections:
+  memory-root-main:
+    path: /Users/hh/.openclaw/workspace
+    pattern: MEMORY.md
+  memory-alt-main:
+    path: /Users/hh/.openclaw/workspace
+    pattern: memory.md
+  memory-dir-main:
+    path: /Users/hh/.openclaw/workspace/memory
+    pattern: "**/*.md"
