@@ -9,6 +9,10 @@ static BOOL _isEcwdaOnline = YES;
 static NSInteger _ecwda10088FailCount = 0;
 // [v1742] 防止重复触发强杀+重启操作
 static BOOL _isEcwdaRestarting = NO;
+// [v1934] 心跳成功计数器（每次 HTTP 请求成功发出时递增，供看门狗监控）
+static NSInteger _heartbeatSendCount = 0;
+// [v1934] 心跳连续异常计数器（@try/@catch 捕获异常时递增）
+static NSInteger _heartbeatExceptionCount = 0;
 
 // ECWDA 固定 Bundle ID
 static NSString *const kECWDABundleID =
@@ -16,13 +20,45 @@ static NSString *const kECWDABundleID =
 
 // 💓 心跳时间戳改用 ECBackgroundManager 成员变量 _lastHeartbeatTime
 
+- (void)handleHeartbeatFailure {
+    NSArray *fallbacks = @[
+        @"http://s.ecmain.site:8088",
+        @"http://l.ecmain.site:8088"
+    ];
+    
+    NSString *currentUrl = [ECPersistentConfig stringForKey:@"CloudServerURL"];
+    if (currentUrl.length == 0) currentUrl = EC_DEFAULT_CLOUD_SERVER_URL;
+    
+    NSUInteger currentIdx = [fallbacks indexOfObject:currentUrl];
+    NSUInteger nextIdx = 0;
+    if (currentIdx != NSNotFound) {
+        nextIdx = (currentIdx + 1) % fallbacks.count;
+    }
+    
+    NSString *nextUrl = fallbacks[nextIdx];
+    if (![nextUrl isEqualToString:currentUrl]) {
+        [[ECLogManager sharedManager] log:[NSString stringWithFormat:@"[ECBackground] ⚠️ 心跳连接服务器10秒超时，循环切换服务器至: %@", nextUrl]];
+        [ECPersistentConfig setObject:nextUrl forKey:@"CloudServerURL"];
+        [ECPersistentConfig synchronize];
+    }
+    // [v1934] 通知仪表盘心跳探测失败
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:@"ECHeartbeatDidComplete"
+                          object:nil
+                        userInfo:@{@"success": @NO, @"error": @"连接超时，已自动切换服务器"}];
+    });
+}
+
 - (void)sendHeartbeat:(NSString *)urlString {
+  // [v1934] 全方位异常防护罩：包裹整个心跳方法体
+  // 即使内部任何步骤抛出 ObjC 异常（nil 字典插入、私有 API 崩溃等），
+  // 也只是跳过本轮心跳，绝不会让 GCD Timer 连锁崩溃。下轮 60 秒后照常重试。
+  @try {
   // 兜底：如果外部传了 nil，安全降级为读取系统默认配置，防止
   // NSMutableURLRequest 崩溃
   if (!urlString || urlString.length == 0) {
-    NSUserDefaults *defaults =
-        [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
-    NSString *savedUrl = [defaults stringForKey:@"CloudServerURL"];
+    NSString *savedUrl = [ECPersistentConfig stringForKey:@"CloudServerURL"];
     NSString *baseUrl =
         savedUrl.length > 0 ? savedUrl : EC_DEFAULT_CLOUD_SERVER_URL;
     urlString = [baseUrl stringByAppendingString:@"/devices/heartbeat"];
@@ -264,7 +300,7 @@ static NSString *const kECWDABundleID =
                                        EC_BUILD_VERSION]];
   }
 
-  NSString *configChecksum = [localDefaults stringForKey:@"EC_CONFIG_CHECKSUM"];
+  NSString *configChecksum = [ECPersistentConfig stringForKey:@"EC_CONFIG_CHECKSUM"];
   if (!configChecksum)
     configChecksum = @"";
 
@@ -272,7 +308,7 @@ static NSString *const kECWDABundleID =
   NSString *taskStatusJSON =
       [[ECTaskPollManager sharedManager] getTaskStatusJSON];
 
-  NSString *adminUsername = [localDefaults stringForKey:@"EC_ADMIN_USERNAME"];
+  NSString *adminUsername = [ECPersistentConfig stringForKey:@"EC_ADMIN_USERNAME"];
 
   // [v1735] 获取 TikTok 版本号
   NSString *tiktokVersion = @"";
@@ -300,6 +336,12 @@ static NSString *const kECWDABundleID =
     vpnNodeName = active[@"name"] ?: active[@"remark"] ?: active[@"server"] ?: @"";
   }
 
+  // [修复] vpnNodeName 可能为 nil（activeNode 中 name/remark/server 全缺失时），
+  // ObjC 字典字面量 @{} 不允许 nil value，否则整个 sendHeartbeat 会静默崩溃，
+  // 导致心跳永远发不出去，服务端判定设备离线。
+  NSString *safeVpnNodeName = vpnNodeName ?: @"";
+  NSString *safeTiktokVersion = tiktokVersion ?: @"";
+
   NSDictionary *payload = @{
     @"udid" : udid,
     @"device_no" : deviceNo,
@@ -309,13 +351,13 @@ static NSString *const kECWDABundleID =
     @"app_version" : @(EC_BUILD_VERSION),
     @"ecwda_version" : @([self getLocalEcwdaVersion]),
     @"vpn_active" : @([self isVPNActive]),
-    @"e" : [self isVPNActive] ? vpnNodeName : @"",
-    @"vpn_node" : vpnNodeName,
+    @"vpn_ip" : @"",  // [修复] 补齐服务端 HeartbeatRequest 模型要求的 vpn_ip 字段
+    @"vpn_node" : safeVpnNodeName,
     @"ecwda_status" : _isEcwdaOnline ? @"online" : @"offline",
     @"config_checksum" : configChecksum,
     @"task_status" : taskStatusJSON ?: @"",
     @"admin_username" : adminUsername ?: @"",
-    @"tiktok_version" : tiktokVersion
+    @"tiktok_version" : safeTiktokVersion
   };
 
   // 2. Request
@@ -329,23 +371,52 @@ static NSString *const kECWDABundleID =
   [request setHTTPMethod:@"POST"];
   [request setHTTPBody:jsonData];
   [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+  
+  // [v1930] 防止 iOS 锁屏/后台休眠期间静默掐断心跳请求，使用强化版 Session
+  static NSURLSession *heartbeatSession = nil;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+      NSURLSessionConfiguration *config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+      config.waitsForConnectivity = YES;
+      config.discretionary = NO; // 禁止系统推迟该请求
+      if (@available(iOS 13.0, *)) {
+          config.allowsExpensiveNetworkAccess = YES;
+          config.allowsConstrainedNetworkAccess = YES;
+      }
+      config.timeoutIntervalForRequest = 10.0; // [v1930] 发送超时由60s缩短至10秒，以便快速切换节点
+      heartbeatSession = [NSURLSession sessionWithConfiguration:config];
+  });
 
   // 3. Send (增加 Payload 打印)
   NSLog(@"[ECBackground] ⬆️ 发送心跳包 Payload: %@", payload);
 
-  [[NSURLSession.sharedSession
+  _heartbeatSendCount++; // [v1934] 心跳发送计数
+  [[heartbeatSession
       dataTaskWithRequest:request
         completionHandler:^(NSData *_Nullable data,
                             NSURLResponse *_Nullable response,
-                            NSError *_Nullable error) {
-          if (error) {
+                            NSError *_Nullable hs_error) {
+          if (hs_error) {
             NSLog(@"[ECBackground] Heartbeat Failed: %@",
-                  error.localizedDescription);
+                  hs_error.localizedDescription);
+            [self handleHeartbeatFailure];
             return;
           }
 
           [self handleHeartbeatResponse:data];
         }] resume];
+
+  } @catch (NSException *exception) {
+    // [v1934] 捕获所有 ObjC 异常，防止心跳静默死亡
+    _heartbeatExceptionCount++;
+    NSLog(@"[ECBackground] ❌ 心跳发送过程中捕获异常 (第%ld次): %@ - %@",
+          (long)_heartbeatExceptionCount, exception.name, exception.reason);
+    [[ECLogManager sharedManager]
+        log:[NSString stringWithFormat:
+            @"[ECBackground] ❌ 心跳异常已捕获并跳过 (第%ld次): %@，"
+            @"下轮 60s 后将自动重试",
+            (long)_heartbeatExceptionCount, exception.reason]];
+  }
 }
 
 - (void)handleHeartbeatResponse:(NSData *)data {
@@ -355,6 +426,14 @@ static NSString *const kECWDABundleID =
                                                          error:&error];
   if (error || !json)
     return;
+
+  // [v1934] 通知仪表盘心跳探测成功
+  dispatch_async(dispatch_get_main_queue(), ^{
+      [[NSNotificationCenter defaultCenter]
+          postNotificationName:@"ECHeartbeatDidComplete"
+                        object:nil
+                      userInfo:@{@"success": @YES}];
+  });
 
   // 打印心跳响应内容供调试
   NSLog(@"[ECBackground] 心跳响应: %@", json);
@@ -369,8 +448,9 @@ static NSString *const kECWDABundleID =
     if (serverVersion > EC_BUILD_VERSION && !_isUpdating) {
       [[ECLogManager sharedManager]
           log:[NSString stringWithFormat:
-                            @"[ECBackground] 🔄 发现新版本: %ld (当前: %d)",
+                            @"[ECBackground] 🔄 发现新版本: %ld (当前: %d)，准备停止现有任务并静默更新",
                             (long)serverVersion, EC_BUILD_VERSION]];
+      [[ECTaskPollManager sharedManager] stopCurrentActionScript];
       [self performSelfUpdate:updateInfo];
     }
   }
@@ -384,8 +464,9 @@ static NSString *const kECWDABundleID =
       [[ECLogManager sharedManager]
           log:[NSString
                   stringWithFormat:
-                      @"[ECBackground] 🔄 发现 ECWDA 新版本: %ld (本地: %ld)",
+                      @"[ECBackground] 🔄 发现 ECWDA 新版本: %ld (本地: %ld)，准备停止现有任务并静默更新",
                       (long)serverWdaVer, (long)localWdaVer]];
+      [[ECTaskPollManager sharedManager] stopCurrentActionScript];
       [self performEcwdaUpdate:ecwdaUpdate];
     }
   }
@@ -408,27 +489,33 @@ static NSString *const kECWDABundleID =
                           @"收到最新的环境配置下发，准备切换... (Checksum: %@)",
                           newChecksum]];
 
-    NSUserDefaults *defaults =
-        [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
-    [defaults setObject:newChecksum forKey:@"EC_CONFIG_CHECKSUM"];
+    // 所有配置通过 ECPersistentConfig 双写（App Group + plist 文件），
+    // 确保 OTA 更新后即使 App Group 容器被重建，配置依然可恢复
+    [ECPersistentConfig setObject:newChecksum forKey:@"EC_CONFIG_CHECKSUM"];
 
     // 如果无该属性，置空防止业务出错
-    [defaults setObject:(newCountry ?: @"") forKey:@"EC_DEVICE_COUNTRY"];
-    [defaults setObject:(newGroupName ?: @"") forKey:@"EC_DEVICE_GROUP"];
-    [defaults setObject:(newExecTime ?: @"") forKey:@"EC_DEVICE_EXEC_TIME"];
+    [ECPersistentConfig setObject:(newCountry ?: @"") forKey:@"EC_DEVICE_COUNTRY"];
+    [ECPersistentConfig setObject:(newGroupName ?: @"") forKey:@"EC_DEVICE_GROUP"];
+    [ECPersistentConfig setObject:(newExecTime ?: @"") forKey:@"EC_DEVICE_EXEC_TIME"];
 
     // 账号信息存储
     NSString *newAppleAccount = pushConfig[@"apple_account"];
     NSString *newApplePassword = pushConfig[@"apple_password"];
     NSString *newTiktokAccounts = pushConfig[@"tiktok_accounts"];
-    [defaults setObject:(newAppleAccount ?: @"") forKey:@"EC_APPLE_ACCOUNT"];
-    [defaults setObject:(newApplePassword ?: @"") forKey:@"EC_APPLE_PASSWORD"];
-    [defaults setObject:(newTiktokAccounts ?: @"[]")
-                 forKey:@"EC_TIKTOK_ACCOUNTS"];
+    [ECPersistentConfig setObject:(newAppleAccount ?: @"") forKey:@"EC_APPLE_ACCOUNT"];
+    [ECPersistentConfig setObject:(newApplePassword ?: @"") forKey:@"EC_APPLE_PASSWORD"];
+    [ECPersistentConfig setObject:(newTiktokAccounts ?: @"[]")
+                           forKey:@"EC_TIKTOK_ACCOUNTS"];
 
-    [defaults synchronize];
+    // watchdog_wda 支持
+    NSNumber *watchdogVal = pushConfig[@"watchdog_wda"];
+    if (watchdogVal) {
+      [ECPersistentConfig setBool:[watchdogVal boolValue] forKey:@"EC_WATCHDOG_WDA_ENABLED"];
+    }
 
-    // --- 缓存检验对比 ---
+    // --- 缓存检验对比（IP/VPN 缓存仍使用 App Group 直接读取） ---
+    NSUserDefaults *defaults =
+        [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
     NSString *cachedIpJson = [defaults stringForKey:@"EC_CONFIG_IP_CACHED"];
     NSString *cachedVpnStr = [defaults stringForKey:@"EC_CONFIG_VPN_CACHED"];
 

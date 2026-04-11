@@ -1,6 +1,7 @@
-// usbmuxd_shim.m - v1542 完全仿射 lockdownd + 真实服务对接
+// usbmuxd_shim.m - v1904 原生 TLS 隧道 + 完全仿射 lockdownd
 #import "usbmuxd_shim.h"
 #import <Foundation/Foundation.h>
+#import <Security/Security.h>
 #import <arpa/inet.h>
 #import <dlfcn.h>
 #import <pthread.h>
@@ -9,6 +10,36 @@
 #import <sys/stat.h>
 #import <sys/un.h>
 #import <unistd.h>
+
+// --- TLS PEM 转换辅助 ---
+static NSData *pemToDER(NSData *pemData) {
+    if (!pemData) return nil;
+    NSString *pemStr = [[NSString alloc] initWithData:pemData encoding:NSUTF8StringEncoding];
+    if (!pemStr || ![pemStr hasPrefix:@"-----BEGIN "]) return pemData; // 假设非 PEM 已经是 DER
+    
+    NSArray *lines = [pemStr componentsSeparatedByString:@"\n"];
+    NSMutableString *base64Str = [NSMutableString string];
+    for (NSString *line in lines) {
+        NSString *trim = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if ([trim hasPrefix:@"-----"]) continue;
+        [base64Str appendString:trim];
+    }
+    
+    if (base64Str.length > 0) {
+        NSData *der = [[NSData alloc] initWithBase64EncodedString:base64Str options:NSDataBase64DecodingIgnoreUnknownCharacters];
+        if (der.length > 26) {
+            const uint8_t *bytes = der.bytes;
+            // 简单的 PKCS#8 RSA OID 检查
+            uint8_t rsa_oid[] = {0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01, 0x05, 0x00};
+            if (memcmp(bytes + 9, rsa_oid, 13) == 0) {
+                // 这是一个 PKCS#8 包装的 RSA 私钥，剥离前 26 字节，提取纯 PKCS#1 核心
+                der = [der subdataWithRange:NSMakeRange(26, der.length - 26)];
+            }
+        }
+        return der ? der : pemData;
+    }
+    return pemData;
+}
 
 // --- Linker Fix: Stubs for unknown symbols ---
 int g_lockdown_network_port = 0;
@@ -145,6 +176,31 @@ static NSString *getDeviceValue(NSString *key) {
   }
   CFRelease(val);
   return nil;
+}
+
+#include <ifaddrs.h>
+#include <arpa/inet.h>
+static NSString *getWiFiIPFromHelper(void) {
+    NSString *address = @"";
+    struct ifaddrs *interfaces = NULL;
+    struct ifaddrs *temp_addr = NULL;
+    int success = 0;
+    
+    success = getifaddrs(&interfaces);
+    if (success == 0) {
+        temp_addr = interfaces;
+        while(temp_addr != NULL) {
+            if(temp_addr->ifa_addr->sa_family == AF_INET) {
+                if([[NSString stringWithUTF8String:temp_addr->ifa_name] isEqualToString:@"en0"]) {
+                    address = [NSString stringWithUTF8String:inet_ntoa(((struct sockaddr_in *)temp_addr->ifa_addr)->sin_addr)];
+                    break;
+                }
+            }
+            temp_addr = temp_addr->ifa_next;
+        }
+    }
+    freeifaddrs(interfaces);
+    return address;
 }
 
 #pragma mark - 服务启动器
@@ -333,31 +389,143 @@ static void handleClient(int c) {
     NSString *mt = req[@"MessageType"];
     if ([mt isEqualToString:@"Connect"]) {
       uint16_t port = ntohs([req[@"PortNumber"] unsignedShortValue]);
-      sendMuxResponse(c, h.tag, buildMuxResult(0));
-      if (port == 62078) {
-        handleFakeLockdown(c);
-      } else {
-        int t = socket(AF_INET, SOCK_STREAM, 0);
-        struct sockaddr_in s; memset(&s, 0, sizeof(s));
-        s.sin_family = AF_INET; s.sin_port = htons(port); s.sin_addr.s_addr = inet_addr("127.0.0.1");
-        if (connect(t, (void *)&s, sizeof(s)) == 0) {
-          fd_set f; unsigned char b[8192];
-          while (g_running) {
-            FD_ZERO(&f); FD_SET(c, &f); FD_SET(t, &f);
-            int mx = (c > t ? c : t) + 1;
-            if (select(mx, &f, 0, 0, 0) <= 0) break;
-            if (FD_ISSET(c, &f)) {
-              ssize_t n = read(c, b, 8192);
-              if (n <= 0 || write(t, b, n) != n) break;
-            }
-            if (FD_ISSET(t, &f)) {
-              ssize_t n = read(t, b, 8192);
-              if (n <= 0 || write(c, b, n) != n) break;
-            }
-          }
-        }
-        close(t);
+      
+      NSLog(@"[v1909] 🏎️ 收到 Connect %d，启动原生 TLS 隧道...", port);
+      
+      // ========== [v1904] 原生 TLS 隧道 ==========
+      // remoted 在 62078 上要求 TLS 客户端认证（使用 pair record 证书）
+      // 之后在 TLS 层上走标准 usbmuxd 协议
+      // 完全用 Apple SecureTransport 实现，替代外部 tls_proxy_arm64
+      
+      NSString *targetIP = @"127.0.0.1";
+      // 如果 localhost 不通则尝试 WiFi IP
+      NSString *wifiIP = getWiFiIPFromHelper();
+      
+      NSString *pairRecordPath = [g_bundleDir stringByAppendingPathComponent:@"ecwda_pair_record.plist"];
+      NSDictionary *pairRecord = [NSDictionary dictionaryWithContentsOfFile:pairRecordPath];
+      if (!pairRecord) {
+          NSLog(@"[v1904] ❌ 无法加载配稳记录: %@", pairRecordPath);
+          sendMuxResponse(c, h.tag, buildMuxResult(1));
+          break;
       }
+      
+      NSData *hostCert = pemToDER(pairRecord[@"HostCertificate"]);
+      NSData *hostKey  = pemToDER(pairRecord[@"HostPrivateKey"]);
+      NSData *rootCert = pemToDER(pairRecord[@"RootCertificate"]);
+      
+      if (!hostCert || !hostKey) {
+          NSLog(@"[v1904] ❌ 配对记录缺少 HostCertificate 或 HostPrivateKey");
+          sendMuxResponse(c, h.tag, buildMuxResult(1));
+          break;
+      }
+      
+      // 构建 SecIdentity (证书 + 私钥)
+      SecCertificateRef certRef = SecCertificateCreateWithData(NULL, (__bridge CFDataRef)hostCert);
+      if (!certRef) {
+          NSLog(@"[v1904] ❌ 无法解析 HostCertificate");
+          sendMuxResponse(c, h.tag, buildMuxResult(1));
+          break;
+      }
+      
+      // 导入私钥到 Keychain (解决 -50 errSecParam 问题)
+      NSDictionary *keyAttrs = @{
+          (__bridge id)kSecAttrKeyType: (__bridge id)kSecAttrKeyTypeRSA,
+          (__bridge id)kSecAttrKeyClass: (__bridge id)kSecAttrKeyClassPrivate,
+          (__bridge id)kSecAttrKeySizeInBits: @2048, // Apple 强制要求指定密钥长度
+          (__bridge id)kSecAttrIsPermanent: @NO,
+      };
+      CFErrorRef keyError = NULL;
+      SecKeyRef privateKeyRef = SecKeyCreateWithData((__bridge CFDataRef)hostKey, (__bridge CFDictionaryRef)keyAttrs, &keyError);
+      if (!privateKeyRef) {
+          NSLog(@"[v1904] ❌ 无法解析 HostPrivateKey: %@", keyError);
+          if (keyError) CFRelease(keyError);
+          CFRelease(certRef);
+          sendMuxResponse(c, h.tag, buildMuxResult(1));
+          break;
+      }
+      
+      // 尝试连接 remoted (先 localhost 再 WiFi IP)
+            // ==========================================================
+      // 【终极降维打击方案】v1920 物理级 TLS 剥离策略
+      // Apple 的 `NSStream` 存在不可调和的底层证书拦截 Bug，
+      // 我们在此彻底废弃原生的 Objective-C TLS 引擎。
+      // 改为在底层以守护进程方式唤醒极其健壮的 Go `tls_proxy_arm64`！
+      // ==========================================================
+      
+      int proxy_port = 30000 + (arc4random() % 10000);
+      NSString *portStr = [NSString stringWithFormat:@"%d", proxy_port];
+      
+      NSString *helperPath = [[NSProcessInfo processInfo] arguments].firstObject;
+      NSString *tlsProxyPath = [[helperPath stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"tls_proxy_arm64"];
+      
+      pid_t proxy_pid;
+      char *proxy_argv[] = { (char *)[tlsProxyPath UTF8String], (char *)[portStr UTF8String], "127.0.0.1", "62078", (char *)[pairRecordPath UTF8String], NULL };
+      extern char **environ;
+      int spawn_ret = posix_spawn(&proxy_pid, [tlsProxyPath UTF8String], NULL, NULL, proxy_argv, environ);
+      
+      if (spawn_ret != 0) {
+          NSLog(@"[v1920] ❌ 无法启动本地 TLS 清道夫引擎 (tls_proxy_arm64), error: %d", spawn_ret);
+          sendMuxResponse(c, h.tag, buildMuxResult(1));
+          break;
+      }
+      
+      NSLog(@"[v1920] 🚀 已拉起降维 TLS 清道夫 (pid: %d)，绑定本地隐形端口: %d", proxy_pid, proxy_port);
+      
+      int t = -1;
+      struct sockaddr_in addr = {0};
+      addr.sin_family = AF_INET;
+      addr.sin_port = htons(proxy_port);
+      addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+      
+      // 暴力轮询重试连接清道夫引擎 (等待 Go 启动完毕，最多 2 秒)
+      for (int i = 0; i < 40; i++) {
+          usleep(50000); // 50ms
+          t = socket(AF_INET, SOCK_STREAM, 0);
+          if (connect(t, (struct sockaddr *)&addr, sizeof(addr)) == 0) break;
+          close(t);
+          t = -1;
+      }
+      
+      if (t < 0) {
+          NSLog(@"[v1920] ❌ 致命错误：清道夫代理超时未上线");
+          sendMuxResponse(c, h.tag, buildMuxResult(1));
+          kill(proxy_pid, SIGKILL);
+          break;
+      }
+      
+      NSLog(@"[v1920] ✅ TCP 管线已同清道夫咬合完毕");
+      
+      // 告诉 go-ios，买票成功，列车进站
+      sendMuxResponse(c, h.tag, buildMuxResult(0));
+      NSLog(@"[v1920] 📋 已向 go-ios 下发 Connect 放行令 (Result 0)");
+      
+      // 开始极速纯文本双向透传 (由外部 Go 引擎自动承担极其复杂的 TLS 封包压力)
+      fd_set fds; uint8_t buf[8192];
+      while (g_running) {
+          FD_ZERO(&fds); FD_SET(c, &fds); FD_SET(t, &fds);
+          int max_fd = (c > t) ? c : t;
+          
+          struct timeval tv = {1, 0}; // 1秒超时保证能够检测 g_running
+          int sel = select(max_fd + 1, &fds, 0, 0, &tv);
+          if (sel <= 0) continue;
+          
+          // 前方高能：go-ios 驶入管线
+          if (FD_ISSET(c, &fds)) {
+              ssize_t n = read(c, buf, sizeof(buf));
+              if (n <= 0) { NSLog(@"[v1920] 🏁 go-ios 断开输入"); break; }
+              if (write(t, buf, n) != n) { NSLog(@"[v1920] ❌ 管线断裂"); break; }
+          }
+          // 后方高能：服务端(经由清道夫) 返回
+          if (FD_ISSET(t, &fds)) {
+              ssize_t n = read(t, buf, sizeof(buf));
+              if (n <= 0) { NSLog(@"[v1920] 🏁 服务端断开返回"); break; }
+              if (write(c, buf, n) != n) { NSLog(@"[v1920] ❌ 管线断裂"); break; }
+          }
+      }
+      
+      NSLog(@"[v1920] 🧹 管线废弃，执行降解清理作业...");
+      kill(proxy_pid, SIGKILL);
+      close(t);
       break;
     } else if ([mt isEqualToString:@"Listen"]) {
       sendMuxResponse(c, h.tag, buildMuxResult(0));

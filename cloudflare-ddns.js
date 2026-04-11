@@ -11,10 +11,14 @@ const https = require('https');
 const CONFIG = {
     apiToken: 'cfut_S5Gy8Iz2AqCwl1DpqGg7i7FTV9GHoKvPf8lWKBKZ2a5da1cb',
     zoneId: '8c32007bda9f5c7fbb32787fa7c28124',
-    recordName: '*.ecmain.site',
+    publicRecord: '*.ecmain.site', // 公网 IP 动态更新域名
+    localRecord: {
+        name: 'l.ecmain.site',   // 内网 IP 静态域名
+        ip: '192.168.1.251'      // 目标内网 IP
+    },
     ttl: 1, // 1 为自动 (Automatic)
     proxied: false, // 是否开启 Cloudflare 代理
-    checkInterval: 5, // 检查间隔（分钟）
+    checkInterval: 10, // 检查间隔（分钟）
 
     // ======== 路由器关联设置 ========
     router: {
@@ -140,20 +144,61 @@ async function updateDNSRecord(apiToken, zoneId, record, newIP) {
 }
 
 /**
+ * 打印所有的 DNS 记录
+ */
+async function printAllDNSRecords(apiToken, zoneId) {
+    try {
+        const result = await request({
+            hostname: 'api.cloudflare.com',
+            path: `/client/v4/zones/${zoneId}/dns_records?per_page=100`,
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${apiToken}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (result.success && result.result) {
+            console.log('\n=================================================');
+            console.log('             Cloudflare 所有解析记录             ');
+            console.log('=================================================');
+            result.result.forEach(record => {
+                console.log(`- [${record.type.padEnd(5)}] ${record.name.padEnd(25)} => ${record.content}`);
+            });
+            console.log('=================================================\n');
+        } else {
+            console.error('无法获取此时的 DNS 记录列表');
+        }
+    } catch (error) {
+        console.error('拉取 DNS 列表时出错:', error.message);
+    }
+}
+
+/**
  * 主循环逻辑
  */
 async function main() {
     console.log(`[${new Date().toLocaleString()}] 正在检查 IP...`);
 
-    const record = await getDNSRecord(CONFIG.apiToken, CONFIG.zoneId, CONFIG.recordName);
-    if (!record) return;
+    // 1. 处理静态内网记录映射
+    const localRecordInfo = await getDNSRecord(CONFIG.apiToken, CONFIG.zoneId, CONFIG.localRecord.name);
+    if (localRecordInfo && localRecordInfo.content !== CONFIG.localRecord.ip) {
+        console.log(`[Cloudflare] 内网记录 ${CONFIG.localRecord.name} IP不一致 (${localRecordInfo.content} -> ${CONFIG.localRecord.ip})，正在同步...`);
+        await updateDNSRecord(CONFIG.apiToken, CONFIG.zoneId, localRecordInfo, CONFIG.localRecord.ip);
+    } else if (localRecordInfo) {
+        console.log(`[Cloudflare] 内网记录 ${CONFIG.localRecord.name} (${localRecordInfo.content}) 状态正确。`);
+    }
 
-    console.log(`[Cloudflare] 当前远端解析 IP: ${record.content}`);
+    // 2. 处理动态公网记录映射
+    const pubRecord = await getDNSRecord(CONFIG.apiToken, CONFIG.zoneId, CONFIG.publicRecord);
+    if (!pubRecord) return;
+
+    console.log(`[Cloudflare] 当前远端解析公网 IP: ${pubRecord.content}`);
 
     // 加速优化：先使用非常廉价的 HTTP 探针进行轻量级比对
     const fastCheckIP = await getPublicIP();
 
-    if (fastCheckIP && fastCheckIP === record.content) {
+    if (fastCheckIP && fastCheckIP === pubRecord.content) {
         console.log(`[FastCheck] 轻检测本地网络出口 (${fastCheckIP}) 与远端解析完全一致，跳出本回合资源消耗。`);
         return;
     } else if (fastCheckIP) {
@@ -167,11 +212,11 @@ async function main() {
         // 如果发现变化，它会在内部顺便搞定所有的 NAT 映射修正
         try {
             const { getAndSyncRouterNAT } = require('./router-ddns.js');
-            const routerIP = await getAndSyncRouterNAT(record.content, CONFIG.router);
+            const routerIP = await getAndSyncRouterNAT(pubRecord.content, CONFIG.router);
 
-            if (routerIP && routerIP !== record.content) {
-                console.log(`[Cloudflare] 感知到光猫物理 IP 已变更 (${record.content} -> ${routerIP})，开始同步云端 DNS 记录...`);
-                await updateDNSRecord(CONFIG.apiToken, CONFIG.zoneId, record, routerIP);
+            if (routerIP && routerIP !== pubRecord.content) {
+                console.log(`[Cloudflare] 感知到光猫物理 IP 已变更 (${pubRecord.content} -> ${routerIP})，开始同步云端 DNS 记录...`);
+                await updateDNSRecord(CONFIG.apiToken, CONFIG.zoneId, pubRecord, routerIP);
             } else if (!routerIP) {
                 console.log('[Cloudflare] 未能获取光猫 IP，中止本轮更新。');
             } else {
@@ -182,17 +227,22 @@ async function main() {
         }
     } else {
         // 如果用户主动关闭了 router 联控，直接使用轻量检测到的 IP 下发更新
-        if (fastCheckIP && fastCheckIP !== record.content) {
+        if (fastCheckIP && fastCheckIP !== pubRecord.content) {
             console.log('[Local] 当前外部接口获取 IP 发生变化，正在更新 Cloudflare...');
-            await updateDNSRecord(CONFIG.apiToken, CONFIG.zoneId, record, fastCheckIP);
+            await updateDNSRecord(CONFIG.apiToken, CONFIG.zoneId, pubRecord, fastCheckIP);
         } else {
             console.log('[Local] 在没有开启光猫联控的情况下，未检测到任何改动。');
         }
     }
 }
 
-// 立即运行一次并开启定时任务
-main();
-if (CONFIG.checkInterval > 0) {
-    setInterval(main, CONFIG.checkInterval * 60 * 1000);
-}
+// 顶层自执行异步函数：先打印所有记录，再进入主循环
+(async () => {
+    await printAllDNSRecords(CONFIG.apiToken, CONFIG.zoneId);
+
+    // 立即运行一次并开启定时任务
+    main();
+    if (CONFIG.checkInterval > 0) {
+        setInterval(main, CONFIG.checkInterval * 60 * 1000);
+    }
+})();

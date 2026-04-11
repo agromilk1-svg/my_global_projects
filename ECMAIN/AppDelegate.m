@@ -8,6 +8,7 @@
 #import "ECMAIN/Core/ECBackgroundManager.h"
 #import "ECMAIN/Core/ECLogManager.h"
 #import "ECMAIN/Core/ECOneshotTaskManager.h"
+#import "ECMAIN/Core/ECPersistentConfig.h"
 #import "ECMAIN/Core/ECTaskPollManager.h"
 #import "Shared/TSUtil.h" // for spawnRoot & rootHelperPath
 
@@ -18,6 +19,9 @@
 
 - (BOOL)application:(UIApplication *)application
     didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+  // ⚠️ 最先执行：检测 App Group 容器是否被更新流程重建，若是则从 plist 恢复
+  [ECPersistentConfig restoreIfNeeded];
+
   self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
   self.window.rootViewController = [[MainTabBarController alloc] init];
   [self.window makeKeyAndVisible];

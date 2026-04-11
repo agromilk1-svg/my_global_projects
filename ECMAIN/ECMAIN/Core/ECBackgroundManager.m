@@ -12,6 +12,7 @@
 #import "ECLogManager.h"
 #import "ECScriptParser.h"
 #import "ECTaskPollManager.h"
+#import "ECPersistentConfig.h"
 #import "ECVPNConfigManager.h"
 #import "../../Network/ECWebServer.h"
 #import <AVFoundation/AVFoundation.h>
@@ -58,6 +59,7 @@ static BOOL _isUpdating = NO;
   NSURLSession *_streamSession;
   NSURLSession *_tunnelSession;
   BOOL _isTunnelConnecting;
+  NSTimeInterval _tunnelConnectStartTime; // [v1930] WS 连接开始时间，用于看门狗超时检测
   NSTimer *_wsPingTimer;
   dispatch_source_t _heartbeatGCDTimer;
   NSTimeInterval _lastHeartbeatTime; // 上次心跳发送时间戳，用于超时补发
@@ -128,13 +130,6 @@ static BOOL _isUpdating = NO;
 - (void)ensureBackgroundNetworkAlive {
   NSLog(@"[ECBackground] 🔄 进入后台/息屏，全面检查保活链...");
 
-  // 申请额外的后台执行时间，防止系统在完成联网准备前挂起应用
-  __block UIBackgroundTaskIdentifier bgTask = [[UIApplication sharedApplication] beginBackgroundTaskWithExpirationHandler:^{
-      NSLog(@"[ECBackground] ⚠️ 后台任务即将过期！");
-      [[UIApplication sharedApplication] endBackgroundTask:bgTask];
-      bgTask = UIBackgroundTaskInvalid;
-  }];
-
   dispatch_async(dispatch_get_main_queue(), ^{
     // 检查 1：麦克风录音保活
     if (!self->_isAudioActive || !self.audioRecorder || !self.audioRecorder.isRecording) {
@@ -155,14 +150,6 @@ static BOOL _isUpdating = NO;
     } else {
       NSLog(@"[ECBackground] ✅ 静音音频播放保活正常");
     }
-
-    // 完成检查后延迟 5 秒结束后台任务，给网络请求留出缓冲
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (bgTask != UIBackgroundTaskInvalid) {
-            [[UIApplication sharedApplication] endBackgroundTask:bgTask];
-            bgTask = UIBackgroundTaskInvalid;
-        }
-    });
   });
 }
 
@@ -618,10 +605,9 @@ static BOOL _isUpdating = NO;
       self.audioRecorder = nil;
     }
 
-    [[AVAudioSession sharedInstance]
-          setActive:NO
-        withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation
-              error:nil];
+    // 禁用：绝对不要在这里调用 [[AVAudioSession sharedInstance] setActive:NO]
+    // 因为 ECKeepAlive 的静音播放器与本模块共享同一个底层的 AVAudioSession。
+    // 如果关闭录音并 deactivate session，静音播放将被系统直接硬切断，应用在后台会瞬间死亡！
 
     _isAudioActive = NO;
     NSLog(@"[ECBackground] 🛑 Microphone Keep-Alive STOPPED");
@@ -759,6 +745,15 @@ static NSString *_cachedDeviceUDID = nil;
     // 120 秒超时，避免正常 heartbeat 间隔内误触超时
     config.timeoutIntervalForRequest = 120.0;
     config.timeoutIntervalForResource = 600.0;
+    // [v1930] 强化后台网络稳定性
+    config.waitsForConnectivity = YES; // 允许等待网络恢复，防止锁屏瞬间断网直接报错
+    config.discretionary = NO; // 明确告诉系统这不是可以推迟的后台任务
+    config.URLCache = nil; // 禁用缓存
+    if (@available(iOS 13.0, *)) {
+      config.allowsExpensiveNetworkAccess = YES;
+      config.allowsConstrainedNetworkAccess = YES;
+    }
+    // config.HTTPShouldUsePipelining = YES; (HTTP/1.1 pipeline, 对于 WS 意义不大)
 
     session = [NSURLSession sessionWithConfiguration:config
                                             delegate:self
@@ -823,7 +818,22 @@ static NSString *_cachedDeviceUDID = nil;
 - (void)startTunnel {
   dispatch_async([ECBackgroundManager tunnelQueue], ^{
     @synchronized(self) {
-      if (self->_isTunnelConnecting || self->_isTunnelConnected) {
+      // [v1930] 看门狗：如果 _isTunnelConnecting 卡死超过 30 秒，强制清除状态锁
+      // 这是防止 iOS NSURLSession 未触发回调时 WS 隧道永远无法重建的关键保护
+      if (self->_isTunnelConnecting) {
+        NSTimeInterval stuckDuration = [[NSDate date] timeIntervalSince1970] - self->_tunnelConnectStartTime;
+        if (stuckDuration > 30.0) {
+          NSLog(@"[Tunnel] ⚠️ 看门狗介入：_isTunnelConnecting 已卡死 %.0f 秒，强制清除", stuckDuration);
+          self->_isTunnelConnecting = NO;
+          if (self->_webSocketTask) {
+            [self->_webSocketTask cancelWithCloseCode:NSURLSessionWebSocketCloseCodeNormalClosure reason:nil];
+            self->_webSocketTask = nil;
+          }
+        } else {
+          return;
+        }
+      }
+      if (self->_isTunnelConnected) {
         return;
       }
       // 如果已经有 task 在等待握手，也不要重复创建
@@ -831,13 +841,7 @@ static NSString *_cachedDeviceUDID = nil;
         return;
       }
       self->_isTunnelConnecting = YES;
-      // 仅 Cancel 旧 Task，绝不触碰 Session
-      if (self->_webSocketTask) {
-        [self->_webSocketTask
-            cancelWithCloseCode:NSURLSessionWebSocketCloseCodeNormalClosure
-                         reason:nil];
-        self->_webSocketTask = nil;
-      }
+      self->_tunnelConnectStartTime = [[NSDate date] timeIntervalSince1970];
     }
 
     NSString *rawUrl = [self getBaseURL];
@@ -967,6 +971,7 @@ static NSString *_cachedDeviceUDID = nil;
     }
     self->_webSocketTask = nil;
     self->_isTunnelConnected = NO;
+    self->_isTunnelConnecting = NO; // [v1930] 修复状态锁死：断开时必须重置连接中标志
   }
   [self _stopPingTimer];
   [self stopMJPEGStream]; // [v1774] 彻底切断推流引用，防止 WDA 阻塞
@@ -1002,6 +1007,7 @@ static NSString *_cachedDeviceUDID = nil;
 
     self->_webSocketTask = nil;
     self->_isTunnelConnected = NO;
+    self->_isTunnelConnecting = NO; // [v1930] 修复状态锁死：连接失败时必须重置连接中标志
   }
   [self _stopPingTimer];
   [self stopMJPEGStream]; // [v1774] 断开时销毁推流
@@ -1588,19 +1594,11 @@ static BOOL _isStreamingActive = NO;
   [[ECLogManager sharedManager]
       log:@"[ECBackground] Starting Cloud Heartbeat Loop..."];
 
-  // Retrieve correct URL and Device Name from App Group Defaults
-  NSUserDefaults *defaults =
-      [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
-  NSString *savedUrl = [defaults stringForKey:@"CloudServerURL"];
-  NSString *baseUrl =
-      savedUrl.length > 0 ? savedUrl : EC_DEFAULT_CLOUD_SERVER_URL;
-  NSString *serverUrl = [baseUrl stringByAppendingString:@"/devices/heartbeat"];
-
   // 启动时立即发送首帧心跳（延迟 0.5 秒以确保系统底盘加载），汇报版本与状态
   dispatch_after(
       dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
       dispatch_get_main_queue(), ^{
-        [self sendHeartbeat:serverUrl];
+        [self sendHeartbeat:nil];
       });
 
   // BUILD #402: 使用 GCD dispatch_source_t 替代 NSTimer
@@ -1623,7 +1621,7 @@ static BOOL _isStreamingActive = NO;
       typeof(self) strongSelf = weakSelf;
       if (!strongSelf) return;
       
-      [strongSelf sendHeartbeat:serverUrl];
+      [strongSelf sendHeartbeat:nil];
 
       // [v1726] 独立 8089 端口探测：与 sendHeartbeat 平级，不受节流/飞行模式 return 影响
       {
@@ -1680,7 +1678,7 @@ static BOOL _isStreamingActive = NO;
   NSLog(@"[ECBackground] ✅ 心跳 GCD Timer 已启动 (首次触发: 10s, 周期: 60s, 含 8089 端口自检)");
 
   // Fire immediately
-  [self sendHeartbeat:serverUrl];
+  [self sendHeartbeat:nil];
   [self startTunnel];
   
   // [v1729] 启动时立即执行首次 8089 端口探测（不等 Timer 触发）

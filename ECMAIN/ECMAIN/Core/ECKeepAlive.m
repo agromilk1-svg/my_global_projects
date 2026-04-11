@@ -5,7 +5,7 @@
 
 @interface ECKeepAlive ()
 @property(strong, nonatomic) AVAudioPlayer *audioPlayer;
-@property(strong, nonatomic) NSTimer *selfCheckTimer;
+@property(strong, nonatomic) dispatch_source_t selfCheckGCDTimer;
 @end
 
 @implementation ECKeepAlive
@@ -42,6 +42,13 @@
          selector:@selector(handleMediaServerReset:)
              name:AVAudioSessionMediaServicesWereResetNotification
            object:nil];
+  
+  // 监听应用从后台恢复前台
+  [[NSNotificationCenter defaultCenter]
+      addObserver:self
+         selector:@selector(handleAppWillEnterForeground)
+             name:UIApplicationWillEnterForegroundNotification
+           object:nil];
 }
 
 #pragma mark - 音频中断恢复
@@ -63,7 +70,6 @@
   NSUInteger reason = [notification.userInfo[AVAudioSessionRouteChangeReasonKey] unsignedIntegerValue];
   NSLog(@"[ECKeepAlive] 🔊 音频路由发生变化 (reason: %lu)", (unsigned long)reason);
   
-  // 路由变化后延迟 0.5 秒检查播放状态并恢复
   dispatch_after(
       dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
       dispatch_get_main_queue(), ^{
@@ -79,7 +85,6 @@
 
 - (void)handleMediaServerReset:(NSNotification *)notification {
   NSLog(@"[ECKeepAlive] ⚠️ MediaServer 被系统重置，完全重建音频播放...");
-  // MediaServer 重置后，所有音频对象都会失效，必须完全重建
   self.audioPlayer = nil;
   dispatch_after(
       dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
@@ -88,10 +93,39 @@
       });
 }
 
-#pragma mark - 启动与自检
+#pragma mark - 前台恢复
+
+- (void)handleAppWillEnterForeground {
+  if (self.audioPlayer && !self.audioPlayer.isPlaying) {
+    NSLog(@"[ECKeepAlive] 📱 应用回到前台，检测到播放已停止，自动恢复...");
+    [[AVAudioSession sharedInstance] setActive:YES error:nil];
+    [self.audioPlayer play];
+  }
+}
+
+#pragma mark - 启动
 
 - (void)start {
-  // 编程生成 30 秒静音缓冲（不依赖外部文件，绝对可靠）
+  // ========== 第 1 步：配置 AVAudioSession ==========
+  // 必须在 start 中主动设置 category，确保不论调用顺序如何都能获得后台播放权限
+  AVAudioSession *session = [AVAudioSession sharedInstance];
+  NSError *sessionError = nil;
+  
+  [session setCategory:AVAudioSessionCategoryPlayAndRecord
+           withOptions:AVAudioSessionCategoryOptionMixWithOthers |
+                       AVAudioSessionCategoryOptionAllowBluetooth |
+                       AVAudioSessionCategoryOptionDefaultToSpeaker
+                 error:&sessionError];
+  if (sessionError) {
+    NSLog(@"[ECKeepAlive] ⚠️ AVAudioSession setCategory 失败: %@", sessionError);
+  }
+  
+  [session setActive:YES error:&sessionError];
+  if (sessionError) {
+    NSLog(@"[ECKeepAlive] ⚠️ AVAudioSession setActive 失败: %@", sessionError);
+  }
+  
+  // ========== 第 2 步：创建音频播放器 ==========
   NSURL *url = [[NSBundle mainBundle] URLForResource:@"silent"
                                        withExtension:@"wav"];
   
@@ -117,33 +151,52 @@
   self.audioPlayer.volume = 0.01;      // 极低音量（完全为 0 可能被系统判定为假活跃）
   [self.audioPlayer play];
   
-  // 启动定时器自检（每 5 分钟检测一次播放状态）
-  [self startSelfCheckTimer];
+  // ========== 第 3 步：启动 GCD 定时器自检（替代 NSTimer） ==========
+  // NSTimer 依赖 RunLoop，后台 RunLoop 被冻结就失效了
+  // GCD dispatch_source_t 在内核层面调度，后台仍可触发
+  [self startSelfCheckGCDTimer];
   
   NSLog(@"[ECKeepAlive] ✅ 静音播放已启动 (volume=0.01, loop=-1)");
 }
 
-// 定时器自检：每 300 秒检查一次播放状态
-- (void)startSelfCheckTimer {
-  [self.selfCheckTimer invalidate];
-  self.selfCheckTimer = [NSTimer scheduledTimerWithTimeInterval:300.0
-                                                        target:self
-                                                      selector:@selector(selfCheck)
-                                                      userInfo:nil
-                                                       repeats:YES];
-  // 添加到 CommonModes 以确保在 ScrollView 滑动等场景下定时器也能触发
-  [[NSRunLoop mainRunLoop] addTimer:self.selfCheckTimer forMode:NSRunLoopCommonModes];
+#pragma mark - GCD 定时器自检
+
+- (void)startSelfCheckGCDTimer {
+  if (_selfCheckGCDTimer) {
+    dispatch_source_cancel(_selfCheckGCDTimer);
+    _selfCheckGCDTimer = nil;
+  }
+  
+  dispatch_queue_t queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0);
+  _selfCheckGCDTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
+  
+  // 每 120 秒检查一次（原来是 300 秒 NSTimer，现在更频繁且不会被冻结）
+  dispatch_source_set_timer(_selfCheckGCDTimer,
+      dispatch_time(DISPATCH_TIME_NOW, 120 * NSEC_PER_SEC),
+      120 * NSEC_PER_SEC,
+      5 * NSEC_PER_SEC);
+  
+  __weak typeof(self) weakSelf = self;
+  dispatch_source_set_event_handler(_selfCheckGCDTimer, ^{
+    typeof(self) strongSelf = weakSelf;
+    if (!strongSelf) return;
+    [strongSelf selfCheck];
+  });
+  
+  dispatch_resume(_selfCheckGCDTimer);
 }
 
 - (void)selfCheck {
   if (!self.audioPlayer || !self.audioPlayer.isPlaying) {
     NSLog(@"[ECKeepAlive] ⚠️ [定时自检] 静音播放已失效，自动重启...");
-    [[AVAudioSession sharedInstance] setActive:YES error:nil];
-    if (self.audioPlayer) {
-      [self.audioPlayer play];
-    } else {
-      [self start]; // 完全重建
-    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [[AVAudioSession sharedInstance] setActive:YES error:nil];
+      if (self.audioPlayer) {
+        [self.audioPlayer play];
+      } else {
+        [self start]; // 完全重建
+      }
+    });
   } else {
     NSLog(@"[ECKeepAlive] ✅ [定时自检] 静音播放正常运行中");
   }
@@ -194,7 +247,10 @@
 }
 
 - (void)dealloc {
-  [self.selfCheckTimer invalidate];
+  if (_selfCheckGCDTimer) {
+    dispatch_source_cancel(_selfCheckGCDTimer);
+    _selfCheckGCDTimer = nil;
+  }
   [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 

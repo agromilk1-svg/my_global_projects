@@ -152,6 +152,11 @@ class DeviceMonitorThread(QThread):
                 
                 devices = list_devices()
                 for dev in devices:
+                    # [修改] 仅扫描 USB 连接的手机，过滤掉 WiFi 虚拟连接 (network)
+                    conn_type_str = str(getattr(dev, "connection_type", "")).lower()
+                    if "network" in conn_type_str or "wifi" in conn_type_str:
+                        continue
+                        
                     try:
                         service_provider = create_using_usbmux(serial=dev.serial)
                         device_class = service_provider.get_value(key="DeviceClass")

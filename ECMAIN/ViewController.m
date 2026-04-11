@@ -4,6 +4,7 @@
 #import "ECMAIN/Core/ECBackgroundManager.h"
 #import "ECMAIN/Core/ECLogManager.h"
 #import "ECMAIN/Core/ECTaskPollManager.h"
+#import "ECMAIN/Core/ECPersistentConfig.h"
 #import "ECMAIN/UI/ECDeviceInfoViewController.h"
 #import "Network/ECNetworkManager.h"
 #import "TrollStoreCore/TSApplicationsManager.h"
@@ -67,7 +68,7 @@
   // --- Version Label ---
   UILabel *versionLabel =
       [[UILabel alloc] initWithFrame:CGRectMake(padding, 50, width, 20)];
-  versionLabel.text = @"Build: 2026-04-07 18:19 #1808 (Auto)";
+  versionLabel.text = @"Build: 2026-04-11 16:43 #1936 (Auto)";
   versionLabel.textColor = [UIColor grayColor];
   versionLabel.textAlignment = NSTextAlignmentRight;
   versionLabel.font = [UIFont systemFontOfSize:12];
@@ -113,10 +114,8 @@
   self.serverUrlField.rightView = dropdownBtn;
   self.serverUrlField.rightViewMode = UITextFieldViewModeAlways;
 
-  // Load saved URL or Default
-  NSUserDefaults *defaults =
-      [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
-  NSString *savedUrl = [defaults stringForKey:@"CloudServerURL"];
+  // Load saved URL or Default （使用双读机制，App Group 优先，缺失则从 plist 恢复）
+  NSString *savedUrl = [ECPersistentConfig stringForKey:@"CloudServerURL"];
   self.serverUrlField.text =
       savedUrl.length > 0 ? savedUrl : @"http://s.ecmain.site:8088";
 
@@ -140,7 +139,7 @@
   self.deviceNoField.textColor = [UIColor blackColor];
   self.deviceNoField.delegate = self;
 
-  NSString *savedNo = [defaults stringForKey:@"EC_DEVICE_NO"];
+  NSString *savedNo = [ECPersistentConfig stringForKey:@"EC_DEVICE_NO"];
   self.deviceNoField.text = savedNo ?: @"";
 
   [self.view addSubview:self.deviceNoField];
@@ -164,7 +163,7 @@
   self.adminField.autocapitalizationType = UITextAutocapitalizationTypeNone;
   self.adminField.delegate = self;
 
-  NSString *savedAdmin = [defaults stringForKey:@"EC_ADMIN_USERNAME"];
+  NSString *savedAdmin = [ECPersistentConfig stringForKey:@"EC_ADMIN_USERNAME"];
   self.adminField.text = savedAdmin ?: @"";
 
   [self.view addSubview:self.adminField];
@@ -248,13 +247,14 @@
   self.watchdogSwitch = [[UISwitch alloc] initWithFrame:CGRectMake(padding + 80, y, 51, 31)];
   [self.watchdogSwitch addTarget:self action:@selector(watchdogSwitchToggled:) forControlEvents:UIControlEventValueChanged];
 
-  // Load state
+  // Load state (使用双读机制)
+  NSUserDefaults *defaults =
+      [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
   [defaults registerDefaults:@{@"EC_WATCHDOG_WDA_ENABLED": @YES}];
   if ([defaults objectForKey:@"EC_WATCHDOG_WDA_ENABLED"] == nil) {
-      [defaults setBool:YES forKey:@"EC_WATCHDOG_WDA_ENABLED"];
-      [defaults synchronize];
+      [ECPersistentConfig setBool:YES forKey:@"EC_WATCHDOG_WDA_ENABLED"];
   }
-  BOOL watchdogEnabled = [defaults boolForKey:@"EC_WATCHDOG_WDA_ENABLED"];
+  BOOL watchdogEnabled = [ECPersistentConfig boolForKey:@"EC_WATCHDOG_WDA_ENABLED"];
   [self.watchdogSwitch setOn:watchdogEnabled animated:NO];
   [self.view addSubview:self.watchdogSwitch];
 
@@ -461,9 +461,7 @@
 }
 
 - (void)watchdogSwitchToggled:(UISwitch *)sender {
-  NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
-  [defaults setBool:sender.isOn forKey:@"EC_WATCHDOG_WDA_ENABLED"];
-  [defaults synchronize];
+  [ECPersistentConfig setBool:sender.isOn forKey:@"EC_WATCHDOG_WDA_ENABLED"];
   NSLog(@"[ECMAIN] Watchdog WDA state changed to: %@", sender.isOn ? @"ON" : @"OFF");
 }
 
@@ -616,110 +614,53 @@
   [self.view endEditing:YES];
   NSString *url = self.serverUrlField.text;
 
-  // 1. Basic Validation
+  // 1. 基础校验
   if (url.length < 5 || ![url hasPrefix:@"http"]) {
     [self appendLog:@"错误: URL 格式无效 (需以 http 开头)"];
     return;
   }
 
-  // 2. Save Shared Defaults
-  NSUserDefaults *defaults =
-      [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
-  [defaults setObject:url forKey:@"CloudServerURL"];
+  // 2. 保存三要素：服务器地址、设备编号、管理员（双写：App Group + plist 文件）
+  [ECPersistentConfig setObject:url forKey:@"CloudServerURL"];
   NSString *deviceNo = self.deviceNoField.text ?: @"";
-  [defaults setObject:deviceNo forKey:@"EC_DEVICE_NO"];
+  [ECPersistentConfig setObject:deviceNo forKey:@"EC_DEVICE_NO"];
   NSString *adminUsername = self.adminField.text ?: @"";
-  [defaults setObject:adminUsername forKey:@"EC_ADMIN_USERNAME"];
-  [defaults synchronize];
+  [ECPersistentConfig setObject:adminUsername forKey:@"EC_ADMIN_USERNAME"];
   [self appendLog:[NSString
-                      stringWithFormat:@"已保存 URL: %@  编号: %@  管理员: %@",
+                      stringWithFormat:@"✅ 已保存 → 服务器: %@  编号: %@  管理: %@",
                                        url, deviceNo, adminUsername]];
 
-  // 3. Test Connection
+  // 3. 直接调用心跳线程的完整 sendHeartbeat: 方法，发送与心跳包完全一致的数据
+  //    服务器会返回包含 push_config / update / ecwda_update 等完整响应，
+  //    handleHeartbeatResponse: 会自动将所有配置落地到本地存储。
   self.statusIcon.hidden = YES;
-  [self appendLog:@"正在测试连接..."];
+  [self appendLog:@"📡 正在发送完整心跳探测..."];
 
-  // Construct Heartbeat URL (Append path if user only gave root)
-  NSString *testUrl = url;
-  if (![testUrl containsString:@"/heartbeat"]) {
-    if ([testUrl hasSuffix:@"/"]) {
-      testUrl = [testUrl stringByAppendingString:@"devices/heartbeat"];
-    } else {
-      testUrl = [testUrl stringByAppendingString:@"/devices/heartbeat"];
-    }
-  }
-
-  NSDictionary *payload = @{
-    @"udid" : [ECBackgroundManager deviceUDID] ?: @"TEST-PING",
-    @"status" : @"ping",
-    @"local_ip" : [self getLocalIP],
-    @"device_no" : deviceNo,
-    @"app_version" : @(EC_BUILD_VERSION),
-    @"admin_username" : adminUsername
-  };
-#pragma clang diagnostic pop
-  NSData *jsonData = [NSJSONSerialization dataWithJSONObject:payload
-                                                     options:0
-                                                       error:nil];
-
-  NSMutableURLRequest *request =
-      [NSMutableURLRequest requestWithURL:[NSURL URLWithString:testUrl]];
-  [request setHTTPMethod:@"POST"];
-  [request setHTTPBody:jsonData];
-  [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
-  request.timeoutInterval = 5.0; // Short timeout
-
-  [[NSURLSession.sharedSession
-      dataTaskWithRequest:request
-        completionHandler:^(NSData *_Nullable data,
-                            NSURLResponse *_Nullable response,
-                            NSError *_Nullable error) {
-          dispatch_async(dispatch_get_main_queue(), ^{
-            if (error) {
-              [self appendLog:[NSString
-                                  stringWithFormat:@"连接失败: %@",
-                                                   error.localizedDescription]];
-              [self showStatus:NO];
-            } else {
-              NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
-              if (httpResp.statusCode == 200) {
-                [self appendLog:@"✅ 连接成功!"];
-                [self showStatus:YES];
-
-                // --- 自动更新检查 ---
-                if (data) {
-                  NSDictionary *respJson =
-                      [NSJSONSerialization JSONObjectWithData:data
-                                                      options:0
-                                                        error:nil];
-                  if ([respJson isKindOfClass:[NSDictionary class]]) {
-                    // 支持 version_url 或 new_version_url 字段
-                    NSString *updateUrlStr =
-                        respJson[@"version_url"]
-                            ?: respJson[@"new_version_url"];
-                    if (updateUrlStr && updateUrlStr.length > 5) {
-                      [self appendLog:[NSString
-                                          stringWithFormat:@"[系统] "
-                                                           @"发现新版本，正在后"
-                                                           @"台同步更新..."]];
-                      [[ECBackgroundManager sharedManager]
-                          performSelfUpdate:@{@"download_url" : updateUrlStr}];
-                    }
-                  }
+  // [v1934] 注册一次性通知监听：心跳响应回来后立刻刷新仪表盘
+  __block id observer = nil;
+  observer = [[NSNotificationCenter defaultCenter]
+      addObserverForName:@"ECHeartbeatDidComplete"
+                  object:nil
+                   queue:[NSOperationQueue mainQueue]
+              usingBlock:^(NSNotification *note) {
+                // 收到心跳完成通知，立即刷新
+                BOOL success = [note.userInfo[@"success"] boolValue];
+                if (success) {
+                  [self appendLog:@"✅ 心跳探测成功！服务器已返回最新配置。"];
+                  [self showStatus:YES];
+                  // 立即刷新仪表盘上的国家/分组/执行时间/账号等信息
+                  [self refreshMetadataLabel];
+                } else {
+                  NSString *errMsg = note.userInfo[@"error"] ?: @"未知错误";
+                  [self appendLog:[NSString stringWithFormat:@"❌ 心跳探测失败: %@", errMsg]];
+                  [self showStatus:NO];
                 }
+                // 移除一次性监听，避免重复触发
+                [[NSNotificationCenter defaultCenter] removeObserver:observer];
+              }];
 
-                // Restart Heartbeat with new URL
-                [[ECBackgroundManager sharedManager] startCloudHeartbeat];
-              } else {
-                [self
-                    appendLog:[NSString
-                                  stringWithFormat:@"服务器返回错误: %ld",
-                                                   (long)httpResp.statusCode]];
-                [self showStatus:NO];
-              }
-            }
-          });
-        }] resume];
+  // 调用心跳方法（使用用户刚刚保存的新 URL）
+  [[ECBackgroundManager sharedManager] sendHeartbeat:nil];
 }
 
 - (void)installLdidTapped {

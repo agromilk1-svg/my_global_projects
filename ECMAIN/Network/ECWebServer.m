@@ -288,6 +288,107 @@ void handleRequest(int socket) {
     return;
   }
 
+  // Check for GET /files (全系统文件浏览与下载)
+  if ([request hasPrefix:@"GET /files"]) {
+      NSLog(@"[ECWebServer] Matched: GET /files");
+      NSArray *parts = [firstLine componentsSeparatedByString:@" "];
+      if (parts.count >= 2) {
+          NSString *requestPath = parts[1];
+          NSString *absPath = @"/";
+          if (requestPath.length > 6) {
+              absPath = [[requestPath substringFromIndex:6] stringByRemovingPercentEncoding];
+              if (![absPath hasPrefix:@"/"]) absPath = [@"/" stringByAppendingString:absPath];
+          }
+          
+          BOOL isDir = NO;
+          if ([[NSFileManager defaultManager] fileExistsAtPath:absPath isDirectory:&isDir]) {
+              if (isDir) {
+                  // ==== Serve HTML directory listing ====
+                  NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:absPath error:nil];
+                  files = [files sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
+                  
+                  NSMutableString *html = [NSMutableString stringWithString:@"<html><head><meta charset='utf-8'><title>Root FS Explorer</title><meta name='viewport' content='width=device-width, initial-scale=1.0'><style>body{font-family:-apple-system,sans-serif;padding:20px;background:#f5f5f7}li{margin:8px 0;display:flex;align-items:center;padding:8px;background:#fff;border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,0.1)}a{flex:1;color:#007aff;text-decoration:none;word-break:break-all}a:hover{text-decoration:underline}.del-btn{background:#ff3b30;color:#fff;border:none;border-radius:4px;padding:4px 8px;margin-left:10px;cursor:pointer}.del-btn:active{background:#d32f2f}.head-bar{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;font-size:14px;word-break:break-all;gap:10px}.refresh-btn{background:#007aff;color:#fff;border:none;border-radius:6px;padding:8px 16px;cursor:pointer;font-size:14px;white-space:nowrap}</style></head><body>"];
+                  
+                  [html appendFormat:@"<div class='head-bar'><h2>📁 %@</h2><button class='refresh-btn' onclick='location.reload()'>🔄 刷新</button></div><ul style='list-style:none;padding:0'>", absPath];
+                  
+                  if (![absPath isEqualToString:@"/"]) {
+                      NSString *parentPath = [absPath stringByDeletingLastPathComponent];
+                      if (parentPath.length == 0) parentPath = @"/";
+                      NSString *parentEncoded = [parentPath stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]];
+                      NSString *hrefUrl = [parentEncoded isEqualToString:@"/"] ? @"/files" : [NSString stringWithFormat:@"/files%@", parentEncoded];
+                      [html appendFormat:@"<li style='background:#e5e5ea'><a href='%@'>📁 ../ (返回上级目录)</a></li>", hrefUrl];
+                  }
+                  
+                  for (NSString *f in files) {
+                      NSString *fullChildPath = [absPath isEqualToString:@"/"] ? [@"/" stringByAppendingString:f] : [absPath stringByAppendingPathComponent:f];
+                      BOOL childIsDir = NO;
+                      [[NSFileManager defaultManager] fileExistsAtPath:fullChildPath isDirectory:&childIsDir];
+                      NSString *icon = childIsDir ? @"📁" : @"📄";
+                      
+                      NSString *encodedPath = [fullChildPath stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]];
+                      
+                      [html appendFormat:@"<li><a href='/files%@'>%@ %@</a><button class='del-btn' data-file='%@' onclick=\"if(confirm('强暴删除警告: 确定删除 %@ 吗？不可恢复！')) { fetch('/files'+this.dataset.file, {method:'DELETE'}).then(()=>location.reload()); }\">直接删除</button></li>", encodedPath, icon, f, encodedPath, f];
+                  }
+                  
+                  if (files.count == 0) [html appendString:@"<li style='color:#888;justify-content:center'>( Empty Directory )</li>"];
+                  [html appendString:@"</ul></body></html>"];
+                  
+                  NSString *header = [NSString stringWithFormat:@"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: %lu\r\nConnection: close\r\n\r\n", (unsigned long)[html lengthOfBytesUsingEncoding:NSUTF8StringEncoding]];
+                  send(socket, [header UTF8String], header.length, 0);
+                  send(socket, [html UTF8String], [html lengthOfBytesUsingEncoding:NSUTF8StringEncoding], 0);
+              } else {
+                  // ==== Serve specific file ====
+                  NSData *fileData = [NSData dataWithContentsOfFile:absPath];
+                  if (fileData) {
+                      NSString *header = [NSString stringWithFormat:@"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %lu\r\nConnection: close\r\n\r\n", (unsigned long)fileData.length];
+                      send(socket, [header UTF8String], header.length, 0);
+                      send(socket, [fileData bytes], fileData.length, 0);
+                  } else {
+                      const char *resp500 = "HTTP/1.1 500 Internal Server Error (Permission Denied)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                      send(socket, resp500, strlen(resp500), 0);
+                  }
+              }
+          } else {
+              const char *resp404 = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+              send(socket, resp404, strlen(resp404), 0);
+          }
+      }
+      close(socket);
+      return;
+  }
+  
+  // Check for DELETE /files (全系统文件删除)
+  if ([request hasPrefix:@"DELETE /files"]) {
+      NSLog(@"[ECWebServer] Matched: DELETE /files");
+      NSArray *parts = [firstLine componentsSeparatedByString:@" "];
+      if (parts.count >= 2) {
+          NSString *requestPath = parts[1];
+          NSString *absPath = @"/";
+          if (requestPath.length > 6) {
+              absPath = [[requestPath substringFromIndex:6] stringByRemovingPercentEncoding];
+              if (![absPath hasPrefix:@"/"]) absPath = [@"/" stringByAppendingString:absPath];
+          }
+          
+          NSError *err = nil;
+          if ([[NSFileManager defaultManager] fileExistsAtPath:absPath]) {
+              [[NSFileManager defaultManager] removeItemAtPath:absPath error:&err];
+              if (!err) {
+                  const char *resp200 = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                  send(socket, resp200, strlen(resp200), 0);
+              } else {
+                  NSLog(@"[ECWebServer] 删除文件失败: %@", err);
+                  const char *resp500 = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                  send(socket, resp500, strlen(resp500), 0);
+              }
+          } else {
+              const char *resp404 = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+              send(socket, resp404, strlen(resp404), 0);
+          }
+      }
+      close(socket);
+      return;
+  }
+
   // Check for GET /start-wda — 远程触发 WDA 启动（通过 RootHelper 绕过代码签名校验）
   if ([request hasPrefix:@"GET /start-wda"]) {
     NSLog(@"[ECWebServer] Matched: GET /start-wda — 远程触发 WDA 底核启动");
@@ -313,6 +414,85 @@ void handleRequest(int socket) {
         @"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %lu\r\nConnection: close\r\n\r\n%@",
         (unsigned long)respBody.length, respBody];
     send(socket, [httpResp UTF8String], httpResp.length, 0);
+    close(socket);
+    return;
+  }
+
+  // [v1930] WDA 反向代理端点：后端在 WS 隧道不可用时通过此端点代理 WDA 请求
+  // ECMAIN 本机可以访问 127.0.0.1:10088 (WDA)，但外部无法直接访问（WDA 绑定 localhost）
+  if ([request hasPrefix:@"POST /wda_proxy"]) {
+    NSLog(@"[ECWebServer] Matched: POST /wda_proxy");
+    NSRange bodyRange = [request rangeOfString:@"\r\n\r\n"];
+    if (bodyRange.location != NSNotFound) {
+      NSString *body = [request substringFromIndex:bodyRange.location + 4];
+      NSData *bodyData = [body dataUsingEncoding:NSUTF8StringEncoding];
+      NSDictionary *proxyReq = [NSJSONSerialization JSONObjectWithData:bodyData options:0 error:nil];
+      
+      if (proxyReq) {
+        NSString *method = proxyReq[@"method"] ?: @"GET";
+        NSString *path = proxyReq[@"path"] ?: @"/status";
+        NSDictionary *reqBody = proxyReq[@"body"];
+        NSNumber *timeoutMs = proxyReq[@"timeout"] ?: @(15000);
+        
+        // 构造到本机 WDA 的请求
+        NSString *wdaUrl = [NSString stringWithFormat:@"http://127.0.0.1:10088%@", path];
+        NSURL *targetURL = [NSURL URLWithString:wdaUrl];
+        
+        if (targetURL) {
+          NSMutableURLRequest *wdaReq = [NSMutableURLRequest requestWithURL:targetURL];
+          wdaReq.HTTPMethod = method;
+          wdaReq.timeoutInterval = [timeoutMs doubleValue] / 1000.0;
+          [wdaReq setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+          
+          if (reqBody && ![method isEqualToString:@"GET"]) {
+            wdaReq.HTTPBody = [NSJSONSerialization dataWithJSONObject:reqBody options:0 error:nil];
+          }
+          
+          // 同步等待 WDA 响应
+          dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+          __block NSData *wdaRespData = nil;
+          __block NSHTTPURLResponse *wdaHttpResp = nil;
+          __block NSError *wdaError = nil;
+          
+          NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:wdaReq
+            completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+              wdaRespData = data;
+              wdaHttpResp = (NSHTTPURLResponse *)response;
+              wdaError = error;
+              dispatch_semaphore_signal(sem);
+            }];
+          [task resume];
+          dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(([timeoutMs doubleValue] + 2000) * NSEC_PER_MSEC)));
+          
+          if (wdaRespData && !wdaError) {
+            // 成功：包装 WDA 响应返回给后端
+            NSDictionary *wdaJson = [NSJSONSerialization JSONObjectWithData:wdaRespData options:0 error:nil];
+            NSDictionary *proxyResp = @{
+              @"status": @((int)wdaHttpResp.statusCode),
+              @"body": wdaJson ?: @{}
+            };
+            NSData *respData = [NSJSONSerialization dataWithJSONObject:proxyResp options:0 error:nil];
+            NSString *respBody = [[NSString alloc] initWithData:respData encoding:NSUTF8StringEncoding];
+            NSString *httpResp = [NSString stringWithFormat:
+              @"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %lu\r\nConnection: close\r\n\r\n%@",
+              (unsigned long)respBody.length, respBody];
+            send(socket, [httpResp UTF8String], httpResp.length, 0);
+          } else {
+            // 失败：返回错误信息
+            NSDictionary *errResp = @{
+              @"status": @(502),
+              @"body": @{@"error": wdaError ? wdaError.localizedDescription : @"WDA timeout"}
+            };
+            NSData *respData = [NSJSONSerialization dataWithJSONObject:errResp options:0 error:nil];
+            NSString *respBody = [[NSString alloc] initWithData:respData encoding:NSUTF8StringEncoding];
+            NSString *httpResp = [NSString stringWithFormat:
+              @"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %lu\r\nConnection: close\r\n\r\n%@",
+              (unsigned long)respBody.length, respBody];
+            send(socket, [httpResp UTF8String], httpResp.length, 0);
+          }
+        }
+      }
+    }
     close(socket);
     return;
   }

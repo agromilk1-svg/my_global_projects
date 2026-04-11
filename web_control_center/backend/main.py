@@ -363,56 +363,71 @@ async def delete_device(udid: str, user: dict = Depends(get_current_user)):
     database.delete_device(udid)
     return {"status": "ok", "message": f"Device {udid} deleted."}
 
+# [v1930 P4] 设备列表缓存：高频轮询的 fetchDevices 每秒可能被多次调用，
+# 缓存合并后的设备列表 1 秒，避免重复触发 SQLite 全表扫描 + USB 设备枚举
+_DEVICE_LIST_CACHE = {"data": None, "ts": 0.0}
+_DEVICE_CACHE_TTL = 1.0  # 缓存有效期 1 秒
+
 @app.get("/api/cloud/devices") # 提供给前端查询群控大盘设备列表的接口
 def get_cloud_devices(request: Request):
-    # 合并云控设备和 USB 设备，使前端能统一展示和操控
-    cloud_devs = database.get_all_cloud_devices()
-    usb_devs = device_manager.get_all_devices()
+    now = time.time()
     
-    usb_udids = set(d['udid'] for d in usb_devs)
+    # [v1930 P4] 如果缓存仍在有效期内，跳过昂贵的合并计算
+    if _DEVICE_LIST_CACHE["data"] is not None and (now - _DEVICE_LIST_CACHE["ts"]) < _DEVICE_CACHE_TTL:
+        all_devices_raw = _DEVICE_LIST_CACHE["data"]
+    else:
+        # 合并云控设备和 USB 设备，使前端能统一展示和操控
+        cloud_devs = database.get_all_cloud_devices()
+        usb_devs = device_manager.get_all_devices()
+        
+        usb_udids = set(d['udid'] for d in usb_devs)
+        
+        # 用 UDID 作为主键合并
+        merged = {}
+        for d in cloud_devs:
+            d['source'] = 'cloud'
+            merged[d['udid']] = d
+        
+        for d in usb_devs:
+            udid = d['udid']
+            if udid in merged:
+                # 同一设备既有 USB 又有云控心跳 → 合并，标记为 usb
+                merged[udid].update(d)
+                merged[udid]['source'] = 'usb'
+            else:
+                # 纯 USB 设备（还没发送过心跳）
+                d['source'] = 'usb'
+                # [v1930] 修复在线虚高问题：纯 USB 物理连接但没有心跳，不应判定为真正的 online，
+                # 改回 offline，这样前端的"在线设备: XX台"才能精确反映真正运行 ECMAIN 的数量
+                d['status'] = 'offline'
+                merged[udid] = d
+                
+        # 检测 3 种信道的实际可用性
+        active_ws_udids = set(ACTIVE_TUNNELS.keys())
+        for udid, d in merged.items():
+            d['can_usb'] = udid in usb_udids
+            d['can_lan'] = bool(d.get('local_ip') or d.get('ip'))
+            d['can_ws'] = (udid in active_ws_udids) or (d.get('source') == 'cloud') or d['can_lan']
+        
+        # [附加管理员信息] 批量查询设备→管理员映射
+        admin_map = database.get_device_admin_map()
+        for d in merged.values():
+            d['admin_username'] = admin_map.get(d.get('udid'), '')
+        
+        all_devices_raw = list(merged.values())
+        # 更新缓存
+        _DEVICE_LIST_CACHE["data"] = all_devices_raw
+        _DEVICE_LIST_CACHE["ts"] = now
     
-    # 用 UDID 作为主键合并
-    merged = {}
-    for d in cloud_devs:
-        d['source'] = 'cloud'
-        merged[d['udid']] = d
-    
-    for d in usb_devs:
-        udid = d['udid']
-        if udid in merged:
-            # 同一设备既有 USB 又有云控心跳 → 合并，标记为 usb
-            merged[udid].update(d)
-            merged[udid]['source'] = 'usb'
-        else:
-            # 纯 USB 设备（还没发送过心跳）
-            d['source'] = 'usb'
-            # [2026-03] 注意：USB 物理连接通常意味着在线，但如果 WDA 没起来，前端可能会显示不可控。
-            # 这里保持 'online'，因为 device_manager 既然能拿到设备，通常物理上是通的。
-            d['status'] = 'online'
-            merged[udid] = d
-            
-    # 新增：检测 3 种信道的实际可用性，直接抛给前端使用
-    active_ws_udids = set(ACTIVE_TUNNELS.keys())
-    for udid, d in merged.items():
-        d['can_usb'] = udid in usb_udids
-        d['can_lan'] = bool(d.get('local_ip') or d.get('ip'))
-        # 如果有活跃的隧道，或是云端上报过的设备，或存在局域网IP的，都可以被当作具备 WS 控制能力
-        d['can_ws'] = (udid in active_ws_udids) or (d.get('source') == 'cloud') or d['can_lan']
-    
-    # [权限过滤] 如果是普通管理员，仅返回其所属设备
-    all_devices = list(merged.values())
+    # [权限过滤] 在缓存层之后执行，不影响数据隔离
+    all_devices = all_devices_raw
     try:
         user = get_current_user(request)
         if user and user.get('role') != 'super_admin':
             allowed_udids = set(database.get_admin_devices(user['id']))
-            all_devices = [d for d in all_devices if d.get('udid') in allowed_udids]
+            all_devices = [d for d in all_devices_raw if d.get('udid') in allowed_udids]
     except:
         pass  # Token 缺失时不过滤（兼容心跳等无 Token 调用）
-    
-    # [附加管理员信息] 批量查询设备→管理员映射
-    admin_map = database.get_device_admin_map()
-    for d in all_devices:
-        d['admin_username'] = admin_map.get(d.get('udid'), '')
     
     return {"status": "ok", "devices": all_devices}
 
@@ -588,6 +603,19 @@ async def delete_tiktok_account_api(account_id: int, user: dict = Depends(get_cu
         return {"status": "ok"}
     raise HTTPException(status_code=400, detail="Failed to delete tiktok account")
 
+class BatchImportTikTokReq(BaseModel):
+    """批量导入 TikTok 账号请求体"""
+    accounts: list  # [{ device_no, account, password, email }, ...]
+
+@app.post("/api/tiktok_accounts/batch_import")
+async def batch_import_tiktok_accounts_api(req: BatchImportTikTokReq, user: dict = Depends(get_current_user)):
+    """批量导入 TikTok 账号，格式: 设备编号|账号|密码|邮箱
+    已存在的账号会被覆盖，所有导入账号自动设为主号"""
+    if not req.accounts:
+        raise HTTPException(status_code=400, detail="账号列表不能为空")
+    result = database.batch_import_tiktok_accounts(req.accounts)
+    return {"status": "ok", "data": result}
+
 
 @app.get("/api/device/scripts")
 async def get_device_sync_scripts(
@@ -709,6 +737,8 @@ PENDING_TASKS: Dict[str, asyncio.Future] = {}
 STREAM_QUEUES: Dict[str, List[asyncio.Queue]] = {}
 # [v1760] MJPEG 流取消信号：切换设备时主动终止旧流，防止多个流同时轰炸 WDA /screenshot
 ACTIVE_STREAM_STOPS: Dict[str, asyncio.Event] = {}
+# [v1934] WS 隧道连续超时计数器：用于检测僵尸连接并主动踢掉
+WS_TIMEOUT_COUNTS: Dict[str, int] = {}
 
 class WSTunnelManager:
     async def connect(self, ws: WebSocket, device_key: str):
@@ -742,21 +772,22 @@ async def ws_tunnel_endpoint(websocket: WebSocket, device_key: str):
     try:
         last_heartbeat = time.time()
         while True:
-            # 3. 活跃心跳监测 (Active Heartbeat: 30s timeout)
+            # 3. 活跃心跳监测 (Active Heartbeat: 180s timeout)
+            # [优化] iOS 在后台网络会被系统节流降速，放宽容忍时间至 180 秒，避免频繁断开重连
             try:
-                # 阻塞等待消息，30秒无消息则触发主动 Ping
-                raw = await asyncio.wait_for(websocket.receive(), timeout=30.0)
+                # 阻塞等待消息，180秒无消息则触发主动 Ping
+                raw = await asyncio.wait_for(websocket.receive(), timeout=180.0)
                 last_heartbeat = time.time()
             except asyncio.TimeoutError:
-                # 30秒无数据，发送主动 Ping 并设置 10秒 Pong 超时
+                # 180秒无数据，发送主动 Ping 并设置 30秒 Pong 超时
                 try:
                     await websocket.send_json({"type": "ping"})
-                    raw = await asyncio.wait_for(websocket.receive(), timeout=10.0)
+                    raw = await asyncio.wait_for(websocket.receive(), timeout=30.0)
                     if raw.get("type") == "websocket.disconnect":
                         break
                     last_heartbeat = time.time()
                 except asyncio.TimeoutError:
-                    logging.warning(f"[WS] Pong timeout (10s) for {device_key}, forcing disconnect")
+                    logging.warning(f"[WS] Pong timeout (30s) for {device_key}, forcing disconnect due to iOS sleep or net loss")
                     break
 
             if raw.get("type") == "websocket.disconnect":
@@ -823,9 +854,9 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
         
         if should_use_ws:
             if not _ws:
-                # [v1779] 隧道未就绪时等待建立，而非立即 503 快速失败
-                # 设备切换时 ECMAIN 需要几秒钟才能建立 WS 隧道，此处给予缓冲
-                _ws_wait_max = 30  # 最多等 15 秒 (30 * 0.5s)
+                # [v1930] 智能降级：先短暂等待 WS 隧道（3秒），如果仍无法建立则自动降级到 LAN HTTP 直连
+                # 旧逻辑死等 15 秒后直接 503，导致用户体验极差；新逻辑大幅缩短等待并提供降级路径
+                _ws_wait_max = 6  # 最多等 3 秒 (6 * 0.5s)
                 for _ws_wait_i in range(_ws_wait_max):
                     await asyncio.sleep(0.5)
                     _ws = ACTIVE_TUNNELS.get(req.udid)
@@ -839,7 +870,43 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                             logging.info(f"[WS_WAIT] 隧道就绪 (等待了 {(_ws_wait_i+1)*0.5:.1f}s), udid={req.udid}")
                         break
                 if not _ws:
-                    return 503, {"error": "云端设备 WebSocket 通道未建立或已断线，请检查手机端代理状态"}
+                    # [v1930] WS 不可用时自动降级到 ECMAIN 8089 的 /wda_proxy 端点
+                    # WDA (10088) 绑定 127.0.0.1 外部不可达，但 ECMAIN (8089) 绑定 0.0.0.0 可达
+                    # ECMAIN 通过 /wda_proxy 在本机转发请求到 WDA
+                    _fallback_ip = None
+                    try:
+                        _cloud_devs = database.get_all_cloud_devices()
+                        _target = next((d for d in _cloud_devs if d.get("udid") == req.udid), None)
+                        if _target:
+                            _fallback_ip = _target.get("ip") or _target.get("local_ip")
+                    except Exception:
+                        pass
+                    if _fallback_ip:
+                        _proxy_url = f"http://{_fallback_ip}:8089/wda_proxy"
+                        # 从完整 URL 中提取 WDA 路径部分（如 /session, /window/size, /screenshot 等）
+                        import re as _re
+                        _path_match = _re.search(r"http://127\.0\.0\.1:\d+(/.+)", url)
+                        _wda_path = _path_match.group(1) if _path_match else "/status"
+                        
+                        logging.warning(f"[WS→8089] 设备 {req.udid} WS 隧道不可用，通过 ECMAIN 8089 /wda_proxy 降级: {method} {_wda_path}")
+                        
+                        def _sync_wda_proxy():
+                            try:
+                                proxy_body = {
+                                    "method": method.upper(),
+                                    "path": _wda_path,
+                                    "body": json_body,
+                                    "timeout": int(timeout * 1000)
+                                }
+                                resp = requests.post(_proxy_url, json=proxy_body, timeout=timeout + 5)
+                                result = resp.json()
+                                # /wda_proxy 返回 {"status": 200, "body": {...WDA原始响应...}}
+                                return result.get("status", 502), result.get("body", {})
+                            except Exception as e:
+                                return 500, {"error": f"ECMAIN 8089 /wda_proxy failed: {str(e)}"}
+                        return await asyncio.to_thread(_sync_wda_proxy)
+                    else:
+                        return 503, {"error": "云端设备 WebSocket 通道未建立或已断线，且无可用局域网 IP 降级"}
                 
             task_id = f"{time.monotonic_ns()}"
             if fire_forget:
@@ -857,8 +924,26 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                     "body": json_body
                 })
                 result = await asyncio.wait_for(future, timeout=timeout)
+                # 命令成功，重置该设备的超时计数器
+                WS_TIMEOUT_COUNTS.pop(req.udid, None)
                 return result.get("status", 500), result.get("body", {})
             except asyncio.TimeoutError:
+                # [v1934] 僵尸隧道自动清理：WS 指令超时后主动踢掉死管道
+                _timeout_key = req.udid
+                WS_TIMEOUT_COUNTS[_timeout_key] = WS_TIMEOUT_COUNTS.get(_timeout_key, 0) + 1
+                _tc = WS_TIMEOUT_COUNTS[_timeout_key]
+                if _tc >= 2:
+                    # 连续 2 次超时，判定为僵尸连接，主动断开
+                    logging.warning(f"[WS] 🔪 设备 {_timeout_key} 连续 {_tc} 次 WS 超时，判定为僵尸隧道，主动断开")
+                    try:
+                        await _ws.close(code=1000)
+                    except Exception:
+                        pass
+                    tunnel_manager.disconnect(_timeout_key)
+                    STREAM_QUEUES.pop(_timeout_key, None)
+                    WS_TIMEOUT_COUNTS.pop(_timeout_key, None)
+                else:
+                    logging.warning(f"[WS] ⚠️ 设备 {_timeout_key} WS 指令超时 ({_tc}/2)，下次超时将主动断开僵尸隧道")
                 return 504, {"error": "Gateway Timeout over WebSocket"}
             except Exception as e:
                 return 500, {"error": str(e)}
@@ -1341,13 +1426,54 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 @app.websocket("/api/ws_stream/{udid}")
 async def ws_screen_stream(websocket: WebSocket, udid: str, mode: str = 'ws', slave: str = '1', quality: str = 'low'):
-    """[v1763] 方案B从机推流：消费 ECMAIN 主动推送的原生 JPEG 帧，转 base64 推送给前端 WebSocket"""
+    """[v1930] 方案B从机推流：消费 ECMAIN 主动推送的原生 JPEG 帧，转 base64 推送给前端 WebSocket
+    
+    优化点：
+    - 心跳保活：响应前端 __ping__ 消息，防止中间代理超时断连
+    - 发送保护：send_text 失败时优雅退出，不会崩溃整个流
+    - 隧道重寻：隧道断开后会自动重新寻找，而不是直接放弃
+    - 宽松超时：60s 无帧才终止（原来 30s 太激进）
+    - 客户端断线检测：并发监听客户端消息，及时感知断开
+    """
     await websocket.accept()
     
     logging.info(f"[WS STREAM] 方案B 从机推流启动: udid={udid}")
     frame_count = 0
     stream_started = False
+    client_alive = True
     queue = asyncio.Queue(maxsize=3)
+    
+    # [v1930] 并发监听任务：持续接收客户端消息（心跳/断开），与帧推送并行
+    async def _client_listener():
+        nonlocal client_alive
+        try:
+            while client_alive:
+                try:
+                    msg = await asyncio.wait_for(websocket.receive(), timeout=60.0)
+                    if msg.get("type") == "websocket.disconnect":
+                        client_alive = False
+                        break
+                    # 响应前端心跳保活
+                    text = msg.get("text", "")
+                    if text == "__ping__":
+                        try:
+                            await websocket.send_text("__pong__")
+                        except:
+                            client_alive = False
+                            break
+                except asyncio.TimeoutError:
+                    # 60s 没收到客户端任何消息（包括心跳），视为断线
+                    logging.info(f"[WS STREAM] 客户端 60s 无心跳，判定断线 ({udid})")
+                    client_alive = False
+                    break
+        except (WebSocketDisconnect, RuntimeError):
+            client_alive = False
+        except Exception as e:
+            if "close message" not in str(e) and "WebSocket is closed" not in str(e):
+                logging.warning(f"[WS STREAM] 客户端监听异常: {e}")
+            client_alive = False
+
+    listener_task = asyncio.create_task(_client_listener())
     
     try:
         # 注册为该设备的流订阅者
@@ -1355,18 +1481,23 @@ async def ws_screen_stream(websocket: WebSocket, udid: str, mode: str = 'ws', sl
             STREAM_QUEUES[udid] = []
         STREAM_QUEUES[udid].append(queue)
         
+        # [v1930] 寻找隧道（支持重试寻找）
+        def _find_tunnel():
+            """在 ACTIVE_TUNNELS 中精确或模糊匹配 udid 对应的隧道"""
+            ws = ACTIVE_TUNNELS.get(udid)
+            if ws:
+                return ws
+            for tk, tw in ACTIVE_TUNNELS.items():
+                if udid in tk or tk in udid:
+                    return tw
+            return None
+        
         # 等待隧道就绪
         tunnel_ws = None
         tunnel_wait = 0
         max_tunnel_wait = 60
-        while tunnel_wait < max_tunnel_wait:
-            tunnel_ws = ACTIVE_TUNNELS.get(udid)
-            if not tunnel_ws:
-                # 模糊匹配
-                for tk, tw in ACTIVE_TUNNELS.items():
-                    if udid in tk or tk in udid:
-                        tunnel_ws = tw
-                        break
+        while client_alive and tunnel_wait < max_tunnel_wait:
+            tunnel_ws = _find_tunnel()
             if tunnel_ws:
                 break
             tunnel_wait += 1
@@ -1374,8 +1505,8 @@ async def ws_screen_stream(websocket: WebSocket, udid: str, mode: str = 'ws', sl
                 logging.warning(f"[WS STREAM] 等待设备 {udid} 隧道... (第{tunnel_wait}次)")
             await asyncio.sleep(0.5)
         
-        if not tunnel_ws:
-            logging.error(f"[WS STREAM] 设备 {udid} 隧道等待超时")
+        if not tunnel_ws or not client_alive:
+            logging.error(f"[WS STREAM] 设备 {udid} 隧道等待超时或客户端已断开")
             return
         
         # 发送 START_STREAM（幂等操作，ECMAIN 已在推流时会忽略重复启动）
@@ -1394,9 +1525,12 @@ async def ws_screen_stream(websocket: WebSocket, udid: str, mode: str = 'ws', sl
         
         # 从队列消费 ECMAIN 推送的原生 JPEG 帧，转 base64 推送给前端
         empty_streak = 0
-        while True:
+        send_failures = 0
+        MAX_SEND_FAILURES = 5  # 连续发送失败超过 5 次视为客户端已死
+        
+        while client_alive:
             try:
-                jpeg_data = await asyncio.wait_for(queue.get(), timeout=3.0)
+                jpeg_data = await asyncio.wait_for(queue.get(), timeout=5.0)
                 if jpeg_data and len(jpeg_data) > 100:
                     frame_count += 1
                     empty_streak = 0
@@ -1405,38 +1539,48 @@ async def ws_screen_stream(websocket: WebSocket, udid: str, mode: str = 'ws', sl
                     if slave == '1' and frame_count % 5 != 0:
                         continue
                     
-                    # [v1763] 从机缩略图压缩：缩放至 1/3 分辨率 + 低 quality，节省 ~87% 带宽
-                    try:
-                        from PIL import Image
-                        import io
-                        img = Image.open(io.BytesIO(jpeg_data))
-                        # 缩放到 1/3（从机面板只是缩略观察，不需要高清）
-                        new_w = max(img.width // 3, 120)
-                        new_h = max(img.height // 3, 200)
-                        img = img.resize((new_w, new_h), Image.LANCZOS)
-                        buf = io.BytesIO()
-                        img.save(buf, format='JPEG', quality=40, optimize=True)
-                        compressed = buf.getvalue()
-                    except Exception:
-                        compressed = jpeg_data  # 压缩失败时回退原始帧
+                    # [v1930 P1] PIL 压缩放入线程池，释放事件循环给其他协程
+                    # [v1930 P3] 直接发送二进制帧，省掉 base64 编码的 33% CPU+带宽开销
+                    def _compress_frame(raw_jpeg):
+                        """线程池中执行的同步 PIL 压缩（CPU 密集任务不阻塞 asyncio）"""
+                        try:
+                            from PIL import Image
+                            import io
+                            img = Image.open(io.BytesIO(raw_jpeg))
+                            new_w = max(img.width // 3, 120)
+                            new_h = max(img.height // 3, 200)
+                            img = img.resize((new_w, new_h), Image.LANCZOS)
+                            buf = io.BytesIO()
+                            img.save(buf, format='JPEG', quality=40, optimize=True)
+                            return buf.getvalue()
+                        except Exception:
+                            return raw_jpeg  # 压缩失败时回退原始帧
                     
-                    # 转为 base64 文本推送（兼容前端 <img src="data:image/jpeg;base64,..."> 渲染）
-                    b64_text = base64.b64encode(compressed).decode('ascii')
-                    await websocket.send_text(b64_text)
+                    compressed = await asyncio.to_thread(_compress_frame, jpeg_data)
+                    
+                    # [v1930 P3] 二进制帧直推：前端用 Blob URL 渲染，无需 base64 中间层
+                    try:
+                        await websocket.send_bytes(compressed)
+                        send_failures = 0  # 发送成功则重置失败计数
+                    except (RuntimeError, Exception) as send_err:
+                        send_failures += 1
+                        if send_failures >= MAX_SEND_FAILURES:
+                            logging.info(f"[WS STREAM] 连续 {MAX_SEND_FAILURES} 次发送失败，客户端已断开 ({udid})")
+                            break
+                        if "close message" in str(send_err) or "WebSocket is closed" in str(send_err):
+                            break
+                        
             except asyncio.TimeoutError:
                 empty_streak += 1
-                # 检查隧道是否还活着
-                _check_ws = ACTIVE_TUNNELS.get(udid)
-                if not _check_ws:
-                    for tk in ACTIVE_TUNNELS:
-                        if udid in tk or tk in udid:
-                            _check_ws = True
-                            break
-                if not _check_ws:
-                    logging.warning(f"[WS STREAM] 隧道断开，从机流终止 (共推 {frame_count} 帧)")
-                    break
-                if empty_streak > 10:
-                    logging.warning(f"[WS STREAM] 连续 30s 未收到帧，从机流终止")
+                # [v1930] 隧道断开后尝试重新寻找（设备可能短暂掉线后重连了新隧道）
+                if not _find_tunnel():
+                    # 给隧道重建 10 秒窗口
+                    if empty_streak > 2:
+                        logging.warning(f"[WS STREAM] 隧道断开超过 10s，从机流终止 (共推 {frame_count} 帧)")
+                        break
+                elif empty_streak > 12:
+                    # 隧道存在但 60s 无帧（12次 * 5s），大概率设备端推流停止
+                    logging.warning(f"[WS STREAM] 连续 60s 未收到帧，从机流终止 ({udid})")
                     break
                 continue
             except RuntimeError as re:
@@ -1451,6 +1595,13 @@ async def ws_screen_stream(websocket: WebSocket, udid: str, mode: str = 'ws', sl
         if "close message" not in err_str and "WebSocket is closed" not in err_str:
             logging.error(f"[WS STREAM] 从机流异常: {e}")
     finally:
+        client_alive = False
+        listener_task.cancel()
+        try:
+            await listener_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        
         # 取消订阅
         if udid in STREAM_QUEUES:
             try:
@@ -1463,12 +1614,7 @@ async def ws_screen_stream(websocket: WebSocket, udid: str, mode: str = 'ws', sl
             STREAM_QUEUES.pop(udid, None)
             if stream_started:
                 try:
-                    _stop_ws = ACTIVE_TUNNELS.get(udid)
-                    if not _stop_ws:
-                        for tk, tw in ACTIVE_TUNNELS.items():
-                            if udid in tk or tk in udid:
-                                _stop_ws = tw
-                                break
+                    _stop_ws = _find_tunnel() if '_find_tunnel' in dir() else ACTIVE_TUNNELS.get(udid)
                     if _stop_ws:
                         await _stop_ws.send_json({
                             "id": f"stream_stop_{time.monotonic_ns()}",
@@ -1740,6 +1886,161 @@ async def get_screen_stream(udid: str, ip: str = None, usb: str = 'true', mode: 
         media_type="multipart/x-mixed-replace; boundary=myboundary"
     )
 
+# ==================== ECMAIN 群控高并发心跳系统 ====================
+
+class HeartbeatRequest(BaseModel):
+    udid: str
+    device_no: str = ""
+    status: str
+    local_ip: str
+    battery_level: int = 0
+    app_version: int = 0
+    ecwda_version: int = -1  # ECWDA 本地版本号，-1 表示客户端未上报
+    vpn_active: bool = False  # VPN 连接状态
+    vpn_ip: str = ""  # VPN 局域网分配 IP
+    ecwda_status: str = "offline" # ECWDA 的探活结果
+    config_checksum: str = ""
+    task_status: str = ""  # 任务状态 JSON 数组，如 [{"name":"xxx","time":"HH:mm:ss"}]
+    admin_username: str = "" # iOS 仪表盘手动输入的所属管理员账号
+    tiktok_version: str = "" # TikTok 版本号
+    vpn_node: str = "" # VPN 节点名称
+
+class TaskReportRequest(BaseModel):
+    udid: str
+    task_name: str
+    status: str       # "正在执行" | "执行完成"
+    success: bool = False
+    error: str = ""
+    last_command: str = ""
+
+@app.post("/devices/heartbeat")
+def handle_heartbeat(req: HeartbeatRequest):
+    """
+    接收来自 ECMAIN 每分钟发送的心跳，承接 10万 级并发。
+    写数据库靠 database 独有的异步 bulk 消化。
+    """
+    # 兼容手动点击"保存测试"发送的 ping 状态，将其视为 online
+    actual_status = "online" if req.status == "ping" else req.status
+    
+    # [v1930] device_no 回填兜底：如果心跳未携带编号，尝试从数据库已配置的值回填
+    # 解决 ECMAIN 旧版本或 bug 导致心跳不携带 device_no 的问题
+    effective_device_no = req.device_no
+    if not effective_device_no:
+        logging.warning(f"[Heartbeat] 设备 {req.udid} 心跳未携带 device_no，尝试从缓存回填")
+        # 从内存缓存中快速查找（避免每次空编号都去读 SQLite）
+        with database.CACHE_LOCK:
+            cached = database.LATEST_STATUS_CACHE.get(req.udid)
+            if cached and cached.get('device_no'):
+                effective_device_no = cached['device_no']
+    
+    database.register_heartbeat(req.udid, {
+        "device_no": effective_device_no,
+        "status": actual_status,
+        "local_ip": req.local_ip,
+        "battery_level": req.battery_level,
+        "app_version": req.app_version,
+        "ecwda_version": req.ecwda_version,
+        "vpn_active": 1 if req.vpn_active else 0,
+        "vpn_ip": req.vpn_ip,
+        "ecwda_status": req.ecwda_status,
+        "task_status": req.task_status,
+        "tiktok_version": req.tiktok_version,
+        "vpn_node": req.vpn_node
+    })
+    
+    # 【自动绑定逻辑】如果心跳携带了管理员账号，则自动建立归属关系
+    if req.admin_username:
+        admin_uname_clean = req.admin_username.strip()
+        with sqlite3.connect(database.DB_PATH, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('SELECT id FROM ec_admins WHERE username COLLATE NOCASE = ?', (admin_uname_clean,))
+            admin_row = cursor.fetchone()
+            if admin_row:
+                admin_id = admin_row['id']
+                database.assign_device_to_admin(admin_id, req.udid)
+            else:
+                logging.warning(f"Heartbeat reported unknown admin: '{req.admin_username}' (cleaned: '{admin_uname_clean}')")
+    
+    response = {"status": "ok"}
+    
+    # 获取此手机全局的配置档案，计算 MD5 若不一致，要求客户端下发更新
+    device_conf = database.get_device_config(req.udid)
+    raw_hash_str = "|".join([
+        str(device_conf.get("config_ip", "")),
+        str(device_conf.get("config_vpn", "")),
+        str(device_conf.get("country", "")),
+        str(device_conf.get("group_name", "")),
+        str(device_conf.get("exec_time", "")),
+        str(device_conf.get("apple_account", "")),
+        str(device_conf.get("apple_password", "")),
+        str(device_conf.get("tiktok_accounts", "[]")),
+        str(device_conf.get("watchdog_wda", 1))
+    ])
+    server_checksum = hashlib.md5(raw_hash_str.encode('utf-8')).hexdigest()
+
+    if req.config_checksum != server_checksum:
+        logging.info(f"[Heartbeat] Config mismatch for {req.udid}: client={req.config_checksum}, server={server_checksum}")
+        response["push_config"] = {
+            "config_ip": device_conf.get("config_ip", ""),
+            "config_vpn": device_conf.get("config_vpn", ""),
+            "country": device_conf.get("country", ""),
+            "group_name": device_conf.get("group_name", ""),
+            "exec_time": device_conf.get("exec_time", ""),
+            "apple_account": device_conf.get("apple_account", ""),
+            "apple_password": device_conf.get("apple_password", ""),
+            "tiktok_accounts": device_conf.get("tiktok_accounts", "[]"),
+            "watchdog_wda": device_conf.get("watchdog_wda", 1),
+            "config_checksum": server_checksum
+        }
+    
+    # 判断当前设备是否有任务正在执行
+    _has_running_task = False
+    if req.task_status:
+        try:
+            _ts = json.loads(req.task_status)
+            _has_running_task = isinstance(_ts, list) and len(_ts) > 0
+        except Exception:
+            _has_running_task = bool(req.task_status.strip())
+
+    # 版本检查（有新版本时优先返回更新信息，由客户端主动打断当前任务进行 OTA）
+    if req.app_version > 0:
+        latest = _get_latest_ecmain_version()
+        if latest and latest.get("version", 0) > req.app_version:
+            update_data = {
+                "version": latest["version"],
+                "build_date": latest.get("build_date", ""),
+                "download_url": "/api/ecmain/download"
+            }
+            response["update"] = update_data
+            response["version_url"] = "/api/ecmain/download"
+            response["new_version_url"] = "/api/ecmain/download"
+    
+    # ECWDA 版本检查（有新版本时同样优先下发，由客户端打断任务）
+    if req.ecwda_version >= 0:
+        latest_wda = _get_latest_ecwda_version()
+        if latest_wda and latest_wda.get("version", 0) > req.ecwda_version:
+            response["ecwda_update"] = {
+                "version": latest_wda["version"],
+                "build_date": latest_wda.get("build_date", ""),
+                "download_url": "/api/ecwda/download"
+            }
+    elif req.ecwda_version >= 0 and _has_running_task:
+        logging.info(f"[OTA跳过] 设备 {req.udid[:8]} 有任务执行中，跳过 ECWDA OTA 检查")
+    
+    # 立即查询是否有这台机器的专属待办 JS 任务
+    tasks = database.pop_pending_tasks(req.udid, limit=1)
+    if tasks:
+        t = tasks[0]
+        response["task"] = {
+            "id": t["id"],
+            "type": t["type"],
+            "script": t["payload"] if t["type"] == "script" else "",
+            "payload": t["payload"] if t["type"] != "script" else {}
+        }
+    
+    return response
+
 @app.get("/api/probe")
 def api_probe(ip: str):
     import requests
@@ -1819,51 +2120,93 @@ class LaunchReq(BaseModel):
 async def api_launch_ecwda(req: LaunchReq, user: dict = Depends(get_current_user)):
     await require_device_permission(user, req.udid)
     import subprocess
+    import platform_utils
     
     try:
-        # 自动查找当前 USB 连接的设备
-        # ECMAIN 心跳 UDID (identifierForVendor) 和 USB 硬件 UDID 格式不同，不能直接匹配
-        # 所以优先使用 DeviceManager 检测到的 USB 设备
-        usb_devices = device_manager.get_all_devices()
-        
-        if not usb_devices:
-            raise HTTPException(status_code=400, detail="未检测到 USB 连接的设备，请确认数据线已插好")
-        
-        # 如果传入的 UDID 刚好匹配 USB 设备就用它，否则用第一个 USB 设备
-        udid = req.udid
-        usb_udids = [d['udid'] for d in usb_devices]
-        if udid not in usb_udids:
-            udid = usb_udids[0]
-            logging.info(f"传入 UDID {req.udid[:8]} 非 USB 设备，自动使用 USB 设备: {udid[:8]}")
-        
-        # 1. 净化历史引用遗留
-        _kill_previous_process(_WDA_PROCS, udid)
-        
-        # 净化系统级残留（仅针对主核心，relay 交由 DeviceManager 管理）
+        logical_udid = req.udid
         import platform_utils
-        platform_utils.kill_process_by_keyword(f"tidevice -u {udid} xctest")
-        
-        # 2. 跨平台定位 tidevice 可执行文件
         t_path = platform_utils.find_tidevice()
-
         env = platform_utils.get_env_with_path()
-
-        # 创建一个真实的伪输出缓冲文件（切忌给 DEVNULL，否则部分 C 级通信套件会判定通道阻塞自杀）
-        log_file_path = os.path.join(os.path.dirname(__file__), "wda_run.log")
-        wda_log = open(log_file_path, "a")
-
-        # 3. 长生存权：直接被 fastapi 内存池引用，保证 USB 连接稳定
-        # 3. 唤醒主核心 XCTest 流
-        cmd_wda = [t_path, "-u", udid, "xctest", "-B", "com.apple.accessibility.ecwda"]
-        _WDA_PROCS[udid] = subprocess.Popen(cmd_wda, stdout=wda_log, stderr=wda_log, env=env)
         
-        # 4. 触发 DeviceManager 的重连/转发机制
-        # DeviceManager 会自动处理 WDA(10088), MJPEG(10089) 和 ECMAIN(8089) 的 relay
-        if udid in device_manager.devices:
-            device_manager._start_tunnels(udid)
+        # 0. 核心：把逻辑 UDID (SN) 转化为真正的物理硬件 UDID (40位哈希)
+        hw_udid = logical_udid
+        state = device_manager.devices.get(logical_udid)
+        if state:
+            hw_udid = state.hardware_udid
+            logging.info(f"[v1930] 逻辑 ID ({logical_udid}) -> 底层物理 ID ({hw_udid})")
+        else:
+            # DeviceManager 未注册 (WiFi 设备)，通过 tidevice list 反查物理 UDID
+            try:
+                output = subprocess.check_output([t_path, "list"], text=True, timeout=5)
+                for line in output.splitlines():
+                    if logical_udid in line:
+                        parts = line.split()
+                        if parts and len(parts[0]) == 40:
+                            hw_udid = parts[0]
+                            logging.info(f"[v1930] tidevice list 反查: {logical_udid} -> {hw_udid}")
+                        break
+            except Exception:
+                pass
+        
+        # 0.5 嗅探连接类型
+        conn_type = "USB 或 WiFi"
+        is_network = False
+        try:
+            output = subprocess.check_output([t_path, "list"], text=True, timeout=5)
+            for line in output.splitlines():
+                if hw_udid in line or logical_udid in line:
+                    if "network" in line.lower():
+                        conn_type = "WiFi 纯无线远控"
+                        is_network = True
+                    else:
+                        conn_type = "USB 有线专网"
+                    break
+        except Exception:
+            pass
 
-        logging.info(f"ECWDA 唤醒波已通过 DeviceManager 接管全链转发！USB UDID: {udid}")
-        return {"status": "ok", "message": f"底层 tidevice 唤醒波已送达，中继已在后台建立 (USB设备: {udid[:8]})"}
+        logging.info(f"[v1930] 🚀 通过 {conn_type} 启动 WDA (目标: {hw_udid})")
+
+        # 1. 净化历史遗留
+        _kill_previous_process(_WDA_PROCS, logical_udid)
+        platform_utils.kill_process_by_keyword(f"tidevice -u {hw_udid} xctest")
+        
+        # 2. 根据连接类型选择启动策略
+        if is_network:
+            # ========== WiFi 模式：使用自研 wifi_wda_launcher 绕过 house_arrest 限制 ==========
+            logging.info(f"[v1930] 📡 WiFi 模式：启用自研 instruments 协议直连启动器")
+            from wifi_wda_launcher import launch_wda_wifi
+            
+            # 在后台线程中启动 (非阻塞)
+            import threading
+            def _wifi_launch():
+                try:
+                    success = launch_wda_wifi(hw_udid, bundle_id="com.apple.accessibility.ecwda")
+                    if success:
+                        logging.info(f"[v1930] ✅ WiFi WDA 启动成功！")
+                    else:
+                        logging.error(f"[v1930] ❌ WiFi WDA 启动失败")
+                except Exception as e:
+                    logging.error(f"[v1930] WiFi WDA 启动异常: {e}")
+            
+            t = threading.Thread(target=_wifi_launch, daemon=True)
+            t.start()
+        else:
+            # ========== USB 模式：使用 tidevice 标准流程 ==========
+            log_file_path = os.path.join(os.path.dirname(__file__), "wda_run.log")
+            wda_log = open(log_file_path, "a")
+            cmd_wda = [t_path, "-u", hw_udid, "xctest", "-B", "com.apple.accessibility.ecwda"]
+            _WDA_PROCS[logical_udid] = subprocess.Popen(cmd_wda, stdout=wda_log, stderr=wda_log, env=env)
+        
+        # 3. 触发 DeviceManager 的重连/转发机制
+        if logical_udid in device_manager.devices:
+            device_manager._start_tunnels(logical_udid)
+
+        logging.info(f"[v1930] ECWDA 唤醒波已通过 {conn_type} 通道发出！目标: {logical_udid}")
+        return {
+            "status": "ok", 
+            "message": f"🤖 WDA 已通过【{conn_type}】成功发射！PID 已分配，WDA 正在初始化...", 
+            "mode": conn_type.lower()
+        }
         
     except HTTPException:
         raise
@@ -1874,33 +2217,6 @@ async def api_launch_ecwda(req: LaunchReq, user: dict = Depends(get_current_user
 @app.get("/api/ping")
 def ping():
     return {"ping": "pong"}
-
-# ==================== ECMAIN 群控高并发心跳系统 ====================
-
-class HeartbeatRequest(BaseModel):
-    udid: str
-    device_no: str = ""
-    status: str
-    local_ip: str
-    battery_level: int = 0
-    app_version: int = 0
-    ecwda_version: int = -1  # ECWDA 本地版本号，-1 表示客户端未上报
-    vpn_active: bool = False  # VPN 连接状态
-    vpn_ip: str = ""  # VPN 局域网分配 IP
-    ecwda_status: str = "offline" # ECWDA 的探活结果
-    config_checksum: str = ""
-    task_status: str = ""  # 任务状态 JSON 数组，如 [{"name":"xxx","time":"HH:mm:ss"}]
-    admin_username: str = "" # iOS 仪表盘手动输入的所属管理员账号
-    tiktok_version: str = "" # TikTok 版本号
-    vpn_node: str = "" # VPN 节点名称
-
-class TaskReportRequest(BaseModel):
-    udid: str
-    task_name: str
-    status: str       # "正在执行" | "执行完成"
-    success: bool = False
-    error: str = ""
-    last_command: str = ""
 
 # ECMAIN / ECWDA 编译后输出的更新包存放目录
 ECMAIN_BUILD_OUTPUT = os.path.join(os.path.dirname(__file__), "updates")
@@ -1926,134 +2242,6 @@ def _get_latest_ecwda_version():
     except Exception as e:
         logging.error(f"读取 ECWDA 版本文件失败: {e}")
     return None
-
-@app.post("/devices/heartbeat")
-def handle_heartbeat(req: HeartbeatRequest):
-    """
-    接收来自 ECMAIN 每分钟发送的心跳，承接 10万 级并发。
-    写数据库靠 database 独有的异步 bulk 消化。
-    """
-    # 兼容手动点击“保存测试”发送的 ping 状态，将其视为 online
-    actual_status = "online" if req.status == "ping" else req.status
-    
-    database.register_heartbeat(req.udid, {
-        "device_no": req.device_no,
-        "status": actual_status,
-        "local_ip": req.local_ip,
-        "battery_level": req.battery_level,
-        "app_version": req.app_version,
-        "ecwda_version": req.ecwda_version,
-        "vpn_active": 1 if req.vpn_active else 0,
-        "vpn_ip": req.vpn_ip,
-        "ecwda_status": req.ecwda_status,
-        "task_status": req.task_status,
-        "tiktok_version": req.tiktok_version,
-        "vpn_node": req.vpn_node
-    })
-    
-    # 【自动绑定逻辑】如果心跳携带了管理员账号，则自动建立归属关系
-    if req.admin_username:
-        admin_uname_clean = req.admin_username.strip()
-        # 查找管理员 ID (忽略大小写进行匹配)
-        with sqlite3.connect(database.DB_PATH, timeout=5) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute('SELECT id FROM ec_admins WHERE username COLLATE NOCASE = ?', (admin_uname_clean,))
-            admin_row = cursor.fetchone()
-            if admin_row:
-                admin_id = admin_row['id']
-                # 检查是否已绑定，若无则自动绑定
-                database.assign_device_to_admin(admin_id, req.udid)
-            else:
-                logging.warning(f"Heartbeat reported unknown admin: '{req.admin_username}' (cleaned: '{admin_uname_clean}')")
-    
-    response = {"status": "ok"}
-    
-    # 获取此手机全局的配置档案，计算 MD5 若不一致，要求客户端下发更新
-    device_conf = database.get_device_config(req.udid)
-    # 使用分隔符拼接，防止字段合并导致的哈希碰撞
-    raw_hash_str = "|".join([
-        str(device_conf.get("config_ip", "")),
-        str(device_conf.get("config_vpn", "")),
-        str(device_conf.get("country", "")),
-        str(device_conf.get("group_name", "")),
-        str(device_conf.get("exec_time", "")),
-        str(device_conf.get("apple_account", "")),
-        str(device_conf.get("apple_password", "")),
-        str(device_conf.get("tiktok_accounts", "[]")),
-        str(device_conf.get("watchdog_wda", 1))
-    ])
-    server_checksum = hashlib.md5(raw_hash_str.encode('utf-8')).hexdigest()
-
-    if req.config_checksum != server_checksum:
-        logging.info(f"[Heartbeat] Config mismatch for {req.udid}: client={req.config_checksum}, server={server_checksum}")
-
-    if req.config_checksum != server_checksum:
-        response["push_config"] = {
-            "config_ip": device_conf.get("config_ip", ""),
-            "config_vpn": device_conf.get("config_vpn", ""),
-            "country": device_conf.get("country", ""),
-            "group_name": device_conf.get("group_name", ""),
-            "exec_time": device_conf.get("exec_time", ""),
-            "apple_account": device_conf.get("apple_account", ""),
-            "apple_password": device_conf.get("apple_password", ""),
-            "tiktok_accounts": device_conf.get("tiktok_accounts", "[]"),
-            "watchdog_wda": device_conf.get("watchdog_wda", 1),
-            "config_checksum": server_checksum
-        }
-    
-    # 判断当前设备是否有任务正在执行（task_status 非空且非空数组）
-    _has_running_task = False
-    if req.task_status:
-        try:
-            _ts = json.loads(req.task_status)
-            _has_running_task = isinstance(_ts, list) and len(_ts) > 0
-        except Exception:
-            _has_running_task = bool(req.task_status.strip())
-
-    # 版本检查：如果客户端上报了版本号，则对比服务器最新版本
-    # [任务保护] 有任务执行中时跳过 OTA，避免更新打断正在运行的任务
-    if req.app_version > 0 and not _has_running_task:
-        latest = _get_latest_ecmain_version()
-        if latest and latest.get("version", 0) > req.app_version:
-            update_data = {
-                "version": latest["version"],
-                "build_date": latest.get("build_date", ""),
-                "download_url": "/api/ecmain/download"
-            }
-            response["update"] = update_data
-            # 兼容 ViewController.m 中的 PING 检查逻辑 (TEST-PING)
-            response["version_url"] = "/api/ecmain/download"
-            response["new_version_url"] = "/api/ecmain/download"
-    elif req.app_version > 0 and _has_running_task:
-        logging.info(f"[OTA跳过] 设备 {req.udid[:8]} 有任务执行中，跳过 ECMAIN OTA 检查")
-    
-    # ECWDA 版本检查：对比本地 ECWDA 版本和服务器最新版本
-    # [任务保护] 有任务执行中时同样跳过 ECWDA OTA
-    if req.ecwda_version >= 0 and not _has_running_task:
-        latest_wda = _get_latest_ecwda_version()
-        if latest_wda and latest_wda.get("version", 0) > req.ecwda_version:
-            response["ecwda_update"] = {
-                "version": latest_wda["version"],
-                "build_date": latest_wda.get("build_date", ""),
-                "download_url": "/api/ecwda/download"
-            }
-    elif req.ecwda_version >= 0 and _has_running_task:
-        logging.info(f"[OTA跳过] 设备 {req.udid[:8]} 有任务执行中，跳过 ECWDA OTA 检查")
-    
-    # 立即查询是否有这台机器的专属待办 JS 任务
-    tasks = database.pop_pending_tasks(req.udid, limit=1)
-    if tasks:
-        # 下发首个任务给 ECMAIN
-        t = tasks[0]
-        response["task"] = {
-            "id": t["id"],
-            "type": t["type"],  # e.g., 'script'
-            "script": t["payload"] if t["type"] == "script" else "",
-            "payload": t["payload"] if t["type"] != "script" else {}
-        }
-    
-    return response
 
 class ReportTaskRequest(BaseModel):
     task_id: int
@@ -2149,25 +2337,15 @@ def api_ecmain_version(udid: str = None):
 
 @app.get("/api/ecmain/download")
 async def api_ecmain_download():
-    """下载最新的 ecmain.tar 更新包（改用流式分块读取，防止协议报错）"""
+    """下载最新的 ecmain.tar 更新包（改用 FileResponse，防止 StreamingResponse 导致的协议报错）"""
     tar_path = os.path.join(ECMAIN_BUILD_OUTPUT, "ecmain.tar")
     if not os.path.exists(tar_path):
         raise HTTPException(status_code=404, detail="更新包不存在，请先运行 build_full.py 编译")
     
-    file_size = os.path.getsize(tar_path)
-    
-    def iterfile():
-        with open(tar_path, mode="rb") as f:
-            while chunk := f.read(1024 * 1024): # 1MB chunks
-                yield chunk
-
-    return StreamingResponse(
-        iterfile(),
+    return FileResponse(
+        path=tar_path,
         media_type="application/x-tar",
-        headers={
-            "Content-Disposition": 'attachment; filename="ecmain.tar"',
-            "Content-Length": str(file_size)
-        }
+        filename="ecmain.tar"
     )
 
 # ==================== ECWDA 自动更新系统 ====================
@@ -2206,25 +2384,15 @@ def api_ecwda_version(udid: str = None):
 
 @app.get("/api/ecwda/download")
 async def api_ecwda_download():
-    """下载最新的 ecwda.ipa 更新包"""
+    """下载最新的 ecwda.ipa 更新包（改用 FileResponse）"""
     ipa_path = os.path.join(ECMAIN_BUILD_OUTPUT, "ecwda.ipa")
     if not os.path.exists(ipa_path):
         raise HTTPException(status_code=404, detail="ECWDA 更新包不存在，请先运行 build_wda.py 编译")
-    
-    file_size = os.path.getsize(ipa_path)
 
-    def iterfile():
-        with open(ipa_path, mode="rb") as f:
-            while chunk := f.read(1024 * 1024):
-                yield chunk
-
-    return StreamingResponse(
-        iterfile(),
+    return FileResponse(
+        path=ipa_path,
         media_type="application/octet-stream",
-        headers={
-            "Content-Disposition": 'attachment; filename="ecwda.ipa"',
-            "Content-Length": str(file_size)
-        }
+        filename="ecwda.ipa"
     )
 
 # ================= 文件管理 =================
@@ -2288,4 +2456,7 @@ async def delete_shared_file(filename: str, user: dict = Depends(require_super_a
     return {"ok": True}
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8088, reload=True)
+    # [v1930 P0] 关闭 reload 模式，消除文件监控开销，提升约 15-20% 吞吐
+    # 注意：不能加 workers>1，因为 ACTIVE_TUNNELS / STREAM_QUEUES 是进程内存态，
+    # 多 Worker 之间无法共享 WebSocket 连接状态，会导致隧道寻址失败
+    uvicorn.run("main:app", host="0.0.0.0", port=8088, reload=False)

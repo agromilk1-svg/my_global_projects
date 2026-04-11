@@ -1,0 +1,15 @@
+{
+  "_local_anchors": {
+    "device_id": "M220",
+    "admin": "admin_01",
+    "hardware_mac": "00:1A:2B:3C:4D:5E"
+  },
+  "cloud_state": {
+    "version_hash": "e99a18c428cb38d5f260853678922e03",
+    "apple_id": "example@icloud.com",
+    "wifi": { "ssid": "网络名称", "password": "明文密码" },
+    "tunnel_proxy": [
+      { "port": 8950, "cipher": "auto", "server": "23.26.196.81" }
+    ]
+  }
+}

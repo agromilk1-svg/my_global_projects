@@ -2,10 +2,7 @@
 import { ref, onMounted, computed, watch, nextTick } from 'vue';
 
 const hostname = window.location.hostname;
-// 智能识别 API 地址：如果是公网域名访问，则指向 s.ecmain.site；否则维持本地端口。
-const apiBase = hostname.includes('ecmain.site') 
-  ? `http://s.ecmain.site:8088/api` 
-  : `http://${hostname}:8088/api`;
+const apiBase = `http://${hostname}:8088/api`;
 
 // ================= 认证系统 =================
 const isLoggedIn = ref(false);
@@ -437,6 +434,69 @@ const setPrimaryTkAccount = async (tk: any) => {
   } catch (err) {
     console.error('设置主号失败', err);
     fetchTiktokAccounts();
+  }
+};
+
+// ========== 批量导入 TikTok 账号 ==========
+const showBatchImportModal = ref(false);
+const batchImportText = ref('');
+const batchImportStep = ref<'input' | 'preview'>('input');
+const batchImportParsed = ref<{device_no: string, account: string, password: string, email: string}[]>([]);
+const batchImportResult = ref<{success: number, failed: number, errors: string[]} | null>(null);
+const batchImporting = ref(false);
+
+const openBatchImportModal = () => {
+  batchImportText.value = '';
+  batchImportStep.value = 'input';
+  batchImportParsed.value = [];
+  batchImportResult.value = null;
+  batchImporting.value = false;
+  showBatchImportModal.value = true;
+};
+
+const parseBatchImport = () => {
+  const lines = batchImportText.value.split('\n').filter(l => l.trim());
+  const parsed: {device_no: string, account: string, password: string, email: string}[] = [];
+  for (const line of lines) {
+    const parts = line.trim().split('|');
+    if (parts.length >= 2) {
+      parsed.push({
+        device_no: (parts[0] || '').trim(),
+        account: (parts[1] || '').trim(),
+        password: (parts[2] || '').trim(),
+        email: (parts[3] || '').trim()
+      });
+    }
+  }
+  batchImportParsed.value = parsed;
+  if (parsed.length > 0) {
+    batchImportStep.value = 'preview';
+  } else {
+    alert('未解析到有效数据，请检查格式是否为: 设备编号|账号|密码|邮箱');
+  }
+};
+
+const confirmBatchImport = async () => {
+  if (batchImporting.value) return;
+  batchImporting.value = true;
+  try {
+    const res = await authFetch(`${apiBase}/tiktok_accounts/batch_import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accounts: batchImportParsed.value })
+    });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      batchImportResult.value = data.data;
+      fetchTiktokAccounts();
+    } else {
+      alert('导入失败: ' + (data.detail || '未知错误'));
+    }
+  } catch (err) {
+    console.error('批量导入请求失败', err);
+    alert('网络请求失败');
+  } finally {
+    batchImporting.value = false;
   }
 };
 
@@ -1550,40 +1610,150 @@ watch(selectedDevices, (newVal) => {
                 try { ws.close(); } catch(e) {}
             }
             delete batchSockets.value[udid];
+            // [v1930 P3] 释放 Blob URL 防止内存泄漏
+            const oldUrl = batchImageData.value[udid];
+            if (oldUrl && oldUrl.startsWith('blob:')) URL.revokeObjectURL(oldUrl);
             delete batchImageData.value[udid];
         }
     });
 }, { deep: true });
 
+// [v1930] 从机 WS 重连控制器：追踪每台设备的重连计数与定时器，防止重连风暴
+const _wsRetryState = ref<Record<string, { count: number; timer: any; stopped: boolean }>>({});
+const _wsHeartbeats = ref<Record<string, any>>({});
+
+// [v1930 P3] Blob URL 批量回收：清空 batchImageData 前释放全部 Blob URL 防止内存泄漏
+const _revokeBatchBlobs = () => {
+  Object.values(batchImageData.value).forEach(url => {
+    if (url && url.startsWith('blob:')) URL.revokeObjectURL(url);
+  });
+};
+
 const batchConnect = (dev: any) => {
   const udid = dev.udid;
-  
-  // 如果已存在连接，先关闭
+  const MAX_RETRIES = 10;          // 最大自动重连次数
+  const BASE_DELAY = 1000;         // 基础重连延迟 1 秒
+  const MAX_DELAY = 30000;         // 最大延迟上限 30 秒
+  const HEARTBEAT_INTERVAL = 25000; // 每 25 秒发一次心跳保活（低于大多数代理的 30s 超时）
+
+  // 清理旧连接与旧心跳
   if (batchSockets.value[udid]) {
-    try { batchSockets.value[udid].close(); } catch(e) {}
+    try { batchSockets.value[udid].close(1000, '重连替换'); } catch(e) {}
+  }
+  if (_wsHeartbeats.value[udid]) {
+    clearInterval(_wsHeartbeats.value[udid]);
+    delete _wsHeartbeats.value[udid];
   }
 
-  // [v1720.1] 修正：从 apiBase 推导 WS 地址，确保端口跟随后端（8088）而非前端（5173）
+  // 初始化重连状态（首次连接时重置计数）
+  if (!_wsRetryState.value[udid]) {
+    _wsRetryState.value[udid] = { count: 0, timer: null, stopped: false };
+  }
+  const retryState = _wsRetryState.value[udid];
+  // 清除上一轮的延迟定时器
+  if (retryState.timer) {
+    clearTimeout(retryState.timer);
+    retryState.timer = null;
+  }
+
   const wsBase = apiBase.replace(/^http/, 'ws');
   const wsUrl = `${wsBase}/ws_stream/${udid}?slave=1&quality=${slaveQuality.value}&token=${authToken.value}`;
   
-  const socket = new WebSocket(wsUrl);
+  let socket: WebSocket;
+  try {
+    socket = new WebSocket(wsUrl);
+  } catch (e) {
+    console.error(`[WS Stream] 创建 WebSocket 失败 (${udid}):`, e);
+    return;
+  }
+
+  socket.onopen = () => {
+    // 连接成功，重置重连计数
+    retryState.count = 0;
+    retryState.stopped = false;
+    
+    // 启动心跳保活定时器
+    _wsHeartbeats.value[udid] = setInterval(() => {
+      if (socket.readyState === WebSocket.OPEN) {
+        try {
+          socket.send('__ping__');
+        } catch(e) {
+          // 发送失败说明连接已死，清理心跳等待 onclose 触发重连
+          clearInterval(_wsHeartbeats.value[udid]);
+          delete _wsHeartbeats.value[udid];
+        }
+      }
+    }, HEARTBEAT_INTERVAL);
+  };
+
+  // [v1930 P3] 设置为接收二进制帧（后端现在发送原始 JPEG 字节而非 base64 文本）
+  socket.binaryType = 'blob';
+
   socket.onmessage = (event) => {
-    // 收到后端推送的纯 base64 字符串，存入内存
-    batchImageData.value[udid] = event.data;
+    // 忽略心跳回复帧（文本类型）
+    if (typeof event.data === 'string') {
+      if (event.data === '__pong__') return;
+      // 兼容旧版 base64 文本帧（如果后端还没更新）
+      batchImageData.value[udid] = 'data:image/jpeg;base64,' + event.data;
+      return;
+    }
+    // [v1930 P3] 二进制帧：直接转 Blob URL，零拷贝渲染，省掉 base64 编码/解码的 33% 开销
+    // 释放旧的 Blob URL 防止内存泄漏
+    const oldUrl = batchImageData.value[udid];
+    if (oldUrl && oldUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(oldUrl);
+    }
+    const blob = new Blob([event.data], { type: 'image/jpeg' });
+    batchImageData.value[udid] = URL.createObjectURL(blob);
   };
   
-  socket.onclose = () => {
-    // 自动重连逻辑可以后续加，这里简单置空
+  socket.onclose = (evt) => {
+    // 清理心跳
+    if (_wsHeartbeats.value[udid]) {
+      clearInterval(_wsHeartbeats.value[udid]);
+      delete _wsHeartbeats.value[udid];
+    }
     delete batchSockets.value[udid];
+
+    // 判断是否需要自动重连：
+    // 1. 用户主动断开（stopped=true）或正常关闭码(1000) → 不重连
+    // 2. 设备已被取消选中 → 不重连
+    // 3. 超过最大重试次数 → 不重连
+    if (retryState.stopped) return;
+    if (!selectedDevices.value.includes(udid)) return;
+    if (retryState.count >= MAX_RETRIES) {
+      log(`⚠️ [${dev.device_no || udid.substring(0,8)}] WS 重连已达上限 (${MAX_RETRIES}次)，停止尝试`);
+      return;
+    }
+
+    // 指数退避重连：delay = min(BASE * 2^count, MAX) + 随机抖动
+    const delay = Math.min(BASE_DELAY * Math.pow(2, retryState.count), MAX_DELAY) + Math.random() * 500;
+    retryState.count++;
+    
+    if (retryState.count <= 3) {
+      // 前 3 次静默重连，不刷日志避免干扰
+      console.log(`[WS Stream] 自动重连 ${udid} (第${retryState.count}次, ${Math.round(delay)}ms后)`);
+    } else {
+      log(`🔄 [${dev.device_no || udid.substring(0,8)}] WS 重连中 (第${retryState.count}次)...`);
+    }
+
+    retryState.timer = setTimeout(() => {
+      // 二次检查：重连发起前确认设备仍在选中列表中
+      if (selectedDevices.value.includes(udid) && !retryState.stopped) {
+        batchConnect(dev);
+      }
+    }, delay);
   };
   
   socket.onerror = (err) => {
     console.error(`[WS Stream] 连接异常 (${udid}):`, err);
+    // onerror 后必然会触发 onclose，重连逻辑在 onclose 里统一处理
   };
 
   batchSockets.value[udid] = socket;
-  log(`📡 已建立从机 WebSocket 监控链路: ${dev.device_no || udid}`);
+  if (retryState.count === 0) {
+    log(`📡 已建立从机 WebSocket 监控链路: ${dev.device_no || udid}`);
+  }
 };
 
 // 恢复被误杀的批量群控核心队列与连接动作
@@ -1595,25 +1765,55 @@ const batchConnectAll = () => {
 };
 
 const batchDisconnectAll = () => {
+    // [v1930] 标记所有设备为"用户主动停止"，阻止 onclose 触发自动重连
+    Object.keys(batchSockets.value).forEach(udid => {
+      if (_wsRetryState.value[udid]) {
+        _wsRetryState.value[udid].stopped = true;
+        if (_wsRetryState.value[udid].timer) {
+          clearTimeout(_wsRetryState.value[udid].timer);
+        }
+      }
+      // 清理心跳
+      if (_wsHeartbeats.value[udid]) {
+        clearInterval(_wsHeartbeats.value[udid]);
+        delete _wsHeartbeats.value[udid];
+      }
+    });
     Object.values(batchSockets.value).forEach(ws => {
-      try { ws.close(); } catch(e) {}
+      try { ws.close(1000, '用户主动断开'); } catch(e) {}
     });
     batchSockets.value = {};
+    _revokeBatchBlobs();
     batchImageData.value = {};
     batchStreams.value = {};
+    _wsRetryState.value = {}; // 彻底清空重连状态
     // [v1740] 响应用户需求：断流后自动切换至日志模式，隐藏空镜像，显示执行详情
     isLogsOnlyMode.value = true;
 };
 
 // [v1743] 清晰度切换：断开旧流后自动以新 quality 参数重连，避免画面闪烁或丢失
 const onSlaveQualityChange = () => {
-    // 先断开所有现有连接（使用旧 quality 的流）
+    // [v1930] 先标记停止防止旧连接的onclose触发重连，然后清理所有资源
+    Object.keys(batchSockets.value).forEach(udid => {
+      if (_wsRetryState.value[udid]) {
+        _wsRetryState.value[udid].stopped = true;
+        if (_wsRetryState.value[udid].timer) {
+          clearTimeout(_wsRetryState.value[udid].timer);
+        }
+      }
+      if (_wsHeartbeats.value[udid]) {
+        clearInterval(_wsHeartbeats.value[udid]);
+        delete _wsHeartbeats.value[udid];
+      }
+    });
     Object.values(batchSockets.value).forEach(ws => {
-      try { ws.close(); } catch(e) {}
+      try { ws.close(1000, '清晰度切换'); } catch(e) {}
     });
     batchSockets.value = {};
+    _revokeBatchBlobs();
     batchImageData.value = {};
     batchStreams.value = {};
+    _wsRetryState.value = {}; // 重置所有重连状态，让新连接从 0 开始计数
     // 短暂延迟后以新 quality 重新连接所有从机
     setTimeout(() => {
         batchConnectAll();
@@ -2009,17 +2209,32 @@ watch(isGroupControl, (newVal) => {
 });
 const isLogsOnlyMode = ref(false);
 
-// [v1743] 日志模式流量优化：切到日志模式时断开从机视频流，恢复时自动重连
+// [v1930] 日志模式流量优化：切到日志模式时断开从机视频流，恢复时自动重连
 watch(isLogsOnlyMode, (logsOnly) => {
     if (logsOnly) {
+        // [v1930] 先标记停止防止 onclose 触发重连
+        Object.keys(batchSockets.value).forEach(udid => {
+            if (_wsRetryState.value[udid]) {
+                _wsRetryState.value[udid].stopped = true;
+                if (_wsRetryState.value[udid].timer) {
+                    clearTimeout(_wsRetryState.value[udid].timer);
+                }
+            }
+            if (_wsHeartbeats.value[udid]) {
+                clearInterval(_wsHeartbeats.value[udid]);
+                delete _wsHeartbeats.value[udid];
+            }
+        });
         // 断开所有从机视频 WebSocket，节约带宽
         Object.values(batchSockets.value).forEach(ws => {
-            try { ws.close(); } catch(e) {}
+            try { ws.close(1000, '日志模式'); } catch(e) {}
         });
         batchSockets.value = {};
+        _revokeBatchBlobs();
         batchImageData.value = {};
     } else {
-        // 退出日志模式，自动重连从机画面
+        // 退出日志模式，重置重连状态后自动重连从机画面
+        _wsRetryState.value = {};
         batchConnectAll();
     }
 });
@@ -2175,10 +2390,7 @@ const launchEcwda = async () => {
       });
   }
 
-  log(`🚀 正在通过 USB 向主要设备发送启动指令... (目标: ${selectedDevice.value.substring(0,8)})`);
-  
-  // USB 设备自动切换到 USB 模式
-  connectionMode.value = 'usb';
+  log(`🚀 正在向主要设备发送启动指令... (目标: ${selectedDevice.value.substring(0,8)})`);
   
   try {
     const res = await authFetch(`${apiBase}/launch_ecwda`, {
@@ -2187,9 +2399,17 @@ const launchEcwda = async () => {
     });
     const result = await res.json();
     if(result.status === 'ok') {
-      log('✓ EC 底核引擎已通过 USB 启动，进入挂载倒计时...');
+      const launchMode = result.mode || 'usb';
+      if (launchMode === 'wifi') {
+        log('✓ 📡 EC 已通过 WiFi 远程唤醒！DDI 挂载 + WDA 启动中...');
+        // WiFi 模式下切换到内网连接
+        connectionMode.value = 'lan';
+      } else {
+        log('✓ EC 底核引擎已通过 USB 启动，进入挂载倒计时...');
+        connectionMode.value = 'usb';
+      }
       
-      let countdown = 8;
+      let countdown = launchMode === 'wifi' ? 15 : 8; // WiFi 模式给更多时间
       const timer = setInterval(() => {
         countdown--;
         if (countdown > 0) {
@@ -2204,7 +2424,7 @@ const launchEcwda = async () => {
       }, 1000);
 
     } else {
-      log('✗ EC 启动受挫: ' + result.detail);
+      log('✗ EC 启动受挫: ' + (result.detail || result.message));
     }
   } catch (err: any) {
     log('✗ 路由无法通向 EC启动组件：' + err.message);
@@ -3430,7 +3650,21 @@ const handleImageUpload = (event: Event) => {
         <div v-if="activeTab === '📱 手机列表'" class="flex flex-1 flex-col overflow-hidden p-6 gap-4 bg-gray-950">
       <div class="flex items-center justify-between mb-2">
          <div class="flex items-center gap-4">
-            <h2 class="text-gray-200 text-lg font-bold tracking-wide flex items-center gap-2">📱 在线雷达设备矩阵</h2>
+            <h2 class="text-gray-200 text-lg font-bold tracking-wide flex items-center gap-2">
+              📱 在线雷达设备矩阵
+              <div class="flex items-center gap-2 ml-4">
+                <div class="px-2.5 py-1 bg-gray-800/80 border border-gray-700 rounded-md shadow-sm flex items-center gap-1.5 cursor-default group" title="当前列表里的总手机数量">
+                  <span class="w-2 h-2 rounded-full bg-gray-500 group-hover:bg-gray-400 transition-colors"></span>
+                  <span class="text-[11px] font-bold text-gray-400">总设备:</span>
+                  <span class="text-[12px] font-black text-gray-300 font-mono">{{ sortedDevices.length }}</span>
+                </div>
+                <div class="px-2.5 py-1 bg-emerald-950/40 border border-emerald-800/50 rounded-md shadow-sm flex items-center gap-1.5 cursor-default group" title="当前列表里处于空闲或繁忙的在线手机">
+                  <span class="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.8)] animate-pulse"></span>
+                  <span class="text-[11px] font-bold text-emerald-500/80">在线设备:</span>
+                  <span class="text-[12px] font-black text-emerald-400 font-mono">{{ sortedDevices.filter(d => ['online', 'busy'].includes(d.status)).length }}</span>
+                </div>
+              </div>
+            </h2>
             <div v-if="selectedDevices.length > 0" class="flex items-center gap-2 bg-indigo-900/40 border border-indigo-500/50 px-3 py-1.5 rounded-lg animate-in fade-in slide-in-from-left-4 duration-300">
                <span class="text-indigo-200 text-xs font-bold">已选 {{ selectedDevices.length }} 台</span>
                <div class="h-4 w-px bg-indigo-500/30 mx-1"></div>
@@ -4224,7 +4458,7 @@ const handleImageUpload = (event: Event) => {
                           <!-- 内容视窗 -->
                           <div class="aspect-[9/16] bg-black relative flex flex-col overflow-hidden">
                               <template v-if="!isLogsOnlyMode">
-                                  <img v-if="batchImageData[dev.udid]" :src="'data:image/jpeg;base64,' + batchImageData[dev.udid]" class="w-full h-full object-contain pointer-events-none" crossorigin="anonymous" />
+                                  <img v-if="batchImageData[dev.udid]" :src="batchImageData[dev.udid]" class="w-full h-full object-contain pointer-events-none" crossorigin="anonymous" />
                                   <div v-else-if="batchSockets[dev.udid]" class="w-full h-full flex flex-col items-center justify-center gap-2 bg-gray-950/40">
                                       <div class="w-4 h-4 border-2 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin"></div>
                                       <span class="text-[9px] text-indigo-400/60 uppercase tracking-tighter">WS Linking...</span>
@@ -4517,10 +4751,15 @@ const handleImageUpload = (event: Event) => {
                     <h2 class="text-xl font-bold text-gray-100 tracking-wide flex items-center gap-2">🎵 TikTok 账号资产管理</h2>
                     <p class="text-xs text-gray-500 mt-1">当前系统中共有 {{ tiktokAccounts.length }} 个已录入的 TikTok 账号。</p>
                 </div>
-                <button @click="fetchTiktokAccounts" class="bg-teal-800 hover:bg-teal-700 border border-teal-600 text-white px-4 py-2 rounded shadow transition-colors text-xs font-bold flex items-center gap-2">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-                    刷新数据
-                </button>
+                <div class="flex items-center gap-2">
+                    <button @click="openBatchImportModal" class="bg-indigo-800 hover:bg-indigo-700 border border-indigo-600 text-white px-4 py-2 rounded shadow transition-colors text-xs font-bold flex items-center gap-2">
+                        📥 批量导入
+                    </button>
+                    <button @click="fetchTiktokAccounts" class="bg-teal-800 hover:bg-teal-700 border border-teal-600 text-white px-4 py-2 rounded shadow transition-colors text-xs font-bold flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                        刷新数据
+                    </button>
+                </div>
             </div>
 
             <!-- TikTok 资产筛选工具栏 -->
@@ -4763,6 +5002,120 @@ const handleImageUpload = (event: Event) => {
                 </div>
             </div>
         </div>
+
+    <!-- =============== 批量导入 TikTok 账号弹窗 =============== -->
+    <div v-if="showBatchImportModal" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+        <div class="bg-gray-800 border border-gray-700 w-full max-w-3xl rounded-xl shadow-2xl flex flex-col max-h-[90vh]">
+            <div class="px-6 py-4 border-b border-gray-700 flex justify-between items-center bg-gray-800/80 rounded-t-xl">
+                <h3 class="text-lg font-bold text-gray-100 flex items-center gap-2">
+                   <span class="text-indigo-400">📥</span> 批量导入 TikTok 账号
+                </h3>
+                <button @click="showBatchImportModal=false" class="text-gray-400 hover:text-white outline-none transition-colors">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+
+            <div class="p-6 flex-1 overflow-auto flex flex-col gap-4">
+                <!-- 步骤1: 文本输入 -->
+                <template v-if="batchImportStep === 'input'">
+                    <div class="bg-gray-900/50 border border-gray-700 rounded-lg p-4">
+                        <p class="text-sm text-gray-300 mb-2">📋 请粘贴账号信息，每行一条，格式如下：</p>
+                        <div class="bg-black/60 rounded px-3 py-2 text-xs text-indigo-300 font-mono mb-3 border border-gray-700">
+                            设备编号|账号|密码|邮箱
+                        </div>
+                        <p class="text-[10px] text-gray-500 mb-1">
+                            ⚠️ 设备编号必须与系统中已有设备的编号完全匹配 · 账号如已存在将自动覆盖 · 导入的账号将全部设为主账号
+                        </p>
+                    </div>
+                    <textarea v-model="batchImportText" rows="10"
+                        placeholder="M22|user001|pass123|user001@email.com
+M24|user002|pass456|user002@email.com
+M27|user003|pass789|"
+                        class="w-full bg-gray-950 border border-gray-700 text-green-300 text-xs p-4 rounded-lg focus:outline-none focus:border-indigo-500 font-mono custom-scrollbar transition-colors leading-relaxed resize-none"></textarea>
+                </template>
+
+                <!-- 步骤2: 预览确认 -->
+                <template v-if="batchImportStep === 'preview' && !batchImportResult">
+                    <div class="bg-gray-900/50 border border-gray-700 rounded-lg p-4">
+                        <p class="text-sm text-gray-300">
+                            ✅ 已解析 <span class="text-indigo-400 font-bold text-base">{{ batchImportParsed.length }}</span> 条账号，请确认信息无误后导入：
+                        </p>
+                    </div>
+                    <div class="overflow-auto max-h-[400px] custom-scrollbar border border-gray-700 rounded-lg">
+                        <table class="min-w-full text-xs">
+                            <thead>
+                                <tr class="text-gray-400 uppercase bg-gray-900 border-b border-gray-700 sticky top-0">
+                                    <th class="p-3 text-center">#</th>
+                                    <th class="p-3 text-left">设备编号</th>
+                                    <th class="p-3 text-left">TikTok 账号</th>
+                                    <th class="p-3 text-left">密码</th>
+                                    <th class="p-3 text-left">邮箱</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-800/60">
+                                <tr v-for="(item, idx) in batchImportParsed" :key="idx" class="hover:bg-gray-700/30 transition-colors">
+                                    <td class="p-3 text-center text-gray-500 font-mono">{{ idx + 1 }}</td>
+                                    <td class="p-3 text-teal-400 font-mono font-bold">{{ item.device_no }}</td>
+                                    <td class="p-3 text-gray-200 font-mono">{{ item.account }}</td>
+                                    <td class="p-3 text-gray-400 font-mono">{{ item.password || '(空)' }}</td>
+                                    <td class="p-3 text-gray-400 font-mono">{{ item.email || '(空)' }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </template>
+
+                <!-- 步骤3: 导入结果 -->
+                <template v-if="batchImportResult">
+                    <div class="bg-gray-900/50 border border-gray-700 rounded-lg p-6 text-center">
+                        <div class="text-4xl mb-3">{{ batchImportResult.failed === 0 ? '🎉' : '⚠️' }}</div>
+                        <p class="text-lg text-gray-200 font-bold mb-2">导入完成</p>
+                        <div class="flex justify-center gap-6 text-sm mt-4">
+                            <div class="flex flex-col items-center">
+                                <span class="text-3xl font-bold text-green-400">{{ batchImportResult.success }}</span>
+                                <span class="text-gray-500 text-xs mt-1">成功</span>
+                            </div>
+                            <div class="flex flex-col items-center">
+                                <span class="text-3xl font-bold text-red-400">{{ batchImportResult.failed }}</span>
+                                <span class="text-gray-500 text-xs mt-1">失败</span>
+                            </div>
+                        </div>
+                        <div v-if="batchImportResult.errors && batchImportResult.errors.length > 0" class="mt-4 text-left bg-red-950/30 border border-red-900/50 rounded-lg p-3 max-h-[150px] overflow-y-auto custom-scrollbar">
+                            <p class="text-xs text-red-400 font-bold mb-1">错误详情：</p>
+                            <div v-for="(err, i) in batchImportResult.errors" :key="i" class="text-[10px] text-red-300/80 font-mono py-0.5">• {{ err }}</div>
+                        </div>
+                    </div>
+                </template>
+            </div>
+
+            <div class="px-6 py-4 border-t border-gray-700 flex justify-between items-center bg-gray-800/80 rounded-b-xl">
+                <div>
+                    <button v-if="batchImportStep === 'preview' && !batchImportResult" 
+                            @click="batchImportStep='input'" 
+                            class="px-4 py-2 text-gray-400 hover:text-white text-xs font-medium transition-colors">
+                        ← 返回编辑
+                    </button>
+                </div>
+                <div class="flex gap-3">
+                    <button @click="showBatchImportModal=false" class="px-5 py-2.5 rounded-lg text-gray-300 hover:bg-gray-700 transition-colors font-medium text-xs border border-transparent">
+                        {{ batchImportResult ? '关闭' : '取消' }}
+                    </button>
+                    <button v-if="batchImportStep === 'input'" 
+                            @click="parseBatchImport" 
+                            class="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white font-bold shadow-lg transition-all text-xs flex items-center gap-2">
+                        🔍 解析预览
+                    </button>
+                    <button v-if="batchImportStep === 'preview' && !batchImportResult" 
+                            @click="confirmBatchImport" 
+                            :disabled="batchImporting"
+                            :class="batchImporting ? 'opacity-50 cursor-not-allowed' : ''"
+                            class="px-6 py-2.5 bg-green-600 hover:bg-green-500 rounded-lg text-white font-bold shadow-lg transition-all text-xs flex items-center gap-2">
+                        {{ batchImporting ? '⏳ 导入中...' : '✅ 确认导入' }}
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <!-- =============== 用户管理（超级管理员专用） ================= -->
     <div v-if="activeTab === '👤 用户管理'" class="flex flex-1 flex-col overflow-auto p-6 bg-[#0B0F19]">

@@ -510,9 +510,6 @@ def get_all_cloud_devices() -> List[dict]:
             now = time.time()
             for r in cursor.fetchall():
                 d = dict(r)
-                # 超过阈值未有心跳，动态将状态覆盖为离线
-                if (now - d.get('last_heartbeat', 0)) >= HEARTBEAT_TIMEOUT:
-                    d['status'] = 'offline'
                 
                 # [v1682.4] 内存热数据覆盖：如果该设备刚发过心跳，直接用内存里的最新值覆盖数据库旧值
                 # 这样可以解决 Flusher 5秒周期导致的实时显示延迟
@@ -522,7 +519,11 @@ def get_all_cloud_devices() -> List[dict]:
                         # 转换字段名对齐 (database vs request)
                         # vpn_node 已经是同名
                         ts = mem_data.get('timestamp', d['last_heartbeat'])
+                        # [v1930] 补充 device_no 覆盖：心跳上报的编号应实时反映，而非等 5 秒刷盘
+                        # 保护性赋值：仅当缓存中的 device_no 非空时才覆盖，防止空心跳抹掉已设置的编号
+                        mem_device_no = mem_data.get('device_no', '')
                         d.update({
+                            "device_no": mem_device_no if mem_device_no else d.get('device_no', ''),
                             "status": mem_data.get('status', d['status']),
                             "battery": mem_data.get('battery_level', d['battery']),
                             "ip": mem_data.get('local_ip', d['ip']),
@@ -534,6 +535,12 @@ def get_all_cloud_devices() -> List[dict]:
                             "last_heartbeat": ts
                         })
                     # 数据库原始值本身就是绝对时间戳，无需修改
+                
+                # [v1930] 修复 3 分钟超时逻辑 Bug：
+                # 必须在合并完内存数据后，再基于最终的 last_heartbeat 做超时判断。
+                # 否则即使数据库算出来离线了，也会被永远不自动清理的 LATEST_STATUS_CACHE 强行盖回 online。
+                if (now - d.get('last_heartbeat', 0)) >= HEARTBEAT_TIMEOUT:
+                    d['status'] = 'offline'
                 
                 devices.append(d)
                 
@@ -1008,6 +1015,79 @@ def create_tiktok_account(device_udid: str, account: str, password: str = "", em
     except Exception as e:
         logger.error(f"Error creating tiktok account for {device_udid}: {e}")
         return 0
+
+def batch_import_tiktok_accounts(accounts: list) -> dict:
+    """批量导入 TikTok 账号
+    每条记录格式: { device_no, account, password, email }
+    - 根据 device_no 查找对应的 UDID
+    - 如果数据库中已存在相同账号则覆盖
+    - 所有导入的账号设为主账号 (is_primary=1)
+    返回: { success: int, failed: int, errors: list }
+    """
+    import datetime
+    now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    success_count = 0
+    failed_count = 0
+    errors = []
+    
+    try:
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            for item in accounts:
+                device_no = (item.get('device_no') or '').strip()
+                account = (item.get('account') or '').strip()
+                password = (item.get('password') or '').strip()
+                email = (item.get('email') or '').strip()
+                
+                if not device_no or not account:
+                    errors.append(f"缺少必填字段: device_no={device_no}, account={account}")
+                    failed_count += 1
+                    continue
+                
+                # 根据 device_no 查找设备 UDID
+                cursor.execute('SELECT udid, country FROM ec_devices WHERE device_no = ?', (device_no,))
+                row = cursor.fetchone()
+                if not row:
+                    errors.append(f"设备编号 '{device_no}' 不存在")
+                    failed_count += 1
+                    continue
+                
+                udid = row['udid']
+                country = row['country'] or ''
+                
+                try:
+                    # 检查是否已存在相同账号
+                    cursor.execute('SELECT id FROM ec_tiktok_accounts WHERE device_udid = ? AND account = ?', (udid, account))
+                    existing = cursor.fetchone()
+                    
+                    if existing:
+                        # 已存在则覆盖更新
+                        cursor.execute('''
+                            UPDATE ec_tiktok_accounts 
+                            SET password = ?, email = ?, is_primary = 1
+                            WHERE device_udid = ? AND account = ?
+                        ''', (password, email, udid, account))
+                    else:
+                        # 不存在则新增
+                        cursor.execute('''
+                            INSERT INTO ec_tiktok_accounts 
+                            (device_udid, account, password, email, country, fans_count, is_for_sale, is_window_opened, add_time, is_primary)
+                            VALUES (?, ?, ?, ?, ?, 0, 0, 0, ?, 1)
+                        ''', (udid, account, password, email, country, now_str))
+                    
+                    success_count += 1
+                except Exception as e:
+                    errors.append(f"导入 {device_no}|{account} 失败: {str(e)}")
+                    failed_count += 1
+            
+            conn.commit()
+    except Exception as e:
+        logger.error(f"批量导入 TikTok 账号失败: {e}")
+        errors.append(f"数据库连接异常: {str(e)}")
+    
+    return {"success": success_count, "failed": failed_count, "errors": errors}
 
 def set_tiktok_account_primary(account_id: int) -> bool:
     """设置某账号为所属设备的主号（排他性设置）"""

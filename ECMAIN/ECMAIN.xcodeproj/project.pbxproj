@@ -44,6 +44,7 @@
 		A2C83DBF39D642559D0C270F /* libroot_dyn.c in Sources */ = {isa = PBXBuildFile; fileRef = B2ED014779894DF1ABBC8228 /* libroot_dyn.c */; };
 		B9EA4C708A2AA5FD166D4E32 /* ECDeviceInfoManager.h in Headers */ = {isa = PBXBuildFile; fileRef = 1E5444108E8A0D231D993F92 /* ECDeviceInfoManager.h */; };
 		BA741660167E44A58CFB4E85 /* ECKeepAlive.m in Sources */ = {isa = PBXBuildFile; fileRef = 07E7AD3214D4497AA5DCD431 /* ECKeepAlive.m */; };
+		ECPCFG00000001 /* ECPersistentConfig.m in Sources */ = {isa = PBXBuildFile; fileRef = ECPCFG00000003 /* ECPersistentConfig.m */; };
 		BD37247013D748BF9C6F4558 /* TSPresentationDelegate.m in Sources */ = {isa = PBXBuildFile; fileRef = 489A5A16221D47798F3240E9 /* TSPresentationDelegate.m */; };
 		C236D62BED5C44549F8A2D5A /* TrollStoreIncludes.m in Sources */ = {isa = PBXBuildFile; fileRef = C4C8252B9D6C4335B11D26DE /* TrollStoreIncludes.m */; };
 		C30B964166C44D7A8FABB580 /* ViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = 9D4CE300FB2F4FB4B1A4DA60 /* ViewController.m */; };
@@ -134,6 +135,8 @@
 		489A5A16221D47798F3240E9 /* TSPresentationDelegate.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = TSPresentationDelegate.m; path = TrollStoreCore/TSPresentationDelegate.m; sourceTree = SOURCE_ROOT; };
 		490E4F69AF6BF69239771087 /* silent.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = silent.wav; path = ECMAIN/silent.wav; sourceTree = SOURCE_ROOT; };
 		49CFC3E8C74F4440BD95BF4D /* ECKeepAlive.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ECMAIN/Core/ECKeepAlive.h; sourceTree = SOURCE_ROOT; };
+		ECPCFG00000002 /* ECPersistentConfig.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ECPersistentConfig.h; path = ECMAIN/Core/ECPersistentConfig.h; sourceTree = SOURCE_ROOT; };
+		ECPCFG00000003 /* ECPersistentConfig.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = ECPersistentConfig.m; path = ECMAIN/Core/ECPersistentConfig.m; sourceTree = SOURCE_ROOT; };
 		53A334735C5B4AF99868C562 /* TSInstallationController.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = TSInstallationController.h; path = TrollStoreCore/TSInstallationController.h; sourceTree = SOURCE_ROOT; };
 		5D45B1902275A68C532A4BFA /* DeveloperDiskImage.dmg */ = {isa = PBXFileReference; includeInIndex = 1; path = DeveloperDiskImage.dmg; sourceTree = "<group>"; };
 		5F9A4D63AE6CD19A39D3C2EA /* ECBackgroundManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = ECBackgroundManager.m; path = ECMAIN/Core/ECBackgroundManager.m; sourceTree = SOURCE_ROOT; };
@@ -244,6 +247,8 @@
 				QRSCAN001000006 /* ECProxyURIParser.h */,
 				QRSCAN001000004 /* ECProxyURIParser.m */,
 				1C01D1127F9D579E382514BB /* ECConnectionTester.m */,
+				ECPCFG00000002 /* ECPersistentConfig.h */,
+				ECPCFG00000003 /* ECPersistentConfig.m */,
 			);
 			name = Core;
 			sourceTree = "<group>";
@@ -590,6 +595,7 @@
 				84EC48129B5674E22E254639 /* ECTaskPollManager.m in Sources */,
 				3B92455287E1B9517CA0799A /* ECTaskListViewController.m in Sources */,
 				ECONESHOT00001 /* ECOneshotTaskManager.m in Sources */,
+				ECPCFG00000001 /* ECPersistentConfig.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

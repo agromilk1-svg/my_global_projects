@@ -63,6 +63,16 @@ def update_build_version():
             log(f"Updated ViewController.m with: {version_str}")
         else:
             error(f"ViewController.m not found at {vc_path}")
+            
+        # --- 自动更新 Info.plist 的版本号 —— 
+        main_info = os.path.join(PROJECT_ROOT, "ECMAIN/Info.plist")
+        tunnel_info = os.path.join(PROJECT_ROOT, "ECMAIN/Tunnel/Info.plist")
+        
+        for plist_path in [main_info, tunnel_info]:
+            if os.path.exists(plist_path):
+                run_cmd(f"plutil -replace CFBundleVersion -string {num} '{plist_path}'")
+                run_cmd(f"plutil -replace CFBundleShortVersionString -string 1.0.{num} '{plist_path}'")
+                log(f"Updated Info.plist version -> {num} in {plist_path}")
         
         # --- 自动更新支持：生成版本常量 ---
         
@@ -880,6 +890,17 @@ def package_all(app_path, helper_path, dylib_path=None, persistence_helper_path=
         if os.path.exists(fastpathsign):
             run_cmd(f"'{fastpathsign}' '{go_ios_binary}'", ignore_error=True)
     
+    # Copy precompiled tls_proxy_arm64
+    tls_proxy_precompiled = os.path.join(PROJECT_ROOT, "ECMAIN/tls_proxy_arm64")
+    dest_tls = os.path.join(final_app, "tls_proxy_arm64")
+    if os.path.exists(tls_proxy_precompiled):
+        log("Copying precompiled tls_proxy_arm64...")
+        shutil.copy(tls_proxy_precompiled, dest_tls)
+        if os.path.exists(dest_tls):
+            sign_binary(dest_tls)
+            if os.path.exists(fastpathsign):
+                run_cmd(f"'{fastpathsign}' '{dest_tls}'", ignore_error=True)
+
     # Sign Main App
     sign_binary(final_app, entitlements)
     

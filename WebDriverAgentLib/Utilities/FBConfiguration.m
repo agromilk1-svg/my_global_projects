@@ -150,6 +150,8 @@ static BOOL FBShouldEnforceCustomSnapshots = NO;
     return NSProcessInfo.processInfo.environment[@"USE_IP"];
   }
 
+  // 返回 nil 时 GCDAsyncSocket 默认监听所有网卡（等效 INADDR_ANY / 0.0.0.0）
+  // 注意：不能返回 @"0.0.0.0"，GCDAsyncSocket 不认识这个字符串会报错 Code=2
   return nil;
 }
 

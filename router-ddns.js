@@ -16,9 +16,12 @@ async function getAndSyncRouterNAT(currentCFIP, config) {
     let routerIP = null;
     try {
         browser = await puppeteer.launch({ 
-            headless: 'new',
+            headless: true, // 解决 Puppeteer 最新版 headless 参数变更导致的 WS timeout 报错
             executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--window-size=1920,1080']
+            timeout: 90000, // 将容忍启动的时间延长到一分半钟
+            dumpio: true,   // [新增] 将底层 Chrome 报错强行打印到控制台，以便定位真实问题
+            ignoreHTTPSErrors: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--window-size=1920,1080', '--disable-dev-shm-usage']
         });
         
         page = await browser.newPage();
@@ -137,10 +140,18 @@ async function getAndSyncRouterNAT(currentCFIP, config) {
                             // 3. 拦截外部 IP 输入框强制写入，并点击行级套娃修改
                             console.log(`[Router] 正在深度改写并递交规则 [${l1}:${l2}] -> 强刷 IP [${routerIP}]`);
                             await frame.evaluate((ip) => {
+                                // 处理“外部IP范围” (格式: IP-IP)
+                                const extIpRangeInput = document.getElementById('ExternalIPRange_text');
+                                if (extIpRangeInput) {
+                                    extIpRangeInput.value = ip + '-' + ip;
+                                }
+                                
+                                // 处理“外部IP”
                                 const extIpInput = document.getElementById('ExternalIP_text');
                                 if (extIpInput) {
                                     extIpInput.value = ip;
                                 }
+                                
                                 const editSubmitBtn = document.getElementById('Btn_Edit_fwpm') || document.querySelector('input[onclick*="pageMOD"]');
                                 if (editSubmitBtn) {
                                     editSubmitBtn.click();
