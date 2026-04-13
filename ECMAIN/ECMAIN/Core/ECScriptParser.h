@@ -57,7 +57,15 @@ JSExportAs(getColorAt,
            -(NSString *)getColorAt : (NSNumber *)x y : (NSNumber *)y);
 JSExportAs(findMultiColor,
            -(NSDictionary *)findMultiColor : (NSString *)colors sim : (NSNumber *)sim);
+// [v1955新增] 主动释放截图缓存内存（在不再需要找图时调用，减轻视频流场景下的内存压力）
+- (void)clearScreenshotCache;
+JSExportAs(downloadToAlbum, 
+           -(BOOL)downloadToAlbum:(NSString *)urlStr);
+JSExportAs(downloadOneTimeMedia,
+           -(BOOL)downloadOneTimeMedia:(NSString *)type group:(NSString *)group);
 
+- (NSString *)getRandomTag;
+- (NSString *)getRandomBio;
 // Utils
 - (void)log:(NSString *)message;
 JSExportAs(randomInt,
@@ -109,6 +117,9 @@ JSExportAs(getRandomComment,
 //                        languageCode, preferredLanguage, systemLanguage, btdCurrentLanguage,
 //                        enableNetworkInterception, disableQUIC, networkType, countryCode
 - (NSDictionary *)installIPA:(NSDictionary *)config;
+
+// 提前上报任务完成（原集成在 airplaneOn 中，现解耦为独立动作）
+- (void)reportFinished;
 
 // 在脚本执行中主动报告错误并中断由于业务异常导致的后续脚本执行
 - (void)reportErrorAndAbort:(NSString *)message;

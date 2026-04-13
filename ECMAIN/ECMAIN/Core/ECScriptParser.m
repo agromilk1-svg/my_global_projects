@@ -11,9 +11,12 @@
 #import "ECAppInjector.h"
 #import "ECBackgroundManager.h"
 #import "ECLogManager.h"
+#import "ECPersistentConfig.h"
+#import "../Utils/ECAppLauncher.h"
 #import "ECProxyURIParser.h"
 #import "ECTaskPollManager.h"
 #import "ECVPNConfigManager.h"
+#import <Photos/Photos.h>
 #import <NetworkExtension/NetworkExtension.h>
 #import <UIKit/UIKit.h>
 #import <arpa/inet.h>
@@ -41,8 +44,27 @@ extern int spawnRoot(NSString *path, NSArray *args, NSString **stdOut,
 extern NSString *rootHelperPath(void);
 extern NSArray *trollStoreInstalledAppBundlePaths(void);
 
+// 脚本执行日志文件路径（持久化，防止切换页面后丢失）
+static NSString *ECScriptLogFilePath(void) {
+  static NSString *path = nil;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    // [v1956修改] 将实质性日志文件存储从沙盒 Documents 迁移到全局可访问的 /var/mobile/Media 目录
+    path = @"/var/mobile/Media/ec_script_log.txt";
+  });
+  return path;
+}
+
 // WDA port (runs on same device)
 static const int kWDAPort = 10088;
+
+// [v1956] 截图缓存提升为文件级静态变量，供 findImage 复用 + clearScreenshotCache 真正清理
+static NSString *sCachedScreenshotB64 = nil;
+static CFAbsoluteTime sCachedScreenshotTime = 0;
+static const CFAbsoluteTime kScreenshotCacheTTL = 2.0; // 2 秒缓存窗口：连续 findImage 共享同一截图
+
+// [v1956] 持久化日志文件句柄（文件级，executeScript 入口重建，log: 方法复用）
+static NSFileHandle *sPersistLogHandle = nil;
 
 @implementation ECScriptParser {
   NSMutableArray *_executionLogs;
@@ -66,6 +88,66 @@ static const int kWDAPort = 10088;
   return self;
 }
 
+#pragma mark - 前置任务保活屏障
+
+/**
+ * 阻塞当前线程执行环境准备（最长阻塞 15 秒）
+ * 1. 强行点亮屏幕
+ * 2. 探测 WDA，若死亡则拉起
+ * 3. 阻塞等待 WDA 恢复
+ */
+- (void)prepareTaskEnvironmentSync {
+  [self log:@"[系统探活] 🛡️ 启动前置任务保活屏障..."];
+  
+  // 1. 点亮屏幕与应用前台化
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [ECAppLauncher wakeScreenAndBringMainAppToFront];
+  });
+  
+  // 给系统 1 秒时间响应锁屏解锁动画
+  [NSThread sleepForTimeInterval:1.0];
+  
+  // 2 & 3. 探测 WDA 并阻塞等待
+  int maxWaitSeconds = 15;
+  NSURL *probeUrl = [NSURL URLWithString:@"http://127.0.0.1:10088/status"];
+  
+  for (int i = 0; i < maxWaitSeconds; i++) {
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    __block BOOL isAlive = NO;
+    
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:probeUrl];
+    req.timeoutInterval = 1.0; // 极短超时快速失败
+    
+    [[NSURLSession.sharedSession dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+      NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
+      if (!error && httpResp.statusCode == 200) {
+        isAlive = YES;
+      }
+      dispatch_semaphore_signal(sema);
+    }] resume];
+    
+    dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 1.5 * NSEC_PER_SEC));
+    
+    if (isAlive) {
+      [self log:@"[系统探活] ✅ WDA 环境已就绪，安全放行执行"];
+      return;
+    } else {
+      if (i == 0) {
+        [self log:@"[系统探活] ⚠️ WDA 当前无响应或未启动，正在强行拉起..."];
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [[TSApplicationsManager sharedInstance] openApplicationWithBundleID:@"com.apple.accessibility.ecwda"];
+        });
+      } else {
+        [self log:[NSString stringWithFormat:@"[系统探活] ⏳ 等待 WDA 恢复中 (%d/%ds)...", i, maxWaitSeconds]];
+      }
+    }
+    
+    [NSThread sleepForTimeInterval:1.0];
+  }
+  
+  [self log:@"[系统探活] ❌ WDA 拉起等待超时 (15s)，放弃阻塞，继续强制执行。"];
+}
+
 #pragma mark - Public Methods
 
 - (void)executeScript:(NSString *)script
@@ -73,6 +155,25 @@ static const int kWDAPort = 10088;
   NSLog(@"[脚本动作] ====== 开始执行脚本 ======");
   NSLog(@"[脚本动作] 脚本长度: %lu 字符", (unsigned long)script.length);
   NSLog(@"[脚本动作] 脚本内容:\n%@", script);
+
+  // 清空日志文件（新脚本执行前清除上次记录）
+  // [v1956修复] 不再使用 atomically:YES（会替换 inode 导致持久化 FileHandle 失效写入黑洞）
+  NSString *logPath = ECScriptLogFilePath();
+  if (![[NSFileManager defaultManager] fileExistsAtPath:logPath]) {
+    [[NSFileManager defaultManager] createFileAtPath:logPath contents:nil attributes:nil];
+  } else {
+    // 截断文件为0字节，保持 inode 不变
+    NSFileHandle *truncHandle = [NSFileHandle fileHandleForWritingAtPath:logPath];
+    [truncHandle truncateFileAtOffset:0];
+    [truncHandle closeFile];
+  }
+  // 重建持久化日志句柄（指向同一 inode 的全新 fd）
+  sPersistLogHandle = [NSFileHandle fileHandleForWritingAtPath:logPath];
+
+  // 广播日志清空通知，通知任务列表页面清除旧日志
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"ECScriptLogDidClear" object:nil];
+  });
 
   // 智能拦截：检测是否为代理 URI 而非 JS 脚本
   NSString *trimmed = [script
@@ -149,6 +250,9 @@ static const int kWDAPort = 10088;
   // Execute Script
   dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
                  ^{
+                   // [v1762] 执行环境前置拦截探测
+                   [self prepareTaskEnvironmentSync];
+
                    [context evaluateScript:script];
 
                    // Check for exceptions
@@ -196,11 +300,19 @@ static const int kWDAPort = 10088;
     _shouldInterrupt = NO; // 重置中断标志
   }
 
+  // 广播日志清空通知
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"ECScriptLogDidClear" object:nil];
+  });
+
   __block BOOL isSuccess = YES;
   __block id finalRetVal = nil;
 
   dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
                  ^{
+                   // 💡 Web 控制台（WebControlCenter）发起的是同步请求。
+                   // 控制台发起的任务默认使用者正在看屏幕，不再“多此一举”去强制亮屏和阻塞探活，提升响应速度。
+                   
                    JSValue *ret = [context evaluateScript:script];
 
                    if (context.exception) {
@@ -326,6 +438,40 @@ static NSString *gActiveWDASessionId = nil;
       @"log" : message,
       @"timestamp" : @([[NSDate date] timeIntervalSince1970])
     }];
+
+    // ★ 持久化写入日志文件（sPersistLogHandle 在 executeScript 入口重建，此处懒加载兼容首次调用）
+    if (!sPersistLogHandle) {
+      NSString *logPath = ECScriptLogFilePath();
+      if (![[NSFileManager defaultManager] fileExistsAtPath:logPath]) {
+        [[NSFileManager defaultManager] createFileAtPath:logPath contents:nil attributes:nil];
+      }
+      sPersistLogHandle = [NSFileHandle fileHandleForWritingAtPath:logPath];
+    }
+    if (sPersistLogHandle) {
+      static NSDateFormatter *sLogDateFmt = nil;
+      static dispatch_once_t onceFmt;
+      dispatch_once(&onceFmt, ^{
+        sLogDateFmt = [[NSDateFormatter alloc] init];
+        [sLogDateFmt setDateFormat:@"HH:mm:ss"];
+      });
+      NSString *timeStr = [sLogDateFmt stringFromDate:[NSDate date]];
+      NSString *logLine = [NSString stringWithFormat:@"[%@] %@\n", timeStr, message];
+      @try {
+        [sPersistLogHandle seekToEndOfFile];
+        [sPersistLogHandle writeData:[logLine dataUsingEncoding:NSUTF8StringEncoding]];
+      } @catch (NSException *e) {
+        // 文件句柄异常失效，重新打开
+        sPersistLogHandle = [NSFileHandle fileHandleForWritingAtPath:ECScriptLogFilePath()];
+      }
+    }
+
+    // 广播实时日志通知，供任务管理页面实时显示
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [[NSNotificationCenter defaultCenter]
+          postNotificationName:@"ECScriptLogDidAppend"
+                        object:nil
+                      userInfo:@{@"message": message}];
+    });
   }
 }
 
@@ -714,8 +860,6 @@ static NSString *gActiveWDASessionId = nil;
 - (BOOL)airplaneOn {
   NSLog(@"[ECScriptEngine] Executing: airplaneOn");
   [self log:@"执行: 打开飞行模式"];
-  // 提前通知服务器任务完成（因为飞行模式开启后将断网，无法再上报）
-  [[ECTaskPollManager sharedManager] preReportTaskCompletion];
   return [self setAirplaneMode:YES];
 }
 
@@ -723,6 +867,13 @@ static NSString *gActiveWDASessionId = nil;
   NSLog(@"[ECScriptEngine] Executing: airplaneOff");
   [self log:@"执行: 关闭飞行模式"];
   return [self setAirplaneMode:NO];
+}
+
+- (void)reportFinished {
+  NSLog(@"[ECScriptEngine] Executing: reportFinished");
+  [self log:@"执行: 任务完成主动汇报"];
+  // 提前通知服务器任务完成（在飞行模式开启前显式调用）
+  [[ECTaskPollManager sharedManager] preReportTaskCompletion];
 }
 
 - (BOOL)setAirplaneMode:(BOOL)enabled {
@@ -1090,10 +1241,8 @@ static NSString *gActiveWDASessionId = nil;
 
 - (NSDictionary *)findImage:(NSString *)templateB64
                    threshold:(NSNumber *)threshold {
-  // ── 截图短期缓存（同一轮连续 findImage 调用复用同一截图，大幅减少 WDA 请求）──
-  static NSString *sCachedScreenshotB64 = nil;
-  static CFAbsoluteTime sCachedScreenshotTime = 0;
-  const CFAbsoluteTime kScreenshotCacheTTL = 0.5; // 500ms 有效期
+  // ── 截图缓存已提升为文件级静态变量 (sCachedScreenshotB64 / sCachedScreenshotTime / kScreenshotCacheTTL) ──
+  // 2 秒内连续多次 findImage 共享同一截图，大幅减少 WDA 请求；超过 2 秒自动重新截图
 
   if ([self _checkInterrupt])
     return @{@"found" : @NO};
@@ -1175,14 +1324,33 @@ static NSString *gActiveWDASessionId = nil;
   }
 
   // === 第 3 步：打印匹配详情（用于辅助调试）===
-  if (result) {
+  NSMutableDictionary *jsResult = [NSMutableDictionary dictionaryWithDictionary:(result ?: @{@"found" : @NO})];
+  if (jsResult.count > 0) {
     // [v1738] 修复解析逻辑：处理 WDA 可能返回的嵌套 value 结构
-    NSDictionary *finalData = result;
-    if (result[@"value"] && [result[@"value"] isKindOfClass:[NSDictionary class]]) {
-        finalData = result[@"value"];
-    }
+    NSMutableDictionary *finalData = [NSMutableDictionary dictionaryWithDictionary:
+        ([jsResult[@"value"] isKindOfClass:[NSDictionary class]] ? jsResult[@"value"] : jsResult)];
     
     BOOL found = [finalData[@"found"] boolValue];
+    
+    // [v1942] 强制校验坐标，如果 x 与 y 都为 0，视为匹配失败
+    if (found) {
+        // [v1945修复] WDA 返回的 matchImage 可能直接平铺 x,y，也可能包裹在 rect 中
+        NSDictionary *coordDict = [finalData[@"rect"] isKindOfClass:[NSDictionary class]] ? finalData[@"rect"] : finalData;
+        if (coordDict[@"x"] && coordDict[@"y"]) {
+            float xVal = [coordDict[@"x"] floatValue];
+            float yVal = [coordDict[@"y"] floatValue];
+            if (xVal == 0 && yVal == 0) {
+                found = NO;
+                finalData[@"found"] = @NO;
+                if ([jsResult[@"value"] isKindOfClass:[NSDictionary class]]) {
+                    jsResult[@"value"] = finalData;
+                } else {
+                    jsResult[@"found"] = @NO;
+                }
+            }
+        }
+    }
+
     double confidence = [finalData[@"confidence"] doubleValue];
 
     // 透传并打印分辨率信息
@@ -1199,7 +1367,6 @@ static NSString *gActiveWDASessionId = nil;
   }
 
   // === 第 4 步：兼容老脚本对 res.value.found / res.value.x 的调用格式 ===
-  NSMutableDictionary *jsResult = [NSMutableDictionary dictionaryWithDictionary:(result ?: @{@"found" : @NO})];
   if (!jsResult[@"value"]) {
       NSMutableDictionary *valDict = [NSMutableDictionary dictionary];
       if (jsResult[@"rect"]) {
@@ -1214,8 +1381,306 @@ static NSString *gActiveWDASessionId = nil;
       jsResult[@"value"] = valDict;
   }
 
+  // [v1955优化] 主动释放过期截图缓存，防止大量 Base64 数据长期驻留内存
+  CFAbsoluteTime nowEnd = CFAbsoluteTimeGetCurrent();
+  if (sCachedScreenshotB64 && (nowEnd - sCachedScreenshotTime) >= kScreenshotCacheTTL) {
+    sCachedScreenshotB64 = nil;
+  }
+
   return jsResult;
   } // @autoreleasepool
+}
+
+// [v1956] 供 JS 层主动释放截图缓存内存（在不再需要找图时调用）
+- (void)clearScreenshotCache {
+  sCachedScreenshotB64 = nil;
+  sCachedScreenshotTime = 0;
+  [self log:@"🧹 已清理截图缓存，释放内存"];
+}
+
+- (BOOL)downloadToAlbum:(NSString *)urlStr {
+  if ([self _checkInterrupt]) return NO;
+  if (!urlStr || urlStr.length == 0) return NO;
+
+  [self log:[NSString stringWithFormat:@"[Download] 开始下载媒体文件: %@", urlStr]];
+
+  dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+  __block BOOL success = NO;
+
+  NSURL *url = [NSURL URLWithString:urlStr];
+  NSString *fileName = [url lastPathComponent];
+  if (!fileName || fileName.length == 0) {
+      fileName = @"downloaded_media";
+  }
+
+  // 1. 同步下载文件
+  NSURLSession *session = [NSURLSession sharedSession];
+  NSURLSessionDownloadTask *task = [session downloadTaskWithURL:url completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
+      if (error || !location) {
+          [self log:[NSString stringWithFormat:@"[Download] 下载失败: %@", error]];
+          dispatch_semaphore_signal(sem);
+          return;
+      }
+
+      // 移动临时文件到缓存目录，因为 location 在 block 结束后会被系统删除
+      NSString *tempDir = NSTemporaryDirectory();
+      NSString *targetPath = [tempDir stringByAppendingPathComponent:fileName];
+
+      [[NSFileManager defaultManager] removeItemAtPath:targetPath error:nil];
+      NSError *moveErr = nil;
+      [[NSFileManager defaultManager] moveItemAtPath:location.path toPath:targetPath error:&moveErr];
+      if (moveErr) {
+          [self log:[NSString stringWithFormat:@"[Download] 移动临时文件失败: %@", moveErr]];
+          dispatch_semaphore_signal(sem);
+          return;
+      }
+
+      NSURL *targetURL = [NSURL fileURLWithPath:targetPath];
+
+      // 2. 请求相册权限
+      if (@available(iOS 14, *)) {
+          [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelReadWrite handler:^(PHAuthorizationStatus status) {
+              if (status != PHAuthorizationStatusAuthorized && status != PHAuthorizationStatusLimited) {
+                  [self log:@"[Download] ❌ 没有相册访问权限"];
+                  dispatch_semaphore_signal(sem);
+                  return;
+              }
+              [self _processMediaFile:targetURL fileName:fileName semaphore:sem successPtr:&success];
+          }];
+      } else {
+          [PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus status) {
+              if (status != PHAuthorizationStatusAuthorized) {
+                  [self log:@"[Download] ❌ 没有相册访问权限"];
+                  dispatch_semaphore_signal(sem);
+                  return;
+              }
+              [self _processMediaFile:targetURL fileName:fileName semaphore:sem successPtr:&success];
+          }];
+      }
+  }];
+
+  [task resume];
+  // [v1955优化] 消灭 DISPATCH_TIME_FOREVER 死锁风险：下载+相册写入最长等待 120 秒
+  long dlWait = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(120.0 * NSEC_PER_SEC)));
+  if (dlWait != 0) {
+    [self log:@"[Download] ⏰ 下载到相册操作超时 (120s)，可能网络异常或相册权限卡住"];
+  }
+
+  return success;
+}
+
+- (void)_processMediaFile:(NSURL *)targetURL fileName:(NSString *)fileName semaphore:(dispatch_semaphore_t)sem successPtr:(BOOL *)successPtr {
+    NSError *phErr = nil;
+    
+    // 3. 查找并删除同名文件
+    PHFetchOptions *options = [[PHFetchOptions alloc] init];
+    options.includeHiddenAssets = YES;
+    PHFetchResult<PHAsset *> *assets = [PHAsset fetchAssetsWithOptions:options];
+    NSMutableArray<PHAsset *> *assetsToDelete = [NSMutableArray array];
+
+    [assets enumerateObjectsUsingBlock:^(PHAsset * _Nonnull asset, NSUInteger idx, BOOL * _Nonnull stop) {
+        @try {
+            NSString *assetName = [asset valueForKey:@"filename"];
+            if ([assetName isEqualToString:fileName]) {
+                [assetsToDelete addObject:asset];
+            }
+        } @catch (NSException *e) {
+            // 忽略没有 filename 属性的资产
+        }
+    }];
+
+    if (assetsToDelete.count > 0) {
+        [self log:[NSString stringWithFormat:@"[Download] 👀 发现相册有 %lu 个同名文件(%@)，准备覆盖...", (unsigned long)assetsToDelete.count, fileName]];
+        [[PHPhotoLibrary sharedPhotoLibrary] performChangesAndWait:^{
+            [PHAssetChangeRequest deleteAssets:assetsToDelete];
+        } error:nil];
+    }
+
+    // 4. 将新下载的文件存入相册
+    [[PHPhotoLibrary sharedPhotoLibrary] performChangesAndWait:^{
+        NSString *ext = [[fileName pathExtension] lowercaseString];
+        if ([ext isEqualToString:@"mp4"] || [ext isEqualToString:@"mov"] || [ext isEqualToString:@"m4v"]) {
+            [PHAssetCreationRequest creationRequestForAssetFromVideoAtFileURL:targetURL];
+        } else {
+            [PHAssetCreationRequest creationRequestForAssetFromImageAtFileURL:targetURL];
+        }
+    } error:&phErr];
+
+    [[NSFileManager defaultManager] removeItemAtURL:targetURL error:nil];
+
+    if (phErr) {
+        [self log:[NSString stringWithFormat:@"[Download] ❌ 保存到相册失败: %@", phErr]];
+    } else {
+        [self log:@"[Download] ✅ 成功保存最新文件到相册。"];
+        *successPtr = YES;
+    }
+
+    dispatch_semaphore_signal(sem);
+}
+
+- (BOOL)downloadOneTimeMedia:(NSString *)type group:(NSString *)group {
+  if ([self _checkInterrupt]) return NO;
+  if (![type isEqualToString:@"video"] && ![type isEqualToString:@"image"]) {
+      [self log:@"[DownloadOnetime] 错误：仅支持 video 或 image"];
+      return NO;
+  }
+
+  NSString *cloudUrl = [ECPersistentConfig stringForKey:@"CloudServerURL"];
+  if (!cloudUrl || cloudUrl.length == 0) {
+    [self log:@"[DownloadOnetime] 🛑 错误：未检测到云控服务器地址，请先在仪表盘【保存配置】！"];
+    return NO;
+  }
+
+  NSString *apiPath;
+  if (!group || [group isKindOfClass:[NSNull class]] || [group isEqualToString:@"undefined"] || group.length == 0) {
+      apiPath = [NSString stringWithFormat:@"%@/api/files/download_onetime/%@", cloudUrl, type];
+  } else {
+      NSString *encodedGroup = [group stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
+      apiPath = [NSString stringWithFormat:@"%@/api/files/download_onetime/%@?group=%@", cloudUrl, type, encodedGroup];
+  }
+  
+  // 决定强覆盖存放的强制文件名
+  NSString *fileName = [type isEqualToString:@"video"] ? @"mov1.mp4" : @"t1.jpg";
+
+  [self log:[NSString stringWithFormat:@"[DownloadOnetime] 准备向控制台盲盒抽取一次性 %@ 文件，将物理固化为 %@...", type, fileName]];
+
+  dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+  __block BOOL success = NO;
+
+  NSURLSession *session = [NSURLSession sharedSession];
+  NSURLSessionDownloadTask *task = [session downloadTaskWithURL:[NSURL URLWithString:apiPath] completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
+      if (error || !location) {
+          [self log:[NSString stringWithFormat:@"[DownloadOnetime] ❌ 网络抽盒失败: %@", error.localizedDescription]];
+          dispatch_semaphore_signal(sem);
+          return;
+      }
+      
+      NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
+      if (httpResp.statusCode == 404) {
+          [self log:@"[DownloadOnetime] ❌ 一次性提取失败：服务器上已经没有库存储备了！"];
+          dispatch_semaphore_signal(sem);
+          return;
+      } else if (httpResp.statusCode != 200) {
+          [self log:[NSString stringWithFormat:@"[DownloadOnetime] ❌ API 响应异常: HTTP %ld", (long)httpResp.statusCode]];
+          dispatch_semaphore_signal(sem);
+          return;
+      }
+
+      NSString *tempDir = NSTemporaryDirectory();
+      NSString *targetPath = [tempDir stringByAppendingPathComponent:fileName];
+
+      [[NSFileManager defaultManager] removeItemAtPath:targetPath error:nil];
+      NSError *moveErr = nil;
+      [[NSFileManager defaultManager] moveItemAtPath:location.path toPath:targetPath error:&moveErr];
+      if (moveErr) {
+          [self log:[NSString stringWithFormat:@"[DownloadOnetime] 移动临时文件受阻: %@", moveErr]];
+          dispatch_semaphore_signal(sem);
+          return;
+      }
+
+      NSURL *targetURL = [NSURL fileURLWithPath:targetPath];
+
+      if (@available(iOS 14, *)) {
+          [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelReadWrite handler:^(PHAuthorizationStatus status) {
+              if (status != PHAuthorizationStatusAuthorized && status != PHAuthorizationStatusLimited) {
+                  [self log:@"[DownloadOnetime] ❌ 无相册写入权限"];
+                  dispatch_semaphore_signal(sem);
+                  return;
+              }
+              [self _processMediaFile:targetURL fileName:fileName semaphore:sem successPtr:&success];
+          }];
+      } else {
+          [PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus status) {
+              if (status != PHAuthorizationStatusAuthorized) {
+                  [self log:@"[DownloadOnetime] ❌ 无相册写入权限"];
+                  dispatch_semaphore_signal(sem);
+                  return;
+              }
+              [self _processMediaFile:targetURL fileName:fileName semaphore:sem successPtr:&success];
+          }];
+      }
+  }];
+
+  [task resume];
+  // [v1955优化] 消灭 DISPATCH_TIME_FOREVER 死锁风险：一次性媒体下载最长等待 120 秒
+  long otWait = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(120.0 * NSEC_PER_SEC)));
+  if (otWait != 0) {
+    [self log:@"[DownloadOnetime] ⏰ 一次性媒体下载操作超时 (120s)"];
+  }
+
+  return success;
+}
+
+- (NSString *)getRandomTag {
+  if ([self _checkInterrupt]) return @"";
+  NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
+  NSString *country = [defaults stringForKey:@"EC_DEVICE_COUNTRY"];
+  if (!country || country.length == 0) country = @"";
+  NSString *cloudUrl = [ECPersistentConfig stringForKey:@"CloudServerURL"];
+  if (!cloudUrl || cloudUrl.length == 0) {
+    [self log:@"[getRandomTag] 🛑 错误：未检测到云控服务器地址！"];
+    return @"";
+  }
+  
+  NSString *group = [defaults stringForKey:@"EC_DEVICE_GROUP"];
+  if (!group || [group isKindOfClass:[NSNull class]]) group = @"";
+  
+  NSString *encodedCountry = [country stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
+  NSString *encodedGroup = [group stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
+  NSString *apiPath = [NSString stringWithFormat:@"%@/api/assets/tags/random?country=%@&group_name=%@", cloudUrl, encodedCountry, encodedGroup];
+  
+  NSURL *url = [NSURL URLWithString:apiPath];
+  NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:6.0];
+  
+  dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+  __block NSString *result = @"";
+  [[[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+      if (data && !error) {
+          NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+          if (json && [json[@"ok"] boolValue]) {
+              result = json[@"value"] ?: @"";
+          }
+      }
+      dispatch_semaphore_signal(sem);
+  }] resume];
+  dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 6 * NSEC_PER_SEC));
+  return result;
+}
+
+- (NSString *)getRandomBio {
+  if ([self _checkInterrupt]) return @"";
+  NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
+  NSString *country = [defaults stringForKey:@"EC_DEVICE_COUNTRY"];
+  if (!country || country.length == 0) country = @"";
+  NSString *cloudUrl = [ECPersistentConfig stringForKey:@"CloudServerURL"];
+  if (!cloudUrl || cloudUrl.length == 0) {
+    [self log:@"[getRandomBio] 🛑 错误：未检测到云控服务器地址！"];
+    return @"";
+  }
+  
+  NSString *group = [defaults stringForKey:@"EC_DEVICE_GROUP"];
+  if (!group || [group isKindOfClass:[NSNull class]]) group = @"";
+  
+  NSString *encodedCountry = [country stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
+  NSString *encodedGroup = [group stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
+  NSString *apiPath = [NSString stringWithFormat:@"%@/api/assets/bios/random?country=%@&group_name=%@", cloudUrl, encodedCountry, encodedGroup];
+  
+  NSURL *url = [NSURL URLWithString:apiPath];
+  NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:6.0];
+  
+  dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+  __block NSString *result = @"";
+  [[[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+      if (data && !error) {
+          NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+          if (json && [json[@"ok"] boolValue]) {
+              result = json[@"value"] ?: @"";
+          }
+      }
+      dispatch_semaphore_signal(sem);
+  }] resume];
+  dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 6 * NSEC_PER_SEC));
+  return result;
 }
 
 - (NSString *)getColorAt:(NSNumber *)x y:(NSNumber *)y {
@@ -1384,8 +1849,8 @@ static NSString *gActiveWDASessionId = nil;
 
   NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
   request.HTTPMethod = method;
-  // 优化：延长超时保护为 120 秒，以防复杂指令执行过久
-  request.timeoutInterval = 120.0;
+  // [v1955优化] HTTP 超时从 120s 收敛到 30s，避免 WDA 半死不活时无限等待
+  request.timeoutInterval = 30.0;
 
   if (body) {
     [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
@@ -1395,7 +1860,7 @@ static NSString *gActiveWDASessionId = nil;
   }
 
   int retryCount = 0;
-  const int maxRetries = 3;
+  const int maxRetries = 2; // [v1955优化] 从 3 次减为 2 次，减少 WDA 半死状态下的无效阻塞
   __block NSDictionary *resultDict = nil;
 
   while (retryCount < maxRetries) {
@@ -1454,11 +1919,10 @@ static NSString *gActiveWDASessionId = nil;
             dispatch_semaphore_signal(sema);
           }] resume];
 
-    // [v1738-fix] 防死锁：用 60 秒超时替代 DISPATCH_TIME_FOREVER
-    // 确保即使 WDA 完全无响应，线程也不会永久阻塞
+    // [v1955优化] 信号量超时与 HTTP timeoutInterval 对齐（30s + 5s 缓冲 = 35s），避免过长阻塞
     long waitResult = dispatch_semaphore_wait(
         sema,
-        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(60.0 * NSEC_PER_SEC)));
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(35.0 * NSEC_PER_SEC)));
     if (waitResult != 0) {
       NSLog(@"[ECScriptEngine] ⏰ WDA 请求信号量超时(60s)，操作: %@", name);
       [self log:[NSString stringWithFormat:@"⏰ WDA 请求超时(60s): %@", name]];
@@ -1484,7 +1948,7 @@ static NSString *gActiveWDASessionId = nil;
                                              kWDAPort]];
       NSMutableURLRequest *probeReq =
           [NSMutableURLRequest requestWithURL:statusURL];
-      probeReq.timeoutInterval = 120.0;
+      probeReq.timeoutInterval = 5.0; // [v1955优化] 探活请求不需要 120s，5 秒足够
       probeReq.HTTPMethod = @"GET";
       [[NSURLSession.sharedSession
           dataTaskWithRequest:probeReq
@@ -1494,10 +1958,10 @@ static NSString *gActiveWDASessionId = nil;
               wdaAlive = (!error && resp.statusCode == 200);
               dispatch_semaphore_signal(probeSema);
             }] resume];
-      // [v1738-fix] 探活超时 15 秒，不再无限等待
+      // [v1955优化] 探活信号量从 15s 收敛到 8s，快速失败
       long probeWait = dispatch_semaphore_wait(
           probeSema,
-          dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15.0 * NSEC_PER_SEC)));
+          dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)));
       if (probeWait != 0) {
         NSLog(@"[ECScriptEngine] ⏰ WDA 探活信号量超时(15s)");
         wdaAlive = NO; // 超时视为 WDA 已死
@@ -1506,7 +1970,9 @@ static NSString *gActiveWDASessionId = nil;
       if (!wdaAlive) {
         NSLog(@"[ECScriptEngine] ⚠️ WDA 探活失败，放弃重试 %@", name);
         [self
-            log:[NSString stringWithFormat:@"⚠️ WDA 无响应，放弃重试 %@", name]];
+            log:[NSString stringWithFormat:@"⚠️ WDA 已崩溃，中断当前脚本: %@", name]];
+        // [v1945] WDA 已死 → 立即中断脚本执行，避免后续 WDA 调用继续浪费时间
+        [self interruptExecution];
         // 触发 WDA 拉起 (通过 TSApplicationsManager 在主线程执行)
         dispatch_async(dispatch_get_main_queue(), ^{
           id mgr = [NSClassFromString(@"TSApplicationsManager")
@@ -1580,7 +2046,7 @@ static NSString *gActiveWDASessionId = nil;
 
   NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
   request.HTTPMethod = body ? @"POST" : @"GET";
-  request.timeoutInterval = 30;
+  request.timeoutInterval = 15; // [v1955优化] 简单动作 (tap/swipe 等) 从 30s 降到 15s
 
   if (body) {
     [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
@@ -1590,7 +2056,7 @@ static NSString *gActiveWDASessionId = nil;
   }
 
   int retryCount = 0;
-  const int maxRetries = 3;
+  const int maxRetries = 2; // [v1955优化] 从 3 次减为 2 次，减少无效阻塞
   __block BOOL isSuccess = NO;
 
   while (retryCount < maxRetries) {
@@ -1630,10 +2096,10 @@ static NSString *gActiveWDASessionId = nil;
             dispatch_semaphore_signal(sema);
           }] resume];
 
-    // [v1738-fix] 防死锁：用 60 秒超时替代 DISPATCH_TIME_FOREVER
+    // [v1955优化] 信号量超时与 timeoutInterval 对齐（15s + 5s 缓冲 = 20s）
     long waitResult = dispatch_semaphore_wait(
         sema,
-        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(60.0 * NSEC_PER_SEC)));
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20.0 * NSEC_PER_SEC)));
     if (waitResult != 0) {
       NSLog(@"[EC_CMD_LOG] [ECScriptEngine] ⏰ WDA 动作信号量超时(60s): %@", name);
       [self log:[NSString stringWithFormat:@"⏰ WDA 动作超时(60s): %@", name]];
@@ -1652,6 +2118,36 @@ static NSString *gActiveWDASessionId = nil;
 
     retryCount++;
     if (retryCount < maxRetries) {
+      // [v1945] 重试前快速探活 WDA，确认是否还活着
+      __block BOOL wdaAlive = NO;
+      dispatch_semaphore_t probeSema = dispatch_semaphore_create(0);
+      NSURL *statusURL = [NSURL
+          URLWithString:[NSString
+                            stringWithFormat:@"http://127.0.0.1:%d/status",
+                                             kWDAPort]];
+      NSMutableURLRequest *probeReq =
+          [NSMutableURLRequest requestWithURL:statusURL];
+      probeReq.timeoutInterval = 10.0;
+      probeReq.HTTPMethod = @"GET";
+      [[NSURLSession.sharedSession
+          dataTaskWithRequest:probeReq
+            completionHandler:^(NSData *data, NSURLResponse *response,
+                                NSError *error) {
+              NSHTTPURLResponse *resp = (NSHTTPURLResponse *)response;
+              wdaAlive = (!error && resp.statusCode == 200);
+              dispatch_semaphore_signal(probeSema);
+            }] resume];
+      long probeWait = dispatch_semaphore_wait(
+          probeSema,
+          dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15.0 * NSEC_PER_SEC)));
+      if (probeWait != 0) wdaAlive = NO;
+
+      if (!wdaAlive) {
+        NSLog(@"[ECScriptEngine] ⚠️ WDA 探活失败(简单动作)，中断脚本: %@", name);
+        [self log:[NSString stringWithFormat:@"⚠️ WDA 已崩溃，中断当前脚本: %@", name]];
+        [self interruptExecution];
+        break;
+      }
       [NSThread sleepForTimeInterval:1.0];
       NSLog(@"[ECScriptEngine] 正在进行第 %d 次 WDA 重试...", retryCount);
     }
@@ -1745,7 +2241,11 @@ static NSString *gActiveWDASessionId = nil;
           dispatch_semaphore_signal(sema);
         }] resume];
 
-  dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
+  // [v1955优化] 消灭 DISPATCH_TIME_FOREVER 死锁风险：评论同步最长等待 60 秒
+  long syncWait = dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(60.0 * NSEC_PER_SEC)));
+  if (syncWait != 0) {
+    [self log:@"⏰ 评论数据同步超时 (60s)"];
+  }
   return success;
 }
 
@@ -1765,11 +2265,10 @@ static NSString *gActiveWDASessionId = nil;
               @"本地评论缓存为空或缺失对应语言，尝试直接连接服务器自动补充拉取."
               @".."];
 
-    NSUserDefaults *groupDefaults =
-        [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
-    NSString *cloudUrl = [groupDefaults stringForKey:@"EC_CLOUD_SERVER_URL"];
+    NSString *cloudUrl = [ECPersistentConfig stringForKey:@"CloudServerURL"];
     if (!cloudUrl || cloudUrl.length == 0) {
-      cloudUrl = @"http://s.ecmain.site:8088";
+      [self log:@"[getRandomComment] 🛑 错误：未检测到云控服务器地址！"];
+      return @"";
     }
     NSString *commentsUrl = [cloudUrl stringByAppendingString:@"/api/comments"];
 

@@ -340,7 +340,27 @@ void handleRequest(int socket) {
                   // ==== Serve specific file ====
                   NSData *fileData = [NSData dataWithContentsOfFile:absPath];
                   if (fileData) {
-                      NSString *header = [NSString stringWithFormat:@"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %lu\r\nConnection: close\r\n\r\n", (unsigned long)fileData.length];
+                      NSString *ext = [absPath pathExtension].lowercaseString;
+                      NSString *contentType = @"application/octet-stream";
+                      
+                      NSArray *textExts = @[@"txt", @"log", @"json", @"js", @"md", @"csv", @"conf", @"ini", @"m", @"h", @"plist"];
+                      NSArray *imageExts = @[@"jpg", @"jpeg", @"png", @"gif", @"webp", @"bmp", @"ico"];
+                      NSArray *videoExts = @[@"mp4", @"mov", @"avi", @"mkv"];
+                      
+                      // 模糊匹配包含 log 的文件或者常见后缀
+                      if ([textExts containsObject:ext] || [[absPath lowercaseString] containsString:@".log"]) {
+                          contentType = @"text/plain; charset=utf-8";
+                      } else if ([ext isEqualToString:@"html"] || [ext isEqualToString:@"htm"]) {
+                          contentType = @"text/html; charset=utf-8";
+                      } else if ([imageExts containsObject:ext]) {
+                          if ([ext isEqualToString:@"jpg"] || [ext isEqualToString:@"jpeg"]) contentType = @"image/jpeg";
+                          else contentType = [NSString stringWithFormat:@"image/%@", ext];
+                      } else if ([videoExts containsObject:ext]) {
+                          if ([ext isEqualToString:@"mov"]) contentType = @"video/quicktime";
+                          else contentType = [NSString stringWithFormat:@"video/%@", ext];
+                      }
+                      
+                      NSString *header = [NSString stringWithFormat:@"HTTP/1.1 200 OK\r\nContent-Type: %@\r\nContent-Length: %lu\r\nConnection: close\r\n\r\n", contentType, (unsigned long)fileData.length];
                       send(socket, [header UTF8String], header.length, 0);
                       send(socket, [fileData bytes], fileData.length, 0);
                   } else {

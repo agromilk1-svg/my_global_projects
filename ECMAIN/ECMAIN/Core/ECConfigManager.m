@@ -52,7 +52,7 @@
 #pragma mark - Local App Settings
 
 - (NSString *)cloudServerURL {
-    return [self.localDefaults stringForKey:@"CloudServerURL"] ?: @"http://s.ecmain.site:8088";
+    return [self.localDefaults stringForKey:@"CloudServerURL"] ?: @"";
 }
 
 - (void)setCloudServerURL:(NSString *)url {

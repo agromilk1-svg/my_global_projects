@@ -21,27 +21,37 @@ static NSString *const kECWDABundleID =
 // 💓 心跳时间戳改用 ECBackgroundManager 成员变量 _lastHeartbeatTime
 
 - (void)handleHeartbeatFailure {
-    NSArray *fallbacks = @[
-        @"http://s.ecmain.site:8088",
-        @"http://l.ecmain.site:8088"
-    ];
+    // 构建候选地址列表：用户偏好的原始地址 + 固定候选列表（去重）
+    NSString *userPreferredUrl = [ECPersistentConfig stringForKey:@"EC_USER_PREFERRED_URL"];
+    NSString *currentActiveUrl = [ECPersistentConfig stringForKey:@"CloudServerURL"];
+    NSMutableArray *candidates = [NSMutableArray array];
     
-    NSString *currentUrl = [ECPersistentConfig stringForKey:@"CloudServerURL"];
-    if (currentUrl.length == 0) currentUrl = EC_DEFAULT_CLOUD_SERVER_URL;
+    // 1. 用户偏好的地址优先
+    if (userPreferredUrl.length > 0) [candidates addObject:userPreferredUrl];
     
-    NSUInteger currentIdx = [fallbacks indexOfObject:currentUrl];
-    NSUInteger nextIdx = 0;
-    if (currentIdx != NSNotFound) {
-        nextIdx = (currentIdx + 1) % fallbacks.count;
+    // 2. 追加固定候选地址（跳过已存在的）
+    for (NSString *fallback in ECServerFallbackList()) {
+        if (![candidates containsObject:fallback]) {
+            [candidates addObject:fallback];
+        }
     }
     
-    NSString *nextUrl = fallbacks[nextIdx];
-    if (![nextUrl isEqualToString:currentUrl]) {
+    if (candidates.count <= 1) {
+        [[ECLogManager sharedManager] log:@"[ECBackground] ⚠️ 心跳超时且无其他候选地址可切换"];
+        return;
+    }
+    
+    // 3. 找到当前正在工作且发生超时的地址在候选列表中的位置，切换到下一个
+    NSUInteger currentIdx = [candidates indexOfObject:currentActiveUrl];
+    NSUInteger nextIdx = (currentIdx != NSNotFound) ? (currentIdx + 1) % candidates.count : 0;
+    NSString *nextUrl = candidates[nextIdx];
+    
+    if (![nextUrl isEqualToString:currentActiveUrl]) {
         [[ECLogManager sharedManager] log:[NSString stringWithFormat:@"[ECBackground] ⚠️ 心跳连接服务器10秒超时，循环切换服务器至: %@", nextUrl]];
         [ECPersistentConfig setObject:nextUrl forKey:@"CloudServerURL"];
         [ECPersistentConfig synchronize];
     }
-    // [v1934] 通知仪表盘心跳探测失败
+    // 通知仪表盘心跳探测失败
     dispatch_async(dispatch_get_main_queue(), ^{
         [[NSNotificationCenter defaultCenter]
             postNotificationName:@"ECHeartbeatDidComplete"
@@ -59,9 +69,11 @@ static NSString *const kECWDABundleID =
   // NSMutableURLRequest 崩溃
   if (!urlString || urlString.length == 0) {
     NSString *savedUrl = [ECPersistentConfig stringForKey:@"CloudServerURL"];
-    NSString *baseUrl =
-        savedUrl.length > 0 ? savedUrl : EC_DEFAULT_CLOUD_SERVER_URL;
-    urlString = [baseUrl stringByAppendingString:@"/devices/heartbeat"];
+    if (!savedUrl || savedUrl.length == 0) {
+      [[ECLogManager sharedManager] log:@"[ECBackground] 🛑 服务器地址未配置，无法发送心跳"];
+      return;
+    }
+    urlString = [savedUrl stringByAppendingString:@"/devices/heartbeat"];
   }
 
   // 1. 发送初步尝试日志 (前置以确保透明度)
@@ -742,12 +754,24 @@ static NSString *const kECWDABundleID =
   }
   _isEcwdaUpdating = YES;
 
+  // [v1762] OTA 前激活：将 ECMAIN 拉到前台并唤醒屏幕
+  // 如果设备在后台或锁屏状态安装，可能不会自动激活，导致安装失败或永远无法重启 ECWDA
+  [[ECLogManager sharedManager] log:@"[ECBackground] 🔄 ECWDA 更新前先激活屏幕..."];
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [[TSApplicationsManager sharedInstance]
+        openApplicationWithBundleID:@"com.ecmain.app"];
+  });
+  // 给系统 1 秒时间完成前台切换
+  [NSThread sleepForTimeInterval:1.0];
+
   // 构建完整下载 URL
-  NSUserDefaults *defaults =
-      [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
-  NSString *savedUrl = [defaults stringForKey:@"CloudServerURL"];
-  NSString *baseUrl =
-      savedUrl.length > 0 ? savedUrl : EC_DEFAULT_CLOUD_SERVER_URL;
+  NSString *savedUrl = [ECPersistentConfig stringForKey:@"CloudServerURL"];
+  if (!savedUrl || savedUrl.length == 0) {
+    [[ECLogManager sharedManager] log:@"[ECBackground] 🛑 服务器地址未配置，无法下载 ECWDA 更新"];
+    _isEcwdaUpdating = NO;
+    return;
+  }
+  NSString *baseUrl = savedUrl;
 
   NSString *downloadPath = updateInfo[@"download_url"];
   NSString *fullURL =

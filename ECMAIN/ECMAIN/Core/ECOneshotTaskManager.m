@@ -10,6 +10,7 @@
 #import "ECOneshotTaskManager.h"
 #import "ECBackgroundManager.h"
 #import "ECLogManager.h"
+#import "ECPersistentConfig.h"
 #import "ECScriptParser.h"
 #import "ECTaskPollManager.h"
 #import <UIKit/UIKit.h>
@@ -103,11 +104,9 @@ BOOL EC_ONESHOT_EXECUTING = NO;
   if (!udid || udid.length == 0) return;
 
   // 获取服务器地址
-  NSUserDefaults *defaults =
-      [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
-  NSString *savedUrl = [defaults stringForKey:@"CloudServerURL"];
-  NSString *baseUrl =
-      savedUrl.length > 0 ? savedUrl : EC_DEFAULT_CLOUD_SERVER_URL;
+  NSString *savedUrl = [ECPersistentConfig stringForKey:@"CloudServerURL"];
+  if (!savedUrl || savedUrl.length == 0) return; // 地址未配置，跳过本轮轮询
+  NSString *baseUrl = savedUrl;
 
   NSString *urlString = [NSString
       stringWithFormat:@"%@/api/device/oneshot_task?udid=%@", baseUrl,
@@ -172,6 +171,12 @@ BOOL EC_ONESHOT_EXECUTING = NO;
   NSLog(@"%@", logMsg);
 
   dispatch_async(dispatch_get_main_queue(), ^{
+    // 广播一次性任务开始通知
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:@"ECTaskDidBeginExecution"
+                      object:nil
+                    userInfo:@{@"name": name, @"type": @"oneshot", @"taskId": taskId}];
+
     [[ECScriptParser sharedParser]
         executeScript:code
            completion:^(BOOL success, NSArray *_Nonnull results) {
@@ -203,11 +208,9 @@ BOOL EC_ONESHOT_EXECUTING = NO;
 #pragma mark - 完成汇报
 
 - (void)reportCompletion:(NSNumber *)taskId {
-  NSUserDefaults *defaults =
-      [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
-  NSString *savedUrl = [defaults stringForKey:@"CloudServerURL"];
-  NSString *baseUrl =
-      savedUrl.length > 0 ? savedUrl : EC_DEFAULT_CLOUD_SERVER_URL;
+  NSString *savedUrl = [ECPersistentConfig stringForKey:@"CloudServerURL"];
+  if (!savedUrl || savedUrl.length == 0) return; // 地址未配置，放弃汇报
+  NSString *baseUrl = savedUrl;
 
   NSString *urlString = [NSString
       stringWithFormat:@"%@/api/device/oneshot_task/complete", baseUrl];

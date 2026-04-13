@@ -100,7 +100,7 @@ const restoreSession = async () => {
 
 // 动态标签页列表（根据角色过滤）
 const visibleTabs = computed(() => {
-  const all = ['📱 手机列表', '⚡️ 控制台', '📋 任务列表', '⚡ 一次性任务', '⚙️ 配置中心', '💬 评论管理', '🎵 TikTok 账号', '📁 文件管理', '👤 用户管理'];
+  const all = ['📱 手机列表', '⚡️ 控制台', '📋 任务列表', '⚡ 一次性任务', '⚙️ 配置中心', '💬 评论管理', '🎵 TikTok 账号', '📁 文件管理', '🏷️ 标签', '📝 简介', '👤 用户管理'];
   if (isSuperAdmin.value) return all;
   // 普通管理员隐藏配置中心、评论管理、用户管理
   return all.filter(t => !['⚙️ 配置中心', '💬 评论管理', '👤 用户管理'].includes(t));
@@ -215,12 +215,167 @@ const initAllData = () => {
   fetchTiktokAccounts();
   fetchOneshotTasks();
   fetchSharedFiles();
+  fetchOnetimeGroups();
+  fetchTags();
+  fetchBios();
   if (isSuperAdmin.value) fetchAdmins();
+};
+
+// ================= 动态资产 (标签 & 简介) =================
+const tagsList = ref<any[]>([]);
+const biosList = ref<any[]>([]);
+const tagsSelectedCountry = ref('');
+const biosSelectedCountry = ref('');
+const tagsSelectedGroup = ref('');
+const biosSelectedGroup = ref('');
+const showBatchTagsModal = ref(false);
+const showBatchBiosModal = ref(false);
+const batchTextTags = ref('');
+const batchTextBios = ref('');
+
+const fetchTags = async () => {
+    if (!tagsSelectedCountry.value && countries.value.length > 0) {
+        tagsSelectedCountry.value = countries.value[0].name;
+    }
+    if (!tagsSelectedCountry.value) return;
+    try {
+        const res = await authFetch(`${apiBase}/assets/tags?country=${encodeURIComponent(tagsSelectedCountry.value)}`);
+        if(res.ok) {
+            const data = await res.json();
+            tagsList.value = data.tags || [];
+        }
+    } catch(err) {}
+};
+
+const fetchBios = async () => {
+    if (!biosSelectedCountry.value && countries.value.length > 0) {
+        biosSelectedCountry.value = countries.value[0].name;
+    }
+    if (!biosSelectedCountry.value) return;
+    try {
+        const res = await authFetch(`${apiBase}/assets/bios?country=${encodeURIComponent(biosSelectedCountry.value)}`);
+        if(res.ok) {
+            const data = await res.json();
+            biosList.value = data.bios || [];
+        }
+    } catch(err) {}
+};
+
+const submitBatchTags = async () => {
+    if(!tagsSelectedCountry.value || !batchTextTags.value.trim()) return;
+    try {
+        const res = await authFetch(`${apiBase}/assets/tags/batch`, {
+            method: 'POST',
+            body: JSON.stringify({ country: tagsSelectedCountry.value, group_name: tagsSelectedGroup.value, text: batchTextTags.value })
+        });
+        if(res.ok) {
+            const data = await res.json();
+            alert(data.msg || '导入成功');
+            showBatchTagsModal.value = false;
+            batchTextTags.value = '';
+            fetchTags();
+        }
+    } catch(err) { alert("网络错误"); }
+};
+
+const submitBatchBios = async () => {
+    if(!biosSelectedCountry.value || !batchTextBios.value.trim()) return;
+    try {
+        const res = await authFetch(`${apiBase}/assets/bios/batch`, {
+            method: 'POST',
+            body: JSON.stringify({ country: biosSelectedCountry.value, group_name: biosSelectedGroup.value, text: batchTextBios.value })
+        });
+        if(res.ok) {
+            const data = await res.json();
+            alert(data.msg || '导入成功');
+            showBatchBiosModal.value = false;
+            batchTextBios.value = '';
+            fetchBios();
+        }
+    } catch(err) { alert("网络错误"); }
+};
+
+const deleteTag = async (id: number) => {
+    if(!confirm("确认删除这条标签吗？")) return;
+    try {
+        const res = await authFetch(`${apiBase}/assets/tags/${id}`, { method: 'DELETE' });
+        if(res.ok) fetchTags();
+    } catch(err) {}
+};
+
+const deleteBio = async (id: number) => {
+    if(!confirm("确认删除这条简介吗？")) return;
+    try {
+        const res = await authFetch(`${apiBase}/assets/bios/${id}`, { method: 'DELETE' });
+        if(res.ok) fetchBios();
+    } catch(err) {}
 };
 
 // ================= 文件管理 =================
 const sharedFiles = ref<any[]>([]);
 const fileUploading = ref(false);
+
+const fileManagerTab = ref<'shared' | 'onetime'>('shared');
+const onetimeGroups = ref<any[]>([]);
+const onetimeCurrentGroup = ref<string>('');
+const onetimeFiles = ref<any[]>([]);
+const onetimePage = ref(1);
+const onetimePageSize = ref(50);
+const onetimeTotalPages = ref(0);
+const onetimeTotalItems = ref(0);
+const onetimeExpandedFolders = ref<Set<string>>(new Set());
+
+// 将扁平的路径数组转换为树形结构以供显示
+const onetimeTreeData = computed(() => {
+    const root: any[] = [];
+    const buildTree = (pathArr: string[], count: number, fullPath: string) => {
+        let currentLevel = root;
+        let runningPath = "";
+        
+        pathArr.forEach((part, index) => {
+            runningPath = runningPath ? `${runningPath}/${part}` : part;
+            let node = currentLevel.find(n => n.label === part);
+            if (!node) {
+                node = {
+                    label: part,
+                    fullPath: runningPath,
+                    count: index === pathArr.length - 1 ? count : 0,
+                    children: [],
+                    isLeaf: index === pathArr.length - 1 && pathArr.length === (runningPath.split('/').length) 
+                };
+                currentLevel.push(node);
+            } else if (index === pathArr.length - 1) {
+                node.count = count; // 如果路径末尾已存在（比如先处理了子目录），更新支点计数
+            }
+            currentLevel = node.children;
+        });
+    };
+
+    onetimeGroups.value.forEach(g => {
+        buildTree(g.name.split('/'), g.count, g.name);
+    });
+
+    // 递归扁平化用于 v-for 渲染（带深度信息）
+    const flattened: any[] = [];
+    const flatten = (nodes: any[], depth: number) => {
+        nodes.sort((a,b) => a.label.localeCompare(b.label)).forEach(node => {
+            flattened.push({ ...node, depth });
+            if (onetimeExpandedFolders.value.has(node.fullPath) || onetimeCurrentGroup.value.startsWith(node.fullPath + '/')) {
+                flatten(node.children, depth + 1);
+            }
+        });
+    };
+    flatten(root, 0);
+    return flattened;
+});
+
+const toggleFolder = (path: string) => {
+    if (onetimeExpandedFolders.value.has(path)) {
+        onetimeExpandedFolders.value.delete(path);
+    } else {
+        onetimeExpandedFolders.value.add(path);
+    }
+};
 
 const fetchSharedFiles = async () => {
   try {
@@ -230,6 +385,139 @@ const fetchSharedFiles = async () => {
       sharedFiles.value = data.files || [];
     }
   } catch (e) { /* 忽略 */ }
+};
+
+const fetchOnetimeGroups = async () => {
+  try {
+    const res = await authFetch(`${apiBase}/files/onetime/groups`);
+    if(res.ok) {
+      const data = await res.json();
+      onetimeGroups.value = data.groups || [];
+      if(onetimeGroups.value.length > 0 && !onetimeCurrentGroup.value) {
+        onetimeCurrentGroup.value = onetimeGroups.value[0].name;
+      }
+      if(onetimeCurrentGroup.value) await fetchOnetimeFiles();
+    }
+  } catch(e) {}
+};
+
+const fetchOnetimeFiles = async () => {
+    if(!onetimeCurrentGroup.value) return;
+    try {
+        const res = await authFetch(`${apiBase}/files/onetime?group=${onetimeCurrentGroup.value}&page=${onetimePage.value}&size=${onetimePageSize.value}`);
+        if(res.ok) {
+           const data = await res.json();
+           onetimeFiles.value = data.files || [];
+           onetimeTotalPages.value = data.total_pages;
+           onetimeTotalItems.value = data.total;
+        }
+    } catch(e){}
+};
+
+watch([onetimeCurrentGroup, onetimePage, onetimePageSize], () => {
+   fetchOnetimeFiles();
+});
+
+// 通用复制函数：支持 HTTPS 现代 API 与 HTTP 兜底方案
+const copyText = (text: string) => {
+    if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(() => {
+            alert("✅ 复制成功：\n" + text);
+        }).catch(() => {
+            fallbackCopyText(text);
+        });
+    } else {
+        fallbackCopyText(text);
+    }
+};
+
+const fallbackCopyText = (text: string) => {
+    const textArea = document.createElement("textarea");
+    textArea.value = text;
+    textArea.style.position = "fixed";
+    textArea.style.left = "-9999px";
+    textArea.style.top = "0";
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    try {
+        const successful = document.execCommand('copy');
+        if (successful) alert("✅ 复制成功：\n" + text);
+        else alert("❌ 无法自动复制，请手动选择路径。");
+    } catch (err) {
+        alert("❌ 复制失败：" + err);
+    }
+    document.body.removeChild(textArea);
+};
+
+const onetimePreviewUrl = ref('');
+const onetimePreviewType = ref<string | null>(null);
+
+const previewOnetimeFile = (file: any) => {
+    const nameStr = String(file.name).toLowerCase();
+    if (nameStr.endsWith('.mp4') || nameStr.endsWith('.mov') || nameStr.endsWith('.avi')) {
+        onetimePreviewType.value = 'video';
+    } else if (nameStr.endsWith('.jpg') || nameStr.endsWith('.png') || nameStr.endsWith('.jpeg')) {
+        onetimePreviewType.value = 'image';
+    } else {
+        alert("该文件类型不支持在线预览");
+        return;
+    }
+    
+    // 构造带 preview=true 的预览专用链接 (带上 token 以免拦截)
+    const token = localStorage.getItem('ec_admin_token');
+    onetimePreviewUrl.value = `${apiBase}/files/download_onetime/${onetimePreviewType.value}?group=${encodeURIComponent(onetimeCurrentGroup.value)}&filename=${encodeURIComponent(file.name)}&preview=true&token=${token}`;
+};
+
+const deleteOnetimeItem = async (file: any) => {
+    if (!confirm(`确认要彻底销毁此素材及其物理原件吗？\n${file.name}`)) return;
+    try {
+        const res = await authFetch(`${apiBase}/files/onetime/item`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                group: onetimeCurrentGroup.value,
+                filename: file.name
+            })
+        });
+        if (res.ok) {
+            const data = await res.json();
+            if (data.ok) {
+                await fetchOnetimeFiles();
+                await fetchOnetimeGroups();
+            } else {
+                alert("销毁失败: " + (data.detail || "未知错误"));
+            }
+        }
+    } catch (e) {
+        alert("网络请求失败");
+    }
+};
+
+const scanLocalFiles = async () => {
+  const defaultPath = "/Users/hh/Desktop/my/视频";
+  const targetPath = prompt("请输入服务器主机上的绝对路径：\n系统将按照该目录层级建立索引软链接，不移动原文件。", defaultPath);
+  if (!targetPath) return;
+  try {
+    const res = await authFetch(`${apiBase}/files/scan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: targetPath }),
+    });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      alert(data.msg);
+      await fetchSharedFiles();
+      await fetchOnetimeGroups();
+      fileManagerTab.value = 'onetime';
+      // 自动选中最新扫描的根组
+      onetimeCurrentGroup.value = targetPath.split(/[\/\\]/).filter(Boolean).pop() || 'default';
+    } else {
+      alert("扫描失败: " + (data.detail || data.msg || '未知错误'));
+    }
+  } catch(e) {
+    alert("网络请求失败");
+  }
 };
 
 const uploadSharedFile = async (event: Event) => {
@@ -303,6 +591,230 @@ const logs = ref<string[]>(['[系统] ECWDA Web控制台已就绪。']);
 const streamUrl = ref('');
 const actionQueue = ref<any[]>([]);
 const generatedJs = ref(''); 
+const isImagePreviewMode = ref(false);
+
+const isInspectorMode = ref(false);
+const parsedUITreeNodes = ref<any[]>([]);
+const hoveredUINode = ref<any>(null);
+
+const isUITreeFetching = ref(false);
+const uiTreeData = ref("");
+
+const parseUITree = (treeData: any) => {
+    try {
+        let nodes: any[] = [];
+        
+        // --- 方案1: 处理旧版 XML 字符串回调 ---
+        if (typeof treeData === 'string' && treeData.trim().startsWith('<')) {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(treeData, "text/xml");
+            const walkXML = (node: any) => {
+                if (node.nodeType === 1) { // Node.ELEMENT_NODE
+                    const x = parseFloat(node.getAttribute('x') || 'NaN');
+                    const y = parseFloat(node.getAttribute('y') || 'NaN');
+                    const width = parseFloat(node.getAttribute('width') || 'NaN');
+                    const height = parseFloat(node.getAttribute('height') || 'NaN');
+                    if (!isNaN(x) && !isNaN(y) && !isNaN(width) && !isNaN(height)) {
+                        nodes.push({
+                            type: node.tagName,
+                            name: node.getAttribute('name'),
+                            label: node.getAttribute('label'),
+                            value: node.getAttribute('value'),
+                            visible: node.getAttribute('visible'),
+                            x, y, w: width, h: height
+                        });
+                    }
+                    for (let i = 0; i < node.childNodes.length; i++) {
+                        walkXML(node.childNodes[i]);
+                    }
+                }
+            };
+            walkXML(doc.documentElement);
+            
+        } else {
+            // --- 方案2: 极速处理新版 JSON (提速 70%) ---
+            let root = treeData;
+            if (typeof treeData === 'string') {
+                try { root = JSON.parse(treeData); } catch(e) {}
+            }
+            // 取出 WDA 标准 JSON 包壳
+            if (root && root.value && root.value.type) {
+                root = root.value;
+            }
+            
+            const walkJSON = (node: any) => {
+                if (!node) return;
+                let isNodeValid = false;
+                if (node.type) {
+                    let x = NaN, y = NaN, w = NaN, h = NaN;
+                    // WDA 通常把坐标放在 rect: {x,y,width,height} 对象中
+                    if (node.rect) {
+                        x = typeof node.rect.x === 'number' ? node.rect.x : parseFloat(node.rect.x || 'NaN');
+                        y = typeof node.rect.y === 'number' ? node.rect.y : parseFloat(node.rect.y || 'NaN');
+                        w = typeof node.rect.width === 'number' ? node.rect.width : parseFloat(node.rect.width || 'NaN');
+                        h = typeof node.rect.height === 'number' ? node.rect.height : parseFloat(node.rect.height || 'NaN');
+                    } else if (node.x !== undefined) {
+                        x = typeof node.x === 'number' ? node.x : parseFloat(node.x);
+                        y = typeof node.y === 'number' ? node.y : parseFloat(node.y);
+                        w = typeof node.width === 'number' ? node.width : parseFloat(node.width);
+                        h = typeof node.height === 'number' ? node.height : parseFloat(node.height);
+                    }
+
+                    if (!isNaN(x) && !isNaN(y) && !isNaN(w) && !isNaN(h)) {
+                        nodes.push({
+                            type: node.type,
+                            name: node.name || '',
+                            label: node.label || '',
+                            value: node.value || '',
+                            visible: node.visible !== undefined ? String(node.visible) : '',
+                            x, y, w, h
+                        });
+                    }
+                }
+                
+                // 深度遍历
+                if (node.children && Array.isArray(node.children)) {
+                    for (const child of node.children) {
+                        walkJSON(child);
+                    }
+                }
+            };
+            walkJSON(root);
+        }
+
+        parsedUITreeNodes.value = nodes;
+        log(`✓ [UI 树] 成功解析可交互元素: ${nodes.length} 个。已激活开发者鼠标查探模式！`);
+    } catch (e) {
+        log(`⚠️ 结构树解析失败: ${e}`);
+    }
+};
+
+const fetchUITree = async () => {
+  if (!selectedDevice.value) {
+    log('❌ [UI 树] 未锁定任何目标设备，无法下发寻址波', 'error');
+    return;
+  }
+  isUITreeFetching.value = true;
+  uiTreeData.value = "";
+  
+  // [关键] 暂停截图推流，释放 Accessibility 通道
+  // TikTok 等复杂 APP 的 UI 树遍历会独占 XCTest 主线程，
+  // 如果截图流同时在抢占同一通道，会导致死锁 → WDA 看门狗触发自杀重启
+  const savedStreamUrl = streamUrl.value;
+  if (savedStreamUrl) {
+    log('⏸️ [UI 树] 临时暂停截图推流，释放 Accessibility 通道...');
+    streamUrl.value = '';
+    // 向设备发送停止推流指令，彻底释放截图资源
+    sendDeviceAction('STOP_ALL_STREAMS', {});
+    // 等一小段时间让截图通道完全释放
+    await new Promise(r => setTimeout(r, 500));
+  }
+  
+  try {
+    log(`📡 正在发射获取 UI 树指令，目标: ${selectedDevice.value}（复杂 APP 可能需要 10~30 秒）`);
+    const reqRes = await authFetch(`${apiBase}/action_proxy`, {
+        method: 'POST',
+        body: JSON.stringify({
+            udid: selectedDevice.value,
+            ecmain_url: ecmainUrl.value,
+            action_type: 'WDA_SOURCE',
+            connection_mode: connectionMode.value
+        })
+    });
+    
+    let res;
+    try {
+        res = await reqRes.json();
+    } catch (e) {
+        throw new Error('解析 JSON 回执失败');
+    }
+
+    if (res.source) {
+      // 成功抽取出底层源码
+      if (typeof res.source === 'string' && res.source.startsWith('<')) {
+        // 如果后端传的还是 fallback xml 兼容格式
+        uiTreeData.value = res.source;
+        parseUITree(res.source);
+        isInspectorMode.value = true;
+      } else {
+        // 全新的高能 JSON / OR dict string 模式
+        uiTreeData.value = typeof res.source === 'string' ? res.source : JSON.stringify(res.source, null, 2);
+        parseUITree(res.source);
+        isInspectorMode.value = true;
+      }
+      log('✓ [UI 树] 拓扑快照获取成功');
+    } else if (res.status === 'ok' && res.detail) {
+      uiTreeData.value = typeof res.detail === 'string' ? res.detail : JSON.stringify(res.detail, null, 2);
+      log('✓ [UI 树] 拓扑快照获取成功 (detail)');
+    } else {
+      uiTreeData.value = JSON.stringify(res, null, 2);
+      log('❌ [UI 树] 获取到意外格式');
+    }
+  } catch (error) {
+    uiTreeData.value = `Error: ${String(error)}`;
+    log(`❌ [UI 树] 信号断裂: ${error}`);
+  } finally {
+    isUITreeFetching.value = false;
+    // [关键] 恢复截图推流
+    if (savedStreamUrl) {
+      log('▶️ [UI 树] 扫描完成，正在恢复截图推流...');
+      // 延迟一点再恢复，让 WDA 主线程喘口气
+      await new Promise(r => setTimeout(r, 300));
+      streamUrl.value = savedStreamUrl;
+    }
+  }
+};
+
+
+
+const formattedPreviewJs = computed(() => {
+    if (!generatedJs.value) return '';
+    let text = generatedJs.value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const regex = /(["'])((data:image\/[a-zA-Z]+;base64,)?([A-Za-z0-9+/]{100,}={0,2}))\1/g;
+    
+    text = text.replace(regex, (match, quote, fullBase64, prefix, rawBase64) => {
+        let src = fullBase64;
+        if (!prefix) {
+            src = 'data:image/jpeg;base64,' + rawBase64;
+        }
+        return `${quote}<br><img src="${src}" class="max-w-[400px] max-h-[300px] border-2 border-green-700/50 rounded-md my-2 inline-block object-contain bg-black shadow-lg"/><br>${quote}`;
+    });
+    return text;
+});
+
+const handleCodeBoxPaste = (e: ClipboardEvent) => {
+  if (isImagePreviewMode.value) return; 
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.type.indexOf('image') === 0) {
+      e.preventDefault();
+      const blob = item.getAsFile();
+      if (!blob) continue;
+      const reader = new FileReader();
+      reader.onload = (event) => {
+         const target = e.target as HTMLTextAreaElement;
+         const start = target.selectionStart;
+         const end = target.selectionEnd;
+         let base64Str = event.target?.result as string;
+         if(base64Str.includes(',')) {
+             base64Str = base64Str.split(',')[1];
+         }
+         const text = generatedJs.value;
+         generatedJs.value = text.substring(0, start) + base64Str + text.substring(end);
+         log(`✅ 智能助手已拦截剪贴板图片，自动解析为 ${base64Str.length} 字节 Base64 代码！`);
+         setTimeout(() => {
+             target.selectionStart = target.selectionEnd = start + base64Str.length;
+             target.focus();
+         }, 10);
+      };
+      reader.readAsDataURL(blob);
+      return; 
+    }
+  }
+};
+
 const activeTab = ref('📱 手机列表'); // "📱 手机列表" | "⚡️ 控制台" | "🎮 批量控制" | ...
 const batchStreams = ref<Record<string, string>>({}); // { [udid]: streamUrl }
 const batchImageData = ref<Record<string, string>>({}); // { [udid]: base64_image }
@@ -913,10 +1425,6 @@ wda.log("安装结果: " + JSON.stringify(result));`;
   activeRightTab.value = 'code'; // 切换到代码框查看
 };
 // ========== 伪装信息生成器 END ==========
-
-const copyText = (text: string) => {
-  if (navigator?.clipboard) navigator.clipboard.writeText(text);
-};
 
 const isColorPickerMode = ref(false);
 const pickedColors = ref<{x: number, y: number, hex: string}[]>([]);
@@ -2707,11 +3215,12 @@ const actionLibrary = [
   { label: '[抹除APP数据] Wipe Data', type: 'WIPE_APP', desc: '包含清除核心沙盒和底层钥匙串Keychain数据', usage: '解决重装后仍然能被认出旧账号特征的问题', params: 'bundleId: 目标应用的包名', example: 'wda.wipeApp("com.zhiliaoapp.musically");' },
   { label: '[飞行模式开] AirplaneON', type: 'AIRPLANE_ON', desc: '通过SpringBoardServices私有API开启飞行模式', usage: '断网重置IP、切换网络环境', params: '无', example: 'wda.airplaneOn();' },
   { label: '[飞行模式关] AirplaneOFF', type: 'AIRPLANE_OFF', desc: '关闭飞行模式恢复网络连接', usage: '飞行模式重连后自动获取新IP', params: '无', example: 'wda.airplaneOff();' },
-  { label: '[设置IP] Static IP', type: 'SET_IP', desc: '通过RootHelper直接修改系统WiFi配置文件设置静态IP', usage: '固定设备IP地址/子网/网关/DNS', params: 'ip: IP地址\nsubnet: 子网掩码\ngateway: 网关\ndns: DNS服务器(逗号分隔)', example: 'wda.setStaticIP("192.168.1.50", "255.255.255.0", "192.168.1.1", "8.8.8.8");\nwda.sleep(0.5);\nwda.airplaneOn();\nwda.sleep(2.0);\nwda.airplaneOff();\nwda.sleep(1.0);' },
+  { label: '[任务完成上报] ReportFinished', type: 'REPORT_FINISHED', desc: '向服务器发送“执行完成”信号（通常在开启飞行模式断网前调用）', usage: '确保在设备下线（开启飞行模式）前，控制中心能通过网络收到脚本成功执行的状态', params: '无', example: 'wda.reportFinished();' },
+  { label: '[设置IP] Static IP', type: 'SET_IP', desc: '通过RootHelper直接修改系统WiFi配置文件设置静态IP', usage: '固定设备IP地址/子网/网关/DNS', params: 'ip: IP地址\nsubnet: 子网掩码\ngateway: 网关\ndns: DNS服务器(逗号分隔)', example: 'wda.reportFinished();\nwda.sleep(0.5);\nwda.airplaneOn();\nwda.sleep(2.0);\nwda.airplaneOff();\nwda.sleep(1.0);' },
   { label: '[设置WiFi] Connect WiFi', type: 'SET_WIFI', desc: '使用NEHotspotConfiguration系统API连接指定WiFi网络', usage: '远程切换设备连接的WiFi热点', params: 'ssid: WiFi名称\npassword: 密码(8位以上,留空表示开放网络)', example: 'wda.setWifi("MyWiFi", "12345678");' },
   { label: '[获取VPN状态] Get VPN Status', type: 'IS_VPN_CONNECTED', desc: '调用底层接口获取当前设备的VPN连接状态', usage: '根据当前网络状态决定下一步宏分支', params: '无', example: 'if(wda.isVPNConnected()) wda.log("OK");' },
   { label: '[弹窗手动交互] Alert Manual', type: 'ALERT_MANUAL', desc: '开放底层的原生 Alert 操作接口，供你自由读取弹窗并点击指定按钮', usage: '适合在明确知道即将出现什么特定弹窗（如某APP内的专属提示）的独立场景下使用', params: 'getAlertText(): 抓取文字\ngetAlertButtons(): 抓取按钮数组\nclickAlertButton(name): 按名字点击\nacceptAlert(): 点击确定/允许\ndismissAlert(): 点击取消/拒绝', example: '// ==========================================\n// 🚨 系统弹窗 (Alert) 手动控制核心 API\n// ==========================================\n\n// 1. 获取当前屏幕最顶层弹窗的【正文内容】\n// 返回值: 字符串(如果存在弹窗)，或 null/未定义(当前无弹窗)\nlet text = wda.getAlertText();\nif (!text) {\n    wda.log("没发现风吹草动，当前没有弹窗。");\n    return true; // 退出脚本或继续执行接下来的代码\n}\nwda.log("抓去了弹窗原文: " + text);\n\n// 2. 获取该弹窗底部的【所有按钮选项】\n// 返回值: 包含各按钮文字的数组，如 ["不允许", "好", "稍后"]\nlet btns = wda.getAlertButtons() || [];\nwda.log("该弹窗提供了这些选项: " + JSON.stringify(btns));\n\n// 3. 【推荐】按标签名精准狙击并点击某个按键（指哪打哪）\n// 参数: 目标按钮的特定文字（建议配合 includes 做个安全判断）\nif (btns.includes("允许完全访问")) {\n    wda.clickAlertButton("允许完全访问");\n    wda.log("已一击命中目标按钮: 允许完全访问");\n    return true;\n}\n\n// 4. 【系统兜底操作】（仅当上面的精准点击失效时才用）\n// wda.acceptAlert();  // ✅ 强制点击自带“肯定/接受/允许”属性的默认确认键\n// wda.dismissAlert(); // ❌ 强制点击自带“否定/拒绝/取消”属性的默认取消键\n\nwda.log("找不到我要的按键，闭着眼点【确认】算了！");\nwda.acceptAlert();\nreturn true;\n' },
-  { label: '[系统弹窗自动扫雷] Auto Alert Handling', type: 'CHECK_ALERT', desc: '封装好的多语言系统弹窗自动放行函数（中/英/日/德/法/意/西/葡）', usage: '将其置于脚本顶端，遇到任何点击前调用 autoHandleAlert()', params: '无', example: 'function autoHandleAlert() {\n    let msg = wda.getAlertText();\n    if (!msg) return false;\n    let rawMsg = msg;\n    msg = msg.toLowerCase();\n    let btns = wda.getAlertButtons() || [];\n    wda.log("⚠️ 探测到系统提示: " + rawMsg + " | 按钮: " + JSON.stringify(btns));\n\n    // 全语言否定词集合（用于排除"不允许"类按钮）\n    var deny = ["不允许", "不", "don\\\'t", "nicht", "しない", "ne ", "non ", "no ", "não", "refuser"];\n\n    // 精准点击器（带排除词过滤）\n    function clickBtn(keywords, excludeWords) {\n        if (!excludeWords) excludeWords = [];\n        for (var i = 0; i < btns.length; i++) {\n            var b = btns[i].toLowerCase();\n            var skip = false;\n            for (var e = 0; e < excludeWords.length; e++) {\n                if (b.indexOf(excludeWords[e].toLowerCase()) >= 0) { skip = true; break; }\n            }\n            if (skip) continue;\n            for (var j = 0; j < keywords.length; j++) {\n                if (b.indexOf(keywords[j].toLowerCase()) >= 0) {\n                    wda.clickAlertButton(btns[i]);\n                    wda.log("🎯 已点击: [" + btns[i] + "]");\n                    return true;\n                }\n            }\n        }\n        return false;\n    }\n\n    function has(keywords) {\n        for (var i = 0; i < keywords.length; i++) {\n            if (msg.indexOf(keywords[i].toLowerCase()) >= 0) return true;\n        }\n        return false;\n    }\n\n    // ═══════════ 1. 照片/相册 → 允许完全访问 ═══════════\n    if (has(["photo","照片","相片","相册","写真","foto","フォト"])) {\n        if (clickBtn(["完全","所有","full","すべて","vollen zugriff","accès complet","accesso completo","acceso total","acesso a todas"])) return true;\n        if (clickBtn(["允许","allow","許可","erlauben","autoriser","consenti","permitir","zulassen"], deny)) return true;\n    }\n    // ═══════════ 2. 位置/定位 → 不允许 ═══════════\n    else if (has(["location","位置","定位","standort","localização","ubicación","posizione","position","位置情報"])) {\n        if (clickBtn(["不允许","don\\\'t allow","許可しない","nicht erlauben","nicht zulassen","ne pas autoriser","non consentire","no permitir","não permitir"])) return true;\n    }\n    // ═══════════ 3. 网络/蜂窝数据 → 蜂窝数据 ═══════════\n    else if (has(["wlan","cellular","wi-fi","network","网络","局域网","蜂窝","ネット","netzwerk","rede","red","rete","réseau","モバイルデータ"])) {\n        if (clickBtn(["蜂窝","cellular","モバイルデータ","wlan &","celular","cellulare","cellulaires","mobilfunk"])) return true;\n        if (clickBtn(["允许","allow","ok","好","許可","erlauben","autoriser","consenti","permitir","zulassen"], deny)) return true;\n    }\n    // ═══════════ 4. 日历/备忘录 → 允许完全访问 ═══════════\n    else if (has(["calendar","reminder","日历","备忘录","カレンダー","kalender","erinnerungen","calendário","calendario","promemoria","calendrier","リマインダー"])) {\n        if (clickBtn(["完全","full","フル","vollen","complet","completo","total"])) return true;\n        if (clickBtn(["允许","allow","ok","好","許可","erlauben","autoriser","consenti","permitir","zulassen"], deny)) return true;\n    }\n    // ═══════════ 5. 应用跟踪透明度 (ATT) → 不跟踪 ═══════════\n    else if (has(["track","跟踪","追踪","トラッキング","rastrear","rastreo","tracciamento","suivi","tracking"])) {\n        if (clickBtn(["不跟踪","not to track","トラッキングしないよう","ablehnen","ne pas suivre","non consentire","no permitir","não rastrear","nicht erlauben"])) return true;\n    }\n    // ═══════════ 6. 通讯录 → 不允许 ═══════════\n    else if (has(["contact","通讯录","联系人","連絡先","kontakte","contato","contacto","contatti","contacts"])) {\n        if (clickBtn(["不允许","don\\\'t allow","許可しない","nicht erlauben","nicht zulassen","ne pas autoriser","non consentire","no permitir","não permitir","refuser"])) return true;\n    }\n    // ═══════════ 7. 粘贴板/本地网络/蓝牙/相机/麦克风/通知/VPN → 允许 ═══════════\n    else if (has(["paste","粘贴","剪贴板","local network","本地","ローカル","bluetooth","camera","microphone","蓝牙","相机","摄像头","麦克风","マイク","カメラ","notification","通知","vpn","profile","描述文件","benachrichtigung","notifica"])) {\n        if (clickBtn(["允许","allow","許可","好","ok","erlauben","autoriser","consenti","permitir","zulassen","aceptar"], deny)) return true;\n    }\n\n    // ═══════════ 兜底命中 ═══════════\n    if (clickBtn(["好","ok","是","yes","はい","允许","allow","erlauben","autoriser","consenti","permitir","zulassen","accept","同意","aceptar","ja","sì","oui"], deny)) {\n        return true;\n    }\n\n    wda.acceptAlert();\n    wda.log("⚠️ 触发兜底的 acceptAlert() 点击");\n    return true;\n}\n\n// 在你需要判断的时候可以直接呼叫它\n// autoHandleAlert();' },
+  { label: '[系统弹窗自动扫雷] Auto Alert Handling', type: 'CHECK_ALERT', desc: '封装好的多语言系统弹窗自动放行函数（中/英/日/德/法/意/西/葡）', usage: '将其置于脚本顶端，遇到任何点击前调用 autoHandleAlert()', params: '无', example: 'function autoHandleAlert() {\n    let msg = wda.getAlertText();\n    if (!msg) return false;\n    let rawMsg = msg;\n    msg = msg.toLowerCase();\n    let btns = wda.getAlertButtons() || [];\n    wda.log("⚠️ 探测到系统提示: " + rawMsg + " | 按钮: " + JSON.stringify(btns));\n\n    // 全语言否定词集合（用于排除"不允许"类按钮）\n    var deny = ["不允许", "不", "don\\\'t", "nicht", "しない", "ne ", "non ", "no ", "não", "refuser"];\n\n    // 精准点击器（带排除词过滤）\n    function clickBtn(keywords, excludeWords) {\n        if (!excludeWords) excludeWords = [];\n        for (var i = 0; i < btns.length; i++) {\n            var b = btns[i].toLowerCase();\n            var skip = false;\n            for (var e = 0; e < excludeWords.length; e++) {\n                if (b.indexOf(excludeWords[e].toLowerCase()) >= 0) { skip = true; break; }\n            }\n            if (skip) continue;\n            for (var j = 0; j < keywords.length; j++) {\n                if (b.indexOf(keywords[j].toLowerCase()) >= 0) {\n                    wda.clickAlertButton(btns[i]);\n                    wda.log("🎯 已点击: [" + btns[i] + "]");\n                    return true;\n                }\n            }\n        }\n        return false;\n    }\n\n    function has(keywords) {\n        for (var i = 0; i < keywords.length; i++) {\n            if (msg.indexOf(keywords[i].toLowerCase()) >= 0) return true;\n        }\n        return false;\n    }\n\n    // ═══════════ 1. 照片/相册 → 允许完全访问 ═══════════\n    if (has(["photo","照片","相片","相册","写真","foto","フォト"])) {\n        if (clickBtn(["完全","所有","full","すべて","vollen zugriff","accès complet","accesso completo","acceso total","acesso a todas"])) return true;\n        if (clickBtn(["允许","allow","許可","erlauben","autoriser","consenti","permitir","zulassen"], deny)) return true;\n    }\n    // ═══════════ 2. 位置/定位 → 不允许 ═══════════\n    else if (has(["location","位置","定位","standort","localização","ubicación","posizione","position","位置情報"])) {\n        if (clickBtn(["不允许","don\\\'t allow","許可しない","nicht erlauben","nicht zulassen","ne pas autoriser","non consentire","no permitir","não permitir"])) return true;\n    }\n    // ═══════════ 3. 网络/蜂窝数据 → 蜂窝数据 ═══════════\n    else if (has(["wlan","cellular","wi-fi","network","网络","局域网","蜂窝","ネット","netzwerk","rede","red","rete","réseau","モバイルデータ"])) {\n        if (clickBtn(["蜂窝","cellular","モバイルデータ","wlan &","celular","cellulare","cellulaires","mobilfunk"])) return true;\n        if (clickBtn(["允许","allow","ok","好","許可","erlauben","autoriser","consenti","permitir","zulassen"], deny)) return true;\n    }\n    // ═══════════ 4. 日历/备忘录 → 允许完全访问 ═══════════\n    else if (has(["calendar","reminder","日历","备忘录","カレンダー","kalender","erinnerungen","calendário","calendario","promemoria","calendrier","リマインダー"])) {\n        if (clickBtn(["完全","full","フル","vollen","complet","completo","total"])) return true;\n        if (clickBtn(["允许","allow","ok","好","許可","erlauben","autoriser","consenti","permitir","zulassen"], deny)) return true;\n    }\n    // ═══════════ 5. 应用跟踪透明度 (ATT) → 不跟踪 ═══════════\n    else if (has(["track","跟踪","追踪","トラッキング","rastrear","rastreo","tracciamento","suivi","tracking"])) {\n        if (clickBtn(["不跟踪","not to track","トラッキングしないよう","ablehnen","ne pas suivre","non consentire","no permitir","não rastrear","nicht erlauben"])) return true;\n    }\n    // ═══════════ 6. 通讯录 → 不允许 ═══════════\n    else if (has(["contact","通讯录","联系人","連絡先","kontakte","contato","contacto","contatti","contacts"])) {\n        if (clickBtn(["不允许","don\\\'t allow","許可しない","nicht erlauben","nicht zulassen","ne pas autoriser","non consentire","no permitir","não permitir","refuser"])) return true;\n    }\n    // ═══════════ 7. 本地网络 → 不允许 ═══════════\n    else if (has(["local network","red local","本地网络","ローカルネットワーク","réseau local","rete locale","lokales netzwerk"])) {\n        if (clickBtn(["不允许","don\\\'t allow","許可しない","nicht erlauben","nicht zulassen","ne pas autoriser","non consentire","no permitir","não permitir","refuser"])) return true;\n    }\n    // ═══════════ 8. 粘贴板/蓝牙/相机/麦克风/通知/VPN → 允许 ═══════════\n    else if (has(["paste","粘贴","剪贴板","bluetooth","camera","microphone","蓝牙","相机","摄像头","麦克风","マイク","カメラ","notification","通知","vpn","profile","描述文件","benachrichtigung","notifica"])) {\n        if (clickBtn(["允许","allow","許可","好","ok","erlauben","autoriser","consenti","permitir","zulassen","aceptar"], deny)) return true;\n    }\n\n    // ═══════════ 兜底命中 ═══════════\n    if (clickBtn(["好","ok","是","yes","はい","允许","allow","erlauben","autoriser","consenti","permitir","zulassen","accept","同意","aceptar","ja","sì","oui"], deny)) {\n        return true;\n    }\n\n    wda.acceptAlert();\n    wda.log("⚠️ 触发兜底的 acceptAlert() 点击");\n    return true;\n}\n\n// 在你需要判断的时候可以直接呼叫它\n// autoHandleAlert();' },
   { label: '[💬 抽取双擎评论]', type: 'RANDOM_COMMENT', desc: '首选机内高速抽取。如果本地无储备，将自动从云端（可通过共享配置设定 EC_CLOUD_SERVER_URL）拉取全量备库兜底。', usage: '弹幕或长文输入首选。', params: '★ 常用代号大全:\nes-MX (墨西哥) | pt-BR (巴西)\nde-DE (德国) | en-SG (新加坡)\nja-JP (日本) | en-US (美国)\nes-ES (西班牙) | en-GB (英国)\nfr-FR (法国) | zh-CN (中文)\n(如本地失联，将自动访问 http://web.ecmain.site:8088)', example: 'var cmt = wda.getRandomComment("en-US");\nwda.input(cmt);' },
   { label: '[TK主账号] 输入用户名', type: 'TK_MASTER_ACCOUNT', desc: '从设备配置中读取 TikTok 主账号用户名，自动写入剪切板并通过 WDA 输入到当前焦点文本框', usage: '登录 TikTok 时自动填充用户名', params: '无需手动传参（自动从配置中心已绑定的主账号读取）', example: 'var acc = wda.getMasterTkAccount();\nif(acc && acc.length > 0) {\n    wda.input(acc);\n    wda.log("已输入TK主账号: " + acc);\n} else {\n    wda.log("未找到主账号，请先在配置中心绑定");\n}' },
   { label: '[TK主账号] 输入密码', type: 'TK_MASTER_PASSWORD', desc: '从设备配置中读取 TikTok 主账号密码，自动写入剪切板并通过 WDA 输入到当前焦点文本框', usage: '登录 TikTok 时自动填充密码', params: '无需手动传参（自动从配置中心已绑定的主账号读取）', example: 'var pwd = wda.getMasterTkPassword();\nif(pwd && pwd.length > 0) {\n    wda.input(pwd);\n    wda.log("已输入TK主账号密码");\n} else {\n    wda.log("未找到主账号密码，请先在配置中心设置");\n}' },
@@ -2724,11 +3233,13 @@ const actionLibrary = [
 // [v1738] 追加动作：VPN 重连 + 全局弹窗
 // [v1763] 追加动作：OCR 相关能力
 actionLibrary.push(
+  { label: '[📥 下载到相册] Download Media', type: 'DOWNLOAD_ALBUM', desc: '阻塞式下载目标图片或视频至设备相册，如果遇到原始文件名相同的记录，将自动删除覆盖去重。', usage: '获取或刷新素材到设备系统相册', params: 'url: 图片或视频文件的完整直链下载地址', example: 'var success = wda.downloadToAlbum("https://example.com/video.mp4");\nif(success) {\n    wda.log("✅ 媒体文件覆盖下载并导入相册成功");\n} else {\n    wda.log("❌ 导入失败，请检查网络或相册安全权限弹窗");\n}' },
+  { label: '[🎁 盲盒素材] One-Time Media', type: 'DOWNLOAD_ONETIME', desc: '按序锁定提取控制台指定分组的一次性素材！下载并自动设为 mov1(视频) / t1(图片)。主控提取即毁尸灭迹，绝不冲突！', usage: '用于从服务器排队提取一次性资源供自动发布系统使用', params: 'type: 媒体类型 "video" 或 "image", group(可选): 分组名(如不传则全区按序乱扫)', example: 'var ok = wda.downloadOneTimeMedia("video", "分组A"); // 带分组提取\nif(ok) {\n    wda.log("✅ 盲盒素材已拉取，它现在一定叫 mov1.mp4 或 t1.jpg");\n} else {\n    wda.log("❌ 提取失败（是不是这个分组的弹药被掏空啦？）");\n}' },
   { label: '[🔗 重连VPN] Reconnect Last VPN', type: 'RECONNECT_VPN', desc: '自动连接上次使用过的 VPN 节点。如果设备上没有上次的连接记录则返回 false，不做任何操作', usage: '脚本开始前自动恢复 VPN 网络环境，无需手动指定节点', params: '无需传参（自动读取上次连接记录）', example: '// 自动重连上次的 VPN 节点\nvar ok = wda.connectProxy(\"\");\nif(ok) {\n    wda.log(\"VPN 重连成功（已恢复上次节点）\");\n} else {\n    wda.log(\"没有上次VPN连接记录，跳过\");\n}\nwda.sleep(3); // 等待隧道建立' },
   { label: '[📢 全局弹窗] Show Alert', type: 'SHOW_ALERT', desc: '在 iOS 设备上弹出一个系统级 Alert 弹窗（标题 ECMAIN），包含自定义消息和一个 OK 按钮。脚本会暂停执行直到用户点击 OK（最长等待60秒后自动关闭）', usage: '脚本执行到关键节点时暂停提醒用户确认、调试时检查中间状态', params: 'message: 弹窗显示的消息文字', example: '// 在 iOS 设备上弹出提示\nwda.showAlert(\"脚本已执行完毕！请检查结果。\");\n\n// 也可以用于调试暂停\nwda.showAlert(\"即将开始下一轮操作，点击OK继续\");\nwda.log(\"用户已确认，继续执行...\");' },
-  { label: '[🔍 找字] Find Text', type: 'FIND_TEXT', desc: '使用 PaddleOCR 离线引擎对当前屏幕瞬时截图进行文字识别搜索。截图为瞬间定格帧，TikTok 等视频播放场景下不会受画面变化影响。底层有 10s 超时保护，不会卡死。', usage: '检测是否出现特定文字（如“关注”）以决定脚本分支', params: 'text: 目标文字（支持子串匹配）', example: '// 查找当前屏幕是否存在指定文字\nvar res = wda.findText(\"登录\");\nif (res && res.value && res.value.found) {\n    wda.log(\"找到文字: \" + JSON.stringify(res.value.result));\n    // res.value.result 包含: text, x, y, width, height, confidence\n    var r = res.value.result;\n    wda.tap(r.x + r.width / 2, r.y + r.height / 2);\n} else {\n    wda.log(\"未找到目标文字\");\n}' },
-  { label: '[🔍 找字点击] Tap Text', type: 'TAP_TEXT', desc: '先搜索页面指定文字，找到后自动点击其中心（封装函数）。同样基于定格流，无惧视频变化', usage: '一步到位点击屏幕上的文字按钮', params: 'text: 目标文字', example: 'var ok = wda.tapText(\"关注\");\nif (ok) {\n    wda.log(\"点击成功\");\n} else {\n    wda.log(\"找不到文字，放弃点击\");\n}' },
-  { label: '[🔍 全屏OCR] Full OCR', type: 'FULL_OCR', desc: '全量 OCR，返回所有可识别文字和块位置', usage: '复杂页面扫描', params: '无', example: 'var res = wda.ocr();\nif(res && res.value && res.value.texts) {\n    wda.log(\"共识别到: \" + res.value.texts.length + \" 块文字\");\n}' }
+  { label: '[🔍 文字检测] OCR 找字/点击/扫描', type: 'OCR_SUITE', desc: '集成三大 OCR 能力，支持区域裁剪极速模式（提速 5~10 倍）。① wda.findText(文字, {region}) 搜索指定文字并返回坐标 ② wda.tapText(文字, {region}) 搜索并一键点击 ③ wda.ocr({region}) 全屏/区域扫描返回所有文字。底层基于瞬时截图定格帧，TikTok 等视频场景下不受画面变化影响。', usage: '文字按钮点击、页面状态判断、区域内容扫描', params: '★ wda.findText(text, options?)\n  返回: {value: {found, result: {text,x,y,width,height,confidence}}}\n★ wda.tapText(text, options?)\n  返回: true/false\n★ wda.ocr(options?)\n  返回: {value: {texts: [{text,x,y,width,height,confidence},...]}}\n\n═══ region 区域参数（可选，大幅提速）═══\n所有值为 0~1 的屏幕比例：\n  top: 区域顶部 Y (0=屏幕顶, 默认0)\n  bottom: 区域底部 Y (1=屏幕底, 默认1)\n  left: 区域左边 X (0=屏幕左, 默认0)\n  right: 区域右边 X (1=屏幕右, 默认1)\n\n═══ 常用区域速查表 ═══\n底部导航栏: {top:0.85, bottom:1.0}\n顶部标题栏: {top:0.0, bottom:0.12}\n屏幕中央:   {top:0.3, bottom:0.7}\n右半屏:     {left:0.5, right:1.0}\n左下角:     {top:0.8, bottom:1.0, left:0, right:0.3}', example: '// ══════════════════════════════════════\n// 🔍 OCR 文字检测 完整用法（含区域加速）\n// ══════════════════════════════════════\n\n// ━━━ 用法1: 全屏找字（兼容旧代码）━━━\nvar res = wda.findText("登录");\nif (res && res.value && res.value.found) {\n    var r = res.value.result;\n    wda.log("找到: " + r.text + " (" + r.x + "," + r.y + ")");\n    wda.tap(r.x + r.width / 2, r.y + r.height / 2);\n}\n\n// ━━━ 用法2: 区域找字（🚀 提速 5~10 倍）━━━\n// 只在底部 15% 区域搜索，从 3s 降至 0.1~0.3s\nvar res = wda.findText("主页", {top: 0.85, bottom: 1.0});\nif (res && res.value && res.value.found) {\n    wda.log("底栏找到: " + res.value.result.text);\n}\n\n// 只在顶部标题栏搜索\nvar res2 = wda.findText("返回", {top: 0, bottom: 0.12});\n\n// ━━━ 用法3: 找字点击（一步到位）━━━\nwda.tapText("关注");\n// 带区域加速\nwda.tapText("关注", {top: 0.3, bottom: 0.7});\n\n// ━━━ 用法4: 区域 OCR 扫描 ━━━\n// 只扫描底部导航栏\nvar bottom = wda.ocr({top: 0.85, bottom: 1.0});\nif (bottom && bottom.value && bottom.value.texts) {\n    for (var i = 0; i < bottom.value.texts.length; i++) {\n        wda.log(bottom.value.texts[i].text);\n    }\n}\n\n// ━━━ 用法5: 字+图混合策略 ━━━\nif (!wda.tapText("关注", {top: 0.3, bottom: 0.7})) {\n    var img = wda.findImage("base64...", 0.75);\n    if (img && img.value && img.value.found) {\n        wda.tap(img.value.x, img.value.y);\n    }\n}' },
+  { label: '[🎯 元素查找] UI 元素定向查询', type: 'UI_ELEMENT', desc: '通过 XCTest Accessibility 谓词精确搜索/短路查询单元素。比全量 XML 遍历快 10 倍。', usage: '精确定位已知属性的 UI 控件', params: '★ wda.findElement(predicate)\n  参数: NSPredicate 或 class chain\n  返回: {found, x, y, width, height, element_id}\n\n★ wda.tapElement(predicate)\n  参数: 同上\n  返回: {found, clicked}\n\n═══ 谓词语法参考 (predicate) ═══\n精确匹配:    label == "关注"\n模糊匹配:    label CONTAINS "Profil"\n前缀匹配:    label BEGINSWITH "Log"\n按类型:      type == "XCUIElementTypeButton"\n组合条件:    type == "XCUIElementTypeButton" AND label == "Home"\n\n═══ class chain 路径查询 (极速) ═══\n以 **/ 开头，直接定位树分支，绕过全局搜索：\n**/XCUIElementTypeTabBar/XCUIElementTypeButton[5]\n**/XCUIElementTypeNavigationBar/XCUIElementTypeButton[1]', example: '// ══════════════════════════════════════\n// 🎯 UI 元素定向查询 完整用法\n// ══════════════════════════════════════\n\n// ━━━ 用法1: 按 label 精确查找元素坐标 ━━━\n// 注意: JS字符串中需要转义内部双引号\nvar el = wda.findElement("label == \\"关注\\"");\nif (el && el.found) {\n    wda.log("找到元素 坐标=(" + el.x + "," + el.y + ")");\n    wda.tap(el.x, el.y);\n}\n\n// ━━━ 用法2: 模糊匹配（多语言适配）━━━\n// CONTAINS 可以同时命中 Profile / Perfil\nvar el = wda.findElement("label CONTAINS \\"Profil\\"");\nif (el && el.found) {\n    wda.tap(el.x, el.y);\n}\n\n// ━━━ 用法3: 按类型+标签组合查找 ━━━\nvar btn = wda.findElement("type == \\"XCUIElementTypeButton\\" AND label == \\"Home\\"");\n\n// ━━━ 用法4: 一步到位查找并点击 ━━━\nvar ok = wda.tapElement("label == \\"关注\\"");\nif (ok && ok.found && ok.clicked) {\n    wda.log("✅ 元素点击成功");\n} else {\n    wda.log("❌ 未找到目标元素");\n}\n\n// ━━━ 用法5: 忽略大小写匹配 ━━━\nwda.tapElement("label ==[c] \\"profile\\"");\n\n// ━━━ 性能对比 ━━━\n// findElement: 1~3s（定向搜索，找到即停）\n// /source:    10~30s（全量遍历，会卡死）\n// findText:   0.1~0.4s（区域OCR，最快）\n// findImage:  0.3~0.5s（模板匹配）' },
+  { label: '[🧹 清理截图缓存] Clear Cache', type: 'CLEAR_SCREENSHOT_CACHE', desc: '手动清理 findImage 找图产生的截图缓存 Base64 数据', usage: '在脚本不再需要连续找图时，主动调用此动作可释放大量内存，防止视频流场景下 WDA 崩溃。底层已有 1s 自动淘汰机制，此处为强力人工补充', params: '无参数', example: 'wda.clearScreenshotCache();\nwda.log("🧹 内存已减压");' }
 );
 
 const handleActionClick = (act: any) => {
@@ -2965,7 +3476,88 @@ const handleMouseMove = (e: MouseEvent) => {
       return;
   }
 
+  const ctx = canvasRef.value.getContext('2d');
+  if(!ctx) return;
+
+  // === UI 树审查鼠标悬停探针 (Inspector) ===
+  if (isInspectorMode.value && parsedUITreeNodes.value.length > 0 && coord) {
+      if (!isDrawing.value) { // 仅在仅悬停未绘制时清空，防止闪烁
+          ctx.clearRect(0, 0, canvasRef.value.width, canvasRef.value.height);
+      }
+      const nw = imageRef.value?.naturalWidth || imageRef.value?.clientWidth || 1;
+      const _devSize = deviceSizeMap.value[selectedDevice.value];
+      const pixToLogic = _devSize ? (nw / _devSize.width) : (config.value?.scale || 2);
+      
+      const logicX = coord.x / pixToLogic;
+      const logicY = coord.y / pixToLogic;
+      
+      // [调试] 节流1秒打1次日志，观察坐标映射
+      if (!window.__inspDbgTs || Date.now() - window.__inspDbgTs > 1000) {
+          window.__inspDbgTs = Date.now();
+          const first3 = parsedUITreeNodes.value.slice(0,3).map(n => `[${n.type}:x${n.x},y${n.y},w${n.w},h${n.h}]`).join(' ');
+          console.log(`[Inspector] coord=(${coord.x},${coord.y}) logic=(${logicX.toFixed(1)},${logicY.toFixed(1)}) pixToLogic=${pixToLogic} nw=${nw} devSize=${JSON.stringify(_devSize)} nodes=${parsedUITreeNodes.value.length} first3: ${first3}`);
+      }
+      
+      // 反向遍历寻找面积最小的包含点节点（越子级的通常在后边，面积越小）
+      let bestNode = null;
+      let minArea = Infinity;
+      
+      for (let i = parsedUITreeNodes.value.length - 1; i >= 0; i--) {
+          const n = parsedUITreeNodes.value[i];
+          if (logicX >= n.x && logicX <= n.x + n.w && logicY >= n.y && logicY <= n.y + n.h) {
+              const area = n.w * n.h;
+              if (area < minArea && area > 0) {
+                  minArea = area;
+                  bestNode = n;
+              }
+          }
+      }
+      
+      hoveredUINode.value = bestNode;
+      
+      if (bestNode) {
+          const cw = rect.width;
+          const ch = rect.height;
+          const nh = imageRef.value?.naturalHeight || 1;
+          const imageAspect = nw / nh;
+          const containerAspect = cw / ch;
+          let renderW, renderH;
+          if (imageAspect > containerAspect) {
+              renderW = cw; renderH = cw / imageAspect;
+          } else {
+              renderH = ch; renderW = ch * imageAspect;
+          }
+          const realScale = nw / renderW;
+          const offsetX = (cw - renderW) / 2;
+          const offsetY = (ch - renderH) / 2;
+          
+          const drawX = (bestNode.x * pixToLogic) / realScale + offsetX;
+          const drawY = (bestNode.y * pixToLogic) / realScale + offsetY;
+          const drawW = (bestNode.w * pixToLogic) / realScale;
+          const drawH = (bestNode.h * pixToLogic) / realScale;
+          
+          ctx.fillStyle = 'rgba(56, 189, 248, 0.4)'; // 天蓝色遮罩
+          ctx.fillRect(drawX, drawY, drawW, drawH);
+          ctx.strokeStyle = '#38bdf8';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(drawX, drawY, drawW, drawH);
+      }
+  } else {
+      hoveredUINode.value = null;
+      if (!isDrawing.value && !isLassoMode.value) {
+          ctx.clearRect(0, 0, canvasRef.value.width, canvasRef.value.height);
+      }
+      // [调试] 看看为什么没进入 Inspector 分支
+      if (isInspectorMode.value && (!window.__inspDbgTs2 || Date.now() - window.__inspDbgTs2 > 2000)) {
+          window.__inspDbgTs2 = Date.now();
+          console.log(`[Inspector-SKIP] isInspectorMode=${isInspectorMode.value} nodeCount=${parsedUITreeNodes.value.length} coordExists=${!!coord} mousePos=(${mx},${my})`);
+      }
+  }
+
   if(!isDrawing.value) return;
+  
+  // 绘制动作状态（拖拽画框、魔棒等）
+  ctx.clearRect(0, 0, canvasRef.value.width, canvasRef.value.height);
   
   // 画框框使用相对框体的绝对坐标
   if (coord) {
@@ -2975,10 +3567,7 @@ const handleMouseMove = (e: MouseEvent) => {
       currX.value = mx;
       currY.value = my;
   }
-  
-  const ctx = canvasRef.value.getContext('2d');
-  if(!ctx) return;
-  ctx.clearRect(0, 0, canvasRef.value.width, canvasRef.value.height);
+
   
   const w = Math.abs(currX.value - startX.value);
   const h = Math.abs(currY.value - startY.value);
@@ -3096,6 +3685,42 @@ const endDraw = async (e: MouseEvent) => {
           return;
       }
       // 分支 3: 点击/长按 → 直接下发逻辑 Points
+      // 在审查模式下拦截动作并输出代码
+      if (isInspectorMode.value && hoveredUINode.value) {
+          const node = hoveredUINode.value;
+          const cx = Math.round(node.x + node.w / 2);
+          const cy = Math.round(node.y + node.h / 2);
+          // 计算随机点击安全边距（内缩 20%，防止点到边缘）
+          const padX = Math.max(2, Math.round(node.w * 0.2));
+          const padY = Math.max(2, Math.round(node.h * 0.2));
+          const rndMinX = node.x + padX;
+          const rndMaxX = node.x + node.w - padX;
+          const rndMinY = node.y + padY;
+          const rndMaxY = node.y + node.h - padY;
+          const shortType = node.type.replace('XCUIElementType', '');
+          const desc = node.name || node.label || node.value || shortType;
+          log(`🔍 [节点捕获] Type=${shortType}, Name="${node.name || ''}", Label="${node.label || ''}", Rect=(${node.x},${node.y},${node.w}×${node.h}), 中心=(${cx},${cy})`);
+          
+          // 生成与动作库风格一致的同步代码片段
+          const lines = [];
+          lines.push(`// ━━━ 节点: ${desc} ━━━`);
+          lines.push(`// 类型: ${shortType} | 坐标: (${node.x}, ${node.y}) | 尺寸: ${node.w}×${node.h}`);
+          if (node.name) lines.push(`// name: "${node.name}"`);
+          if (node.label && node.label !== node.name) lines.push(`// label: "${node.label}"`);
+          if (node.value) lines.push(`// value: "${node.value}"`);
+          lines.push(``);
+          lines.push(`// 方式1: 精确点击中心`);
+          lines.push(`wda.tap(${cx}, ${cy});`);
+          lines.push(``);
+          lines.push(`// 方式2: 随机坐标点击（模拟真人，节点范围内缩20%）`);
+          lines.push(`wda.tap(wda.randomInt(${rndMinX}, ${rndMaxX}), wda.randomInt(${rndMinY}, ${rndMaxY}));`);
+          
+          const snippet = lines.join('\n');
+          generatedJs.value += (generatedJs.value ? '\n\n' : '') + snippet;
+          activeRightTab.value = 'code'; // 自动带回代码框
+          return;
+      }
+      
       if (duration > 600) {
           sendDeviceAction('longPress', { x: Math.round(finalX / pixToLogic), y: Math.round(finalY / pixToLogic) });
       } else {
@@ -3699,14 +4324,15 @@ const handleImageUpload = (event: Event) => {
                  <th @click="sortBy('vpn_node')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">VPN 节点 <span v-if="sortKey==='vpn_node'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th @click="sortBy('admin_username')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">管理员 <span v-if="sortKey==='admin_username'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-default">任务状态</th>
-                 <th class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-default">探活</th>
+                 <th @click="sortBy('country')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">国家 <span v-if="sortKey==='country'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
+                 <th @click="sortBy('exec_time')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">启动时间 <span v-if="sortKey==='exec_time'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th @click="sortBy('last_heartbeat')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-right cursor-pointer hover:bg-gray-800 transition-colors">最后上线 <span v-if="sortKey==='last_heartbeat'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-default">操作</th>
               </tr>
            </thead>
            <tbody class="divide-y divide-gray-800 select-text">
               <tr v-if="sortedDevices.length === 0">
-                 <td colspan="13" class="p-8 text-center text-gray-500 font-medium tracking-wide pointer-events-none">
+                 <td colspan="14" class="p-8 text-center text-gray-500 font-medium tracking-wide pointer-events-none">
                    暂无高并发设备从底核发送微波跳变信号...
                  </td>
               </tr>
@@ -3806,7 +4432,12 @@ const handleImageUpload = (event: Event) => {
                     </div>
                  </td>
                  <td class="p-3 text-center">
-                    <el-switch size="small" v-model="dev.watchdog_wda" active-text="" inactive-text="" @change="updateWatchdog(dev)" />
+                    <span v-if="dev.country" class="bg-blue-900/30 text-blue-400 border border-blue-800 px-2 py-0.5 rounded text-[10px] font-bold">{{ dev.country }}</span>
+                    <span v-else class="text-gray-600 text-[10px]">--</span>
+                 </td>
+                 <td class="p-3 text-center">
+                    <span v-if="dev.exec_time" class="bg-amber-900/30 text-amber-500 border border-amber-800/50 px-2 py-0.5 rounded shadow-sm text-[10px] font-bold font-mono">{{ dev.exec_time }}:00</span>
+                    <span v-else class="text-gray-600 text-[10px]">--</span>
                  </td>
                  <td class="p-3 text-gray-400 font-mono text-right text-[10px]">
                     {{ dev.last_heartbeat ? new Date(dev.last_heartbeat * 1000).toLocaleTimeString() : '---' }}
@@ -3879,8 +4510,21 @@ const handleImageUpload = (event: Event) => {
             
             <img ref="imageRef" v-if="streamUrl" :src="streamUrl" @load="syncCanvasSize" class="h-full max-w-full object-contain pointer-events-none absolute" crossorigin="anonymous" />
             
-            <!-- 将十字光标恢复为默认指针光标，体验更舒适 -->
             <canvas ref="canvasRef" @mousedown="startDraw" @mousemove="handleMouseMove" @mouseup="endDraw" @mouseleave="endDraw" @dblclick="handleDoubleClickLasso" class="cursor-pointer absolute" style="z-index: 20;"></canvas>
+
+            <!-- 悬浮的节点检查器面罩信息框 -->
+            <div v-if="isInspectorMode && hoveredUINode" class="absolute top-2 left-2 z-[200] max-w-[280px] bg-gray-950/95 border border-sky-500/80 shadow-2xl rounded p-2.5 pointer-events-none backdrop-blur-md">
+               <div class="text-[10px] text-sky-400 font-bold break-all mb-1.5 uppercase tracking-wider border-b border-sky-900/50 pb-1">{{ hoveredUINode.type.replace('XCUIElementType', '') }}</div>
+               <div class="flex flex-col gap-1 text-[9px] text-gray-300 font-mono">
+                   <div v-if="hoveredUINode.name"><span class="text-gray-500">Name:</span> <span class="text-sky-200 break-all">{{ hoveredUINode.name }}</span></div>
+                   <div v-if="hoveredUINode.label"><span class="text-gray-500">Label:</span> <span class="text-emerald-200 break-all">{{ hoveredUINode.label }}</span></div>
+                   <div v-if="hoveredUINode.value"><span class="text-gray-500">Value:</span> <span class="text-amber-200 break-all">{{ hoveredUINode.value }}</span></div>
+                   <div><span class="text-gray-500">Rect:</span> <span class="text-purple-300">X:{{ hoveredUINode.x }} Y:{{ hoveredUINode.y }} <span class="text-gray-500 mx-1">|</span> W:{{ hoveredUINode.w }} H:{{ hoveredUINode.h }}</span></div>
+               </div>
+               <div class="text-[8.5px] text-amber-500 mt-2 font-bold flex items-center gap-1 bg-amber-900/20 px-1.5 py-1 rounded">
+                 <span class="animate-pulse">🖱️</span> 点击左键自动填坑坐标到代码框
+               </div>
+            </div>
         </div>
 
         <!-- 底侧分离坐标观测器 -->
@@ -4038,25 +4682,34 @@ const handleImageUpload = (event: Event) => {
               <div @click="activeRightTab = 'extensions'" :class="['px-4 py-3 cursor-pointer transition-colors border-b-2', activeRightTab === 'extensions' ? 'text-blue-400 border-blue-500 bg-gray-800' : 'text-gray-500 border-transparent hover:text-gray-300']">
                 <span class="mr-1">🔧</span> 扩展功能
               </div>
-              <div @click="activeRightTab = 'spoof'" :class="['px-4 py-3 cursor-pointer transition-colors border-b-2', activeRightTab === 'spoof' ? 'text-purple-400 border-purple-500 bg-gray-800' : 'text-gray-500 border-transparent hover:text-gray-300']">
+              <div @click="activeRightTab = 'spoof'" :class="['px-4 py-3 cursor-pointer transition-colors border-b-2 whitespace-nowrap', activeRightTab === 'spoof' ? 'text-purple-400 border-purple-500 bg-gray-800' : 'text-gray-500 border-transparent hover:text-gray-300']">
                 <span class="mr-1">🎭</span> 伪装信息
+              </div>
+              <div @click="activeRightTab = 'uitree'" :class="['px-4 py-3 cursor-pointer transition-colors border-b-2 whitespace-nowrap', activeRightTab === 'uitree' ? 'text-amber-400 border-amber-500 bg-gray-800' : 'text-gray-500 border-transparent hover:text-gray-300']">
+                <span class="mr-1">🌲</span> UI 树
               </div>
             </div>
             
             <!-- Code Tab Content -->
             <div v-show="activeRightTab === 'code'" class="flex flex-col flex-1 min-h-0">
-              <div class="flex-1 p-2 bg-gray-950 shadow-inner overflow-hidden">
-                <textarea v-model="generatedJs" class="w-full h-full bg-transparent text-green-500 font-mono text-xs p-2 border border-gray-800 rounded focus:outline-none focus:ring-1 focus:ring-green-700 resize-none leading-relaxed custom-scrollbar" placeholder="// AST Build Output..."></textarea>
+              <div class="flex-1 p-2 bg-gray-950 shadow-inner overflow-hidden relative">
+                <!-- 图片富文本预览模式 -->
+                <div v-show="isImagePreviewMode" class="absolute inset-0 m-2 bg-gray-950 overflow-y-auto p-2 font-mono text-xs text-green-500 whitespace-pre-wrap leading-relaxed custom-scrollbar z-10 break-all" v-html="formattedPreviewJs"></div>
+                <!-- 纯文本代码模式 (支持粘贴图片转 Base64) -->
+                <textarea v-show="!isImagePreviewMode" @paste="handleCodeBoxPaste" v-model="generatedJs" class="w-full h-full bg-transparent text-green-500 font-mono text-xs p-2 border border-gray-800 rounded focus:outline-none focus:ring-1 focus:ring-green-700 resize-none leading-relaxed custom-scrollbar" placeholder="// AST Build Output... 支持直接 Ctrl+V 粘贴屏幕截图，将瞬间转为 Base64 防封特征！"></textarea>
               </div>
               <div class="p-3 bg-gray-900 border-t border-gray-700 shrink-0 flex gap-2">
-                <button @click="clearAllLogs()" class="w-1/4 bg-gray-800 hover:bg-red-900/50 text-gray-400 hover:text-red-400 font-bold py-2.5 text-sm rounded shadow border border-gray-700 flex justify-center items-center gap-2 tracking-wider transition-colors" title="清除主控及所有受控机日志">
+                <button @click="clearAllLogs()" class="w-1/4 bg-gray-800 hover:bg-red-900/50 text-gray-400 hover:text-red-400 font-bold py-2.5 text-sm rounded shadow border border-gray-700 flex justify-center items-center gap-2 tracking-wider transition-colors whitespace-nowrap" title="清除主控及所有受控机日志">
                   <span>🗑️ 清空日志</span>
                 </button>
-                <button @click="runActions" class="flex-1 bg-green-700 hover:bg-green-600 text-white font-bold py-2.5 text-sm rounded shadow border border-green-600 flex justify-center items-center gap-2 tracking-wider transition-colors">
+                <button @click="isImagePreviewMode = !isImagePreviewMode" :class="['font-semibold px-3 py-2 text-xs rounded shadow-sm border transition-colors tracking-widest flex items-center gap-1 whitespace-nowrap', isImagePreviewMode ? 'bg-yellow-900/60 text-yellow-500 border-yellow-700/50' : 'bg-gray-800 hover:bg-yellow-900/40 text-gray-400 hover:text-yellow-400 border-gray-700']" title="开启双视图：在这里能够一秒把 Base64 长文本剥离渲染为图片供您检查纠错">
+                   <span>🖼️ 转换</span>
+                </button>
+                <button @click="runActions" class="flex-1 bg-green-700 hover:bg-green-600 text-white font-bold py-2.5 text-sm rounded shadow border border-green-600 flex justify-center items-center gap-2 tracking-wider transition-colors whitespace-nowrap">
                   <span>▶ 执行脚本</span>
                 </button>
-                <button @click="clearQueue" class="bg-gray-800 hover:bg-red-900/80 text-gray-400 hover:text-red-300 font-semibold px-3 py-2 text-xs rounded shadow-sm border border-gray-700 transition-colors tracking-widest flex items-center gap-1" title="清空当前的指令序列缓冲区">
-                   <span>🗑️ 轨道清空</span>
+                <button @click="clearQueue" class="bg-gray-800 hover:bg-red-900/80 text-gray-400 hover:text-red-300 font-semibold px-3 py-2 text-xs rounded shadow-sm border border-gray-700 transition-colors tracking-widest flex items-center gap-1 whitespace-nowrap" title="清空当前的指令序列缓冲区">
+                   <span>🗑️ 轨道</span>
                 </button>
               </div>
             </div>
@@ -4406,6 +5059,39 @@ const handleImageUpload = (event: Event) => {
                 </button>
               </div>
 
+            </div>
+
+            <!-- UI Tree Tab Content (UI 树功能) -->
+            <div v-show="activeRightTab === 'uitree'" class="flex flex-col flex-1 min-h-0 p-3 bg-gray-900/50 overflow-y-auto custom-scrollbar gap-3">
+              <div class="flex flex-col bg-gray-800/80 border border-gray-700 shadow-md rounded-lg overflow-hidden shrink-0 flex-1">
+                <div class="bg-gray-700/60 px-3 py-2 text-[10px] font-bold tracking-widest text-amber-300 border-b border-gray-700">
+                  🌲 实时捕获视图节点树 (UI Tree)
+                </div>
+                <div class="p-3 flex flex-col gap-3 h-full">
+                  <div class="flex gap-2 items-center flex-wrap">
+                    <button @click="fetchUITree" class="flex-1 py-2 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white text-xs font-bold rounded shadow-lg border border-amber-500 transition-all active:scale-[0.98] flex justify-center items-center gap-1.5 tracking-wider" :disabled="isUITreeFetching" title="初次获取较慢(3~10秒)，一旦获取到即可随意悬停探测坐标">
+                      <span v-if="!isUITreeFetching">📡 扫描环境构造拓扑图</span>
+                      <span v-else class="animate-pulse flex items-center gap-2">扫描波发射中 (请耐心等待约4秒)...</span>
+                    </button>
+                    <!-- 审查模式开关 -->
+                    <label class="flex items-center gap-2 cursor-pointer bg-sky-900/40 hover:bg-sky-800/60 border border-sky-700/50 px-3 py-2 rounded transition-colors shadow">
+                      <input type="checkbox" v-model="isInspectorMode" class="accent-sky-500 w-3.5 h-3.5" :disabled="parsedUITreeNodes.length === 0" />
+                      <span :class="['text-[11px] font-bold tracking-wide', parsedUITreeNodes.length === 0 ? 'text-gray-500' : 'text-sky-300']">🔍 屏幕悬停审查元素</span>
+                    </label>
+                    <button @click="copyText(uiTreeData)" v-if="uiTreeData" class="py-2 px-4 bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs font-bold rounded shadow-lg border border-gray-600 transition-all active:scale-[0.98]">
+                      📄 复制 XML
+                    </button>
+                  </div>
+
+                  
+                  <div class="flex-1 relative bg-gray-950 border border-gray-700 rounded p-2 overflow-auto custom-scrollbar min-h-[400px]">
+                     <div v-if="!uiTreeData && !isUITreeFetching" class="absolute inset-0 flex items-center justify-center text-gray-600 text-[10px] uppercase">
+                       点击上方按钮请求 WDA 发送 UI 树数据...
+                     </div>
+                     <pre v-else class="text-[10px] font-mono text-emerald-400 break-all whitespace-pre-wrap leading-tight select-text cursor-text">{{ uiTreeData }}</pre>
+                  </div>
+                </div>
+              </div>
             </div>
             
             <!-- Logs section, always visible -->
@@ -5327,63 +6013,360 @@ M27|user003|pass789|"
 
     <!-- ========== 📁 文件管理 Tab ========== -->
     <div v-if="activeTab === '📁 文件管理'" class="flex flex-1 flex-col overflow-auto p-6 bg-[#0B0F19]">
-        <div class="max-w-4xl w-full mx-auto">
+        <div class="max-w-6xl w-full mx-auto">
             <div class="flex items-center justify-between mb-6">
-                <h2 class="text-xl font-bold text-gray-100 flex items-center gap-3">
-                    <span class="p-2.5 bg-emerald-900/40 rounded-xl text-emerald-400">📁</span>
-                    文件管理
-                    <span class="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full font-normal">{{ sharedFiles.length }} 个文件</span>
-                </h2>
-                <label v-if="isSuperAdmin" class="cursor-pointer">
-                    <input type="file" class="hidden" @change="uploadSharedFile" :disabled="fileUploading" />
-                    <span :class="['inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold transition-all', fileUploading ? 'bg-gray-700 text-gray-500 cursor-wait' : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/30 hover:shadow-emerald-800/40']">
-                        {{ fileUploading ? '⏳ 上传中...' : '📤 上传文件' }}
-                    </span>
-                </label>
+                <div class="flex gap-4 p-1 bg-gray-900/80 rounded-2xl border border-gray-800">
+                    <button @click="fileManagerTab = 'shared'" :class="['px-6 py-2 rounded-xl text-sm font-bold transition-all', fileManagerTab === 'shared' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/40' : 'text-gray-500 hover:text-gray-300']">
+                        💾 恒定共享文件 ({{ sharedFiles.length }})
+                    </button>
+                    <button @click="fileManagerTab = 'onetime'" :class="['px-6 py-2 rounded-xl text-sm font-bold transition-all', fileManagerTab === 'onetime' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/40' : 'text-gray-500 hover:text-gray-300']">
+                        🎁 一次性防撞车素材库
+                    </button>
+                </div>
+                
+                <div v-if="isSuperAdmin" class="flex gap-3 items-center">
+                    <button v-if="fileManagerTab === 'onetime'" @click="scanLocalFiles" class="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold transition-all bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-900/30 hover:shadow-indigo-800/40" title="扫描录入外部文件目录">
+                        🔍 母舰兵工厂扫描
+                    </button>
+                    <label v-if="fileManagerTab === 'shared'" class="cursor-pointer">
+                        <input type="file" class="hidden" @change="uploadSharedFile" :disabled="fileUploading" />
+                        <span :class="['inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold transition-all', fileUploading ? 'bg-gray-700 text-gray-500 cursor-wait' : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/30 hover:shadow-emerald-800/40']">
+                            {{ fileUploading ? '⏳ 上传中...' : '📤 播种基建文件' }}
+                        </span>
+                    </label>
+                </div>
             </div>
 
-            <div v-if="sharedFiles.length === 0" class="text-center py-20 text-gray-600">
-                <div class="text-5xl mb-4">📂</div>
-                <p class="text-sm">暂无共享文件</p>
-                <p v-if="isSuperAdmin" class="text-xs text-gray-700 mt-2">点击右上角「上传文件」添加文件</p>
+            <!-- 固定文件列表 -->
+            <div v-if="fileManagerTab === 'shared'">
+                <div v-if="sharedFiles.length === 0" class="text-center py-20 text-gray-600">
+                    <div class="text-5xl mb-4">📂</div>
+                    <p class="text-sm">暂无共享文件</p>
+                    <p v-if="isSuperAdmin" class="text-xs text-gray-700 mt-2">点击右上角「上传文件」添加文件</p>
+                </div>
+
+                <div v-else class="bg-gray-900/60 border border-gray-800 rounded-2xl overflow-hidden">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="border-b border-gray-800 bg-gray-900/80">
+                                <th class="px-5 py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest">文件名 (恒定资源)</th>
+                                <th class="px-5 py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest">排量</th>
+                                <th class="px-5 py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest">铸造时间</th>
+                                <th class="px-5 py-3 text-right text-[10px] font-bold text-gray-500 uppercase tracking-widest">战术控制</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="file in sharedFiles" :key="file.name" class="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors">
+                                <td class="px-5 py-3">
+                                    <div class="flex items-center gap-3">
+                                        <span class="text-lg">{{ file.name.endsWith('.ipa') ? '📦' : file.name.endsWith('.zip') ? '🗜️' : file.name.endsWith('.tar') || file.name.endsWith('.gz') ? '📚' : '📄' }}</span>
+                                        <span class="text-gray-200 font-medium truncate max-w-[300px]" :title="file.name">{{ file.name }}</span>
+                                    </div>
+                                </td>
+                                <td class="px-5 py-3 text-gray-400 text-xs font-mono">{{ formatFileSize(file.size) }}</td>
+                                <td class="px-5 py-3 text-gray-500 text-xs">{{ new Date(file.upload_time * 1000).toLocaleString('zh-CN') }}</td>
+                                <td class="px-5 py-3">
+                                    <div class="flex items-center justify-end gap-2">
+                                        <button @click="copyFileDownloadLink(file.name)" class="px-3 py-1.5 bg-blue-900/30 text-blue-400 hover:bg-blue-600 hover:text-white rounded-lg border border-blue-800/50 transition-all text-[11px] font-bold">📋 复制直链</button>
+                                        <a :href="`${apiBase}/files/download/${encodeURIComponent(file.name)}`" class="px-3 py-1.5 bg-emerald-900/30 text-emerald-400 hover:bg-emerald-600 hover:text-white rounded-lg border border-emerald-800/50 transition-all text-[11px] font-bold no-underline" download>⬇️ 下载</a>
+                                        <button v-if="isSuperAdmin" @click="deleteSharedFile(file.name)" class="px-3 py-1.5 bg-red-900/30 text-red-400 hover:bg-red-600 hover:text-white rounded-lg border border-red-900/50 transition-all text-[11px] font-bold">🗑 删除</button>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
 
-            <div v-else class="bg-gray-900/60 border border-gray-800 rounded-2xl overflow-hidden">
-                <table class="w-full text-sm">
-                    <thead>
-                        <tr class="border-b border-gray-800 bg-gray-900/80">
-                            <th class="px-5 py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest">文件名</th>
-                            <th class="px-5 py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest">大小</th>
-                            <th class="px-5 py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest">上传时间</th>
-                            <th class="px-5 py-3 text-right text-[10px] font-bold text-gray-500 uppercase tracking-widest">操作</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr v-for="file in sharedFiles" :key="file.name" class="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors">
-                            <td class="px-5 py-3">
-                                <div class="flex items-center gap-3">
-                                    <span class="text-lg">{{ file.name.endsWith('.ipa') ? '📦' : file.name.endsWith('.zip') ? '🗜️' : file.name.endsWith('.tar') || file.name.endsWith('.gz') ? '📚' : '📄' }}</span>
-                                    <span class="text-gray-200 font-medium truncate max-w-[300px]" :title="file.name">{{ file.name }}</span>
-                                </div>
-                            </td>
-                            <td class="px-5 py-3 text-gray-400 text-xs font-mono">{{ formatFileSize(file.size) }}</td>
-                            <td class="px-5 py-3 text-gray-500 text-xs">{{ new Date(file.upload_time * 1000).toLocaleString('zh-CN') }}</td>
-                            <td class="px-5 py-3">
-                                <div class="flex items-center justify-end gap-2">
-                                    <button @click="copyFileDownloadLink(file.name)" class="px-3 py-1.5 bg-blue-900/30 text-blue-400 hover:bg-blue-600 hover:text-white rounded-lg border border-blue-800/50 transition-all text-[11px] font-bold">📋 复制下载链接</button>
-                                    <a :href="`${apiBase}/files/download/${encodeURIComponent(file.name)}`" class="px-3 py-1.5 bg-emerald-900/30 text-emerald-400 hover:bg-emerald-600 hover:text-white rounded-lg border border-emerald-800/50 transition-all text-[11px] font-bold no-underline" download>⬇️ 下载</a>
-                                    <button v-if="isSuperAdmin" @click="deleteSharedFile(file.name)" class="px-3 py-1.5 bg-red-900/30 text-red-400 hover:bg-red-600 hover:text-white rounded-lg border border-red-900/50 transition-all text-[11px] font-bold">🗑 删除</button>
-                                </div>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
+            <!-- 一次性素材库提取列表 -->
+            <div v-if="fileManagerTab === 'onetime'" class="flex gap-6 h-[75vh]">
+                <!-- 左边：侧边栏分组 -->
+                <div class="w-64 flex flex-col bg-gray-900/60 border border-gray-800 rounded-2xl overflow-hidden shrink-0">
+                    <div class="px-4 py-3 border-b border-gray-800 bg-gray-900/80 flex justify-between items-center">
+                        <h3 class="font-bold text-gray-300 text-sm">📦 封存的作战分组</h3>
+                        <button @click="fetchOnetimeGroups" class="text-indigo-400 hover:text-indigo-300 text-xs font-bold" title="刷新分组">🔄 刷新</button>
+                    </div>
+                    <div class="flex-1 overflow-y-auto p-2 space-y-0.5 custom-scrollbar">
+                        <div v-for="node in onetimeTreeData" :key="node.fullPath" class="group">
+                           <div @click="onetimeCurrentGroup = node.fullPath; node.children.length > 0 && toggleFolder(node.fullPath);" 
+                                :class="['w-full text-left px-2 py-1.5 rounded-lg text-[13px] transition-all flex items-center cursor-pointer border', 
+                                         onetimeCurrentGroup === node.fullPath ? 'bg-indigo-600/20 text-indigo-400 font-bold border-indigo-500/30' : 'text-gray-400 hover:bg-gray-800/80 border-transparent hover:text-gray-200']"
+                                :style="{ paddingLeft: (node.depth * 16 + 8) + 'px' }">
+                              
+                              <!-- 展开箭头 -->
+                              <span v-if="node.children.length > 0" class="mr-1.5 text-[10px] transition-transform duration-200" :class="onetimeExpandedFolders.has(node.fullPath) ? 'rotate-90' : ''">▶</span>
+                              <span v-else class="mr-1.5 w-2.5"></span>
+                              
+                              <!-- 文件夹图标 -->
+                              <span class="mr-2 opacity-70">{{ node.children.length > 0 ? '📂' : '📄' }}</span>
+                              
+                              <span class="truncate flex-1" :title="node.fullPath">{{ node.label }}</span>
+                              
+                              <div class="flex items-center gap-1">
+                                 <span v-if="node.count > 0" class="text-[9px] bg-gray-800/80 text-gray-500 px-1.5 py-0.5 rounded-md border border-gray-700/50 group-hover:border-gray-600 group-hover:text-gray-400 transition-colors">{{ node.count }}</span>
+                                 <!-- 复制路径按钮 -->
+                                 <button @click.stop="copyText(node.fullPath)" 
+                                         class="hidden group-hover:flex w-5 h-5 items-center justify-center bg-indigo-900/40 text-indigo-300 hover:bg-indigo-500 hover:text-white rounded border border-indigo-700/50 transition-all text-[10px]" title="复制此路径用于脚本">
+                                    📋
+                                 </button>
+                              </div>
+                           </div>
+                        </div>
+                        
+                        <div v-if="onetimeGroups.length === 0" class="text-center py-10 text-gray-600 text-xs px-2 leading-relaxed">
+                           尚未有扫描建立的分发小组，<br/>请由上方指挥按钮接入基底。
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 右边：文件队列与分页 -->
+                <div class="flex-1 flex flex-col bg-gray-900/60 border border-gray-800 rounded-2xl overflow-hidden shadow-2xl relative">
+                   <div v-if="!onetimeCurrentGroup" class="absolute inset-0 flex items-center justify-center text-gray-600">
+                       <p>👈 请于左侧先敲定弹药库指令组！</p>
+                   </div>
+                   <template v-else>
+                       <div class="p-3 border-b border-gray-800 bg-gray-900/80 flex justify-between items-center whitespace-nowrap overflow-x-auto text-sm">
+                           <span class="text-indigo-400 font-mono font-bold flex items-center gap-2">
+                               <span class="bg-indigo-500/20 p-1.5 rounded-lg">🚀</span> 分发排队序列表：提取必定依循此顺！
+                           </span>
+                           <span class="bg-gray-800 px-4 py-1.5 rounded-full text-xs text-gray-400 border border-gray-700">总库余量：<b class="text-gray-200">{{ onetimeTotalItems }}</b> / {{ onetimeTotalPages }}页</span>
+                       </div>
+                       
+                       <div class="flex-1 overflow-y-auto">
+                           <table class="w-full text-sm">
+                               <thead class="sticky top-0 bg-gray-900/90 backdrop-blur z-10 border-b border-gray-800">
+                                   <tr>
+                                       <th class="px-5 py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest w-16">顺序</th>
+                                       <th class="px-5 py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest">出栈口指令名 (含随机防覆尾巴)</th>
+                                       <th class="px-5 py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest">规模</th>
+                                       <th class="px-5 py-3 text-right text-[10px] font-bold text-gray-500 uppercase tracking-widest w-32">战术控制</th>
+                                   </tr>
+                               </thead>
+                               <tbody>
+                                   <tr v-for="(file, index) in onetimeFiles" :key="file.name" class="border-b border-gray-800/40 hover:bg-gray-800/30 transition-colors">
+                                       <td class="px-5 py-3 text-gray-600 text-xs font-mono font-bold">#{{ (onetimePage - 1) * onetimePageSize + index + 1 }}</td>
+                                       <td class="px-5 py-3 text-indigo-300 font-mono text-xs">{{ file.name }}</td>
+                                       <td class="px-5 py-3 text-gray-500 text-xs">{{ formatFileSize(file.size) }}</td>
+                                       <td class="px-5 py-3 text-right">
+                                           <div class="flex items-center justify-end gap-2">
+                                               <button @click="previewOnetimeFile(file)" class="px-3 py-1 bg-indigo-900/30 text-indigo-400 hover:bg-indigo-600 hover:text-white rounded-lg border border-indigo-900/50 transition-all text-[11px] font-bold">👁️ 预览</button>
+                                               <button v-if="isSuperAdmin" @click="deleteOnetimeItem(file)" class="px-3 py-1 bg-red-900/30 text-red-500 hover:bg-red-600 hover:text-white rounded-lg border border-red-900/50 transition-all text-[11px] font-bold">🗑 销毁</button>
+                                           </div>
+                                       </td>
+                                   </tr>
+                                   <tr v-if="onetimeFiles.length === 0">
+                                       <td colspan="4" class="text-center py-20 text-gray-600">该组兵源已被前线全部索光干掉！💀</td>
+                                   </tr>
+                               </tbody>
+                           </table>
+                       </div>
+
+                       <!-- 底部控制台与分页 -->
+                       <div class="px-5 py-3 bg-gray-900/90 border-t border-gray-800 flex justify-between items-center">
+                            <select v-model="onetimePageSize" class="bg-black border border-gray-800 text-gray-400 text-xs rounded-lg px-2 py-1 outline-none">
+                                <option :value="10">10 匹/页</option>
+                                <option :value="30">30 匹/页</option>
+                                <option :value="50">50 匹/页</option>
+                                <option :value="100">100 匹/页</option>
+                            </select>
+                            
+                            <div class="flex items-center gap-2" v-if="onetimeTotalPages > 1">
+                                <button @click="onetimePage--" :disabled="onetimePage <= 1" class="px-3 py-1 bg-gray-800 text-gray-400 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed hover:bg-gray-700 text-xs transition-colors">👈 上</button>
+                                <span class="text-xs text-gray-400 font-mono px-3 py-1 bg-gray-800/50 rounded-lg">【 {{ onetimePage }} / {{ onetimeTotalPages }} 】</span>
+                                <button @click="onetimePage++" :disabled="onetimePage >= onetimeTotalPages" class="px-3 py-1 bg-gray-800 text-gray-400 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed hover:bg-gray-700 text-xs transition-colors">下 👉</button>
+                            </div>
+                       </div>
+                   </template>
+                </div>
             </div>
         </div>
     </div>
 
-  <!-- End Main App Container (主容器由模板根元素自动闭合) -->
+  <!-- End Main App Container -->
 
+    <!-- 一次性素材全屏预览浮层 -->
+    <div v-if="onetimePreviewUrl" class="fixed inset-0 z-[100] flex items-center justify-center p-10 bg-black/90 backdrop-blur-xl transition-all animate-in fade-in duration-300">
+        <div class="absolute inset-0 cursor-zoom-out" @click="onetimePreviewUrl = ''; onetimePreviewType = null;"></div>
+        
+        <div class="relative max-w-5xl w-full h-full flex flex-col items-center justify-center pointer-events-none">
+            <!-- 媒体主体 -->
+            <div class="bg-gray-900 rounded-3xl overflow-hidden shadow-2xl border border-gray-800 pointer-events-auto max-h-[85vh] flex items-center justify-center relative">
+                <video v-if="onetimePreviewType === 'video'" :src="onetimePreviewUrl" controls autoplay class="max-w-full max-h-full"></video>
+                <img v-if="onetimePreviewType === 'image'" :src="onetimePreviewUrl" class="max-w-full max-h-full object-contain" />
+                
+                <!-- 控制按钮 -->
+                <button @click="onetimePreviewUrl = ''; onetimePreviewType = null;" 
+                        class="absolute top-4 right-4 w-10 h-10 bg-black/60 hover:bg-red-600 text-white rounded-full flex items-center justify-center transition-all border border-white/20 hover:scale-110 shadow-lg">
+                    ❌
+                </button>
+            </div>
+            
+            <div class="mt-6 text-gray-400 text-sm font-bold bg-gray-900/80 px-6 py-2 rounded-full border border-gray-800 shadow-xl flex items-center gap-4">
+               <span>🎥 正在检阅作战素材库分发队列...</span>
+               <span class="text-xs opacity-50 font-normal">点击非媒体区域可退出预览</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== 🏷️ 标签管理 Tab ========== -->
+    <div v-if="activeTab === '🏷️ 标签'" class="flex flex-1 flex-col overflow-auto p-6 bg-[#0B0F19]">
+        <div class="max-w-6xl w-full mx-auto">
+            <div class="flex items-center justify-between mb-6">
+                <div class="flex items-center gap-4 bg-gray-900 px-4 py-2 rounded-2xl border border-gray-800 shadow-inner">
+                    <span class="text-sm font-bold text-gray-400">目前调参国家区:</span>
+                    <select v-model="tagsSelectedCountry" @change="fetchTags" class="bg-black border border-indigo-900/50 rounded-xl px-4 py-2 text-sm text-indigo-400 focus:border-indigo-400 focus:ring-1 focus:ring-indigo-500 min-w-[150px] outline-none font-bold placeholder:text-gray-700">
+                        <option v-for="c in countries" :key="c.id" :value="c.name" class="text-gray-300 font-normal">🚩 {{ c.name }}</option>
+                        <option value="" disabled v-if="countries.length === 0">尚未配置任何国家</option>
+                    </select>
+                    <span class="text-sm font-bold text-gray-400 ml-2">分组:</span>
+                    <select v-model="tagsSelectedGroup" class="bg-black border border-indigo-900/50 rounded-xl px-4 py-2 text-sm text-indigo-400 focus:border-indigo-400 focus:ring-1 focus:ring-indigo-500 outline-none font-bold placeholder:text-gray-700">
+                        <option value="">🔮 (无分组)</option>
+                        <option v-for="g in groups" :key="g.id" :value="g.name">🏷️ {{ g.name }}</option>
+                    </select>
+                </div>
+                
+                <button v-if="isSuperAdmin && tagsSelectedCountry" @click="showBatchTagsModal = true" class="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold transition-all bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-900/30 hover:shadow-indigo-800/40">
+                    📋 批量黏贴录入
+                </button>
+            </div>
+
+            <div v-if="!tagsSelectedCountry" class="text-center py-20 text-gray-600 bg-gray-900/60 rounded-2xl border border-gray-800">
+                <div class="text-5xl mb-4">🌍</div>
+                <p class="text-sm tracking-widest font-bold">请指定作战国家分区</p>
+                <p class="text-xs text-gray-700 mt-2">标签是以国家为壁垒隔离供脚本提取使用的</p>
+            </div>
+
+            <div v-else class="bg-gray-900/60 border border-gray-800 rounded-2xl overflow-hidden shadow-2xl relative">
+               <div class="p-3 border-b border-gray-800 bg-gray-900/80 flex justify-between items-center text-sm">
+                   <span class="text-emerald-400 font-mono font-bold flex items-center gap-2">
+                       <span class="bg-emerald-500/20 p-1.5 rounded-lg">#️⃣</span> 当前地区可用短标签总群
+                   </span>
+                   <span class="bg-gray-800 px-4 py-1.5 rounded-full text-xs text-gray-400 border border-gray-700">总余量：<b class="text-gray-200">{{ tagsList.length }}</b> 句</span>
+               </div>
+               
+               <div class="overflow-y-auto max-h-[65vh]">
+                   <table class="w-full text-sm">
+                       <thead class="sticky top-0 bg-gray-900/90 backdrop-blur z-10 border-b border-gray-800">
+                           <tr>
+                               <th class="px-5 py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest w-24">ID</th>
+                               <th class="px-5 py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest w-40">所处分组</th>
+                               <th class="px-5 py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest">标签文本体</th>
+                               <th v-if="isSuperAdmin" class="px-5 py-3 text-right text-[10px] font-bold text-gray-500 uppercase tracking-widest w-32">操作</th>
+                           </tr>
+                       </thead>
+                       <tbody>
+                           <tr v-for="tag in tagsList" :key="tag.id" class="border-b border-gray-800/40 hover:bg-gray-800/30 transition-colors">
+                               <td class="px-5 py-4 text-gray-600 text-xs font-mono font-bold">#{{ tag.id }}</td>
+                               <td class="px-5 py-4 text-indigo-400 text-xs font-bold">{{ tag.group_name || '(无分组)' }}</td>
+                               <td class="px-5 py-4 text-gray-300 font-mono text-sm leading-relaxed whitespace-pre-wrap">{{ tag.content }}</td>
+                               <td v-if="isSuperAdmin" class="px-5 py-4 text-right">
+                                   <button @click="deleteTag(tag.id)" class="px-3 py-1.5 bg-red-900/20 text-red-500 hover:bg-red-600 hover:text-white rounded-lg border border-red-900/40 transition-all text-xs font-bold">🗑 销毁</button>
+                               </td>
+                           </tr>
+                           <tr v-if="tagsList.length === 0">
+                               <td colspan="3" class="text-center py-20 text-gray-600 font-bold tracking-widest">目前本国库无弹药存活 ☠️</td>
+                           </tr>
+                       </tbody>
+                   </table>
+               </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== 📝 简介管理 Tab ========== -->
+    <div v-if="activeTab === '📝 简介'" class="flex flex-1 flex-col overflow-auto p-6 bg-[#0B0F19]">
+        <div class="max-w-6xl w-full mx-auto">
+            <div class="flex items-center justify-between mb-6">
+                <div class="flex items-center gap-4 bg-gray-900 px-4 py-2 rounded-2xl border border-gray-800 shadow-inner">
+                    <span class="text-sm font-bold text-gray-400">目前调参国家区:</span>
+                    <select v-model="biosSelectedCountry" @change="fetchBios" class="bg-black border border-indigo-900/50 rounded-xl px-4 py-2 text-sm text-indigo-400 focus:border-indigo-400 focus:ring-1 focus:ring-indigo-500 min-w-[150px] outline-none font-bold placeholder:text-gray-700">
+                        <option v-for="c in countries" :key="c.id" :value="c.name" class="text-gray-300 font-normal">🚩 {{ c.name }}</option>
+                        <option value="" disabled v-if="countries.length === 0">尚未配置任何国家</option>
+                    </select>
+                    <span class="text-sm font-bold text-gray-400 ml-2">分组:</span>
+                    <select v-model="biosSelectedGroup" class="bg-black border border-indigo-900/50 rounded-xl px-4 py-2 text-sm text-indigo-400 focus:border-indigo-400 focus:ring-1 focus:ring-indigo-500 outline-none font-bold placeholder:text-gray-700">
+                        <option value="">🔮 (无分组)</option>
+                        <option v-for="g in groups" :key="g.id" :value="g.name">🏷️ {{ g.name }}</option>
+                    </select>
+                </div>
+                
+                <button v-if="isSuperAdmin && biosSelectedCountry" @click="showBatchBiosModal = true" class="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold transition-all bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-900/30 hover:shadow-indigo-800/40">
+                    📋 批量黏贴录入
+                </button>
+            </div>
+
+            <div v-if="!biosSelectedCountry" class="text-center py-20 text-gray-600 bg-gray-900/60 rounded-2xl border border-gray-800">
+                <div class="text-5xl mb-4">🌍</div>
+                <p class="text-sm tracking-widest font-bold">请指定作战国家分区</p>
+                <p class="text-xs text-gray-700 mt-2">简介文案是以国家为壁垒隔离的</p>
+            </div>
+
+            <div v-else class="bg-gray-900/60 border border-gray-800 rounded-2xl overflow-hidden shadow-2xl relative">
+               <div class="p-3 border-b border-gray-800 bg-gray-900/80 flex justify-between items-center text-sm">
+                   <span class="text-emerald-400 font-mono font-bold flex items-center gap-2">
+                       <span class="bg-emerald-500/20 p-1.5 rounded-lg">📜</span> 当前地区预留的人设签名墙
+                   </span>
+                   <span class="bg-gray-800 px-4 py-1.5 rounded-full text-xs text-gray-400 border border-gray-700">总池子：<b class="text-gray-200">{{ biosList.length }}</b> 条</span>
+               </div>
+               
+               <div class="overflow-y-auto max-h-[65vh]">
+                   <table class="w-full text-sm">
+                       <thead class="sticky top-0 bg-gray-900/90 backdrop-blur z-10 border-b border-gray-800">
+                           <tr>
+                               <th class="px-5 py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest w-24">ID</th>
+                               <th class="px-5 py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest w-40">所处分组</th>
+                               <th class="px-5 py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest">主页签名信息 (BIO)</th>
+                               <th v-if="isSuperAdmin" class="px-5 py-3 text-right text-[10px] font-bold text-gray-500 uppercase tracking-widest w-32">操作</th>
+                           </tr>
+                       </thead>
+                       <tbody>
+                           <tr v-for="bio in biosList" :key="bio.id" class="border-b border-gray-800/40 hover:bg-gray-800/30 transition-colors">
+                               <td class="px-5 py-4 text-gray-600 text-xs font-mono font-bold">#{{ bio.id }}</td>
+                               <td class="px-5 py-4 text-indigo-400 text-xs font-bold">{{ bio.group_name || '(无分组)' }}</td>
+                               <td class="px-5 py-4 text-gray-300 font-mono text-sm leading-relaxed whitespace-pre-wrap">{{ bio.content }}</td>
+                               <td v-if="isSuperAdmin" class="px-5 py-4 text-right">
+                                   <button @click="deleteBio(bio.id)" class="px-3 py-1.5 bg-red-900/20 text-red-500 hover:bg-red-600 hover:text-white rounded-lg border border-red-900/40 transition-all text-xs font-bold">🗑 除籍</button>
+                               </td>
+                           </tr>
+                           <tr v-if="biosList.length === 0">
+                               <td colspan="3" class="text-center py-20 text-gray-600 font-bold tracking-widest">数据库被榨干啦 ☠️</td>
+                           </tr>
+                       </tbody>
+                   </table>
+               </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 批量导入录入弹窗 -->
+    <div v-if="showBatchTagsModal || showBatchBiosModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-[999] flex items-center justify-center p-4">
+        <div class="bg-gray-900 border border-gray-800 w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in duration-200">
+            <div class="p-6 border-b border-gray-800 bg-gray-900/50 flex justify-between items-center">
+                <h3 class="text-lg font-bold text-gray-100 flex items-center gap-3">
+                    <span class="p-2 bg-indigo-900/50 rounded-lg text-indigo-400">📋</span>
+                    一键洗劫导入 【 {{ showBatchTagsModal ? (tagsSelectedCountry + (tagsSelectedGroup ? ' - ' + tagsSelectedGroup : '')) : (biosSelectedCountry + (biosSelectedGroup ? ' - ' + biosSelectedGroup : '')) }} 】
+                </h3>
+                <button @click="showBatchTagsModal = false; showBatchBiosModal = false" class="text-gray-500 hover:text-white transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            
+            <div class="p-6">
+                <p class="text-[11px] text-gray-400 tracking-wider mb-4 border border-indigo-900/40 bg-indigo-900/10 p-3 rounded-lg leading-relaxed">
+                    将成百上千条内容从 Excel 或 txt 文件内黏贴于此。<br>
+                    <b class="text-indigo-400">系统将强制按行分割 (Enter/回车)，每一行被认定为一根独立弹药！</b>空行会被智能丢弃清洗。
+                </p>
+                <textarea v-if="showBatchTagsModal" v-model="batchTextTags" class="w-full h-80 bg-black/80 border border-gray-800 rounded-xl p-4 text-emerald-400 font-mono text-xs focus:border-indigo-500 focus:outline-none custom-scrollbar shadow-inner" placeholder="#搞笑 #fyp\n#音乐 #dance\n...(一行接一行排下去)"></textarea>
+                <textarea v-if="showBatchBiosModal" v-model="batchTextBios" class="w-full h-80 bg-black/80 border border-gray-800 rounded-xl p-4 text-emerald-400 font-mono text-xs focus:border-indigo-500 focus:outline-none custom-scrollbar shadow-inner" placeholder="Hello I am here to dance\nClick my bio link! 👇\n...(也是一行一句排下去)"></textarea>
+            </div>
+
+            <div class="p-6 bg-gray-900/80 border-t border-gray-800 flex justify-end gap-3 px-8 pb-8">
+                <button @click="showBatchTagsModal = false; showBatchBiosModal = false" class="px-5 py-2 text-gray-400 hover:text-white font-medium text-xs tracking-widest transition-colors">中止</button>
+                <button v-if="showBatchTagsModal" @click="submitBatchTags" class="bg-indigo-600 hover:bg-indigo-500 text-white px-8 py-2.5 rounded-xl shadow-lg shadow-indigo-500/20 font-bold text-xs tracking-widest transition-all">全军突入数据库</button>
+                <button v-if="showBatchBiosModal" @click="submitBatchBios" class="bg-indigo-600 hover:bg-indigo-500 text-white px-8 py-2.5 rounded-xl shadow-lg shadow-indigo-500/20 font-bold text-xs tracking-widest transition-all">全军突入数据库</button>
+            </div>
+        </div>
+    </div>
     <!-- 批量配置 Modal -->
     <div v-if="showBatchConfigModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-[999] flex items-center justify-center p-4">
         <div class="bg-gray-900 border border-gray-800 w-full max-w-md rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in duration-200">

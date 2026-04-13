@@ -68,7 +68,7 @@
   // --- Version Label ---
   UILabel *versionLabel =
       [[UILabel alloc] initWithFrame:CGRectMake(padding, 50, width, 20)];
-  versionLabel.text = @"Build: 2026-04-11 16:43 #1936 (Auto)";
+  versionLabel.text = @"Build: 2026-04-13 18:35 #1965 (Auto)";
   versionLabel.textColor = [UIColor grayColor];
   versionLabel.textAlignment = NSTextAlignmentRight;
   versionLabel.font = [UIFont systemFontOfSize:12];
@@ -117,7 +117,7 @@
   // Load saved URL or Default （使用双读机制，App Group 优先，缺失则从 plist 恢复）
   NSString *savedUrl = [ECPersistentConfig stringForKey:@"CloudServerURL"];
   self.serverUrlField.text =
-      savedUrl.length > 0 ? savedUrl : @"http://s.ecmain.site:8088";
+      savedUrl.length > 0 ? savedUrl : ECServerFallbackList().firstObject;
 
   [self.view addSubview:self.serverUrlField];
 
@@ -473,10 +473,7 @@
                                                                  message:nil 
                                                           preferredStyle:UIAlertControllerStyleActionSheet];
   
-  NSArray *options = @[
-      @"http://s.ecmain.site:8088",
-      @"http://l.ecmain.site:8088"
-  ];
+  NSArray *options = ECServerFallbackList();
   
   for (NSString *opt in options) {
       [sheet addAction:[UIAlertAction actionWithTitle:opt style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
@@ -621,6 +618,7 @@
   }
 
   // 2. 保存三要素：服务器地址、设备编号、管理员（双写：App Group + plist 文件）
+  [ECPersistentConfig setObject:url forKey:@"EC_USER_PREFERRED_URL"];
   [ECPersistentConfig setObject:url forKey:@"CloudServerURL"];
   NSString *deviceNo = self.deviceNoField.text ?: @"";
   [ECPersistentConfig setObject:deviceNo forKey:@"EC_DEVICE_NO"];

@@ -9,7 +9,10 @@ const https = require('https');
 
 // ================= 配置区域 =================
 const CONFIG = {
-    apiToken: 'cfut_S5Gy8Iz2AqCwl1DpqGg7i7FTV9GHoKvPf8lWKBKZ2a5da1cb',
+    apiToken: 'cfut_TlwG6YEypmd7Y2hdtgjlQoF3sOjNuOM51uqXmy1ke444926d',
+    //cfut_TlwG6YEypmd7Y2hdtgjlQoF3sOjNuOM51uqXmy1ke444926d
+    //cfk_7IA8JDrublY0woiUeJ8HdauxAQt1gy8r3FNdmlWC05ad600c
+    //v1.0-ad35ffbc161e48eeac519dca-5bdd7c49f5a2ab428aa6f0bc45fae8603d064794d562594dcdbb50c5393a65643c5b85c596902ca2f42d3846c58f449914327043f19343b0042aef96b1096beec321acf636a567c2ca
     zoneId: '8c32007bda9f5c7fbb32787fa7c28124',
     publicRecord: '*.ecmain.site', // 公网 IP 动态更新域名
     localRecord: {
@@ -97,10 +100,17 @@ async function getDNSRecord(apiToken, zoneId, recordName) {
             }
         });
 
-        if (result.success && result.result.length > 0) {
-            return result.result[0];
+        if (result.success) {
+            if (result.result.length > 0) {
+                return result.result[0];
+            } else {
+                console.error(`[Cloudflare] 未找到对应的 DNS 记录: ${recordName}`);
+                console.warn(`提示: 请确保已在 Cloudflare 控制台中为域名手动创建了类型为 "A" 的记录 "${recordName}"。`);
+                return null;
+            }
         } else {
-            console.error('未找到对应的 DNS 记录:', recordName);
+            console.error(`[Cloudflare API 错误] 查询记录 "${recordName}" 失败:`);
+            console.error(JSON.stringify(result.errors || result, null, 2));
             return null;
         }
     } catch (error) {
@@ -134,7 +144,8 @@ async function updateDNSRecord(apiToken, zoneId, record, newIP) {
             console.log(`[成功] DNS 记录已更新为: ${newIP}`);
             return true;
         } else {
-            console.error('更新 DNS 记录失败:', result.errors);
+            console.error('[Cloudflare API 错误] 更新 DNS 记录失败:');
+            console.error(JSON.stringify(result.errors || result, null, 2));
             return false;
         }
     } catch (error) {

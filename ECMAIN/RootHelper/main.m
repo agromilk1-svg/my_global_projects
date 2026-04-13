@@ -2665,18 +2665,46 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
 
       sleep(5);
       NSString *bundleId = args[1];
-      void *sbServices =
-          dlopen("/System/Library/PrivateFrameworks/"
-                 "SpringBoardServices.framework/SpringBoardServices",
-                 RTLD_LAZY);
-      if (sbServices) {
-        int (*SBSLaunchApp)(CFStringRef, Boolean) =
-            (int (*)(CFStringRef, Boolean))dlsym(
-                sbServices, "SBSLaunchApplicationWithIdentifier");
-        if (SBSLaunchApp) {
-          SBSLaunchApp((__bridge CFStringRef)bundleId, NO);
-        }
-        dlclose(sbServices);
+      void *fbsHandle = dlopen("/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices", RTLD_LAZY);
+      BOOL fbsSuccess = NO;
+      if (fbsHandle) {
+          Class FBSSystemServiceClass = NSClassFromString(@"FBSSystemService");
+          if (FBSSystemServiceClass) {
+              id systemService = [FBSSystemServiceClass performSelector:NSSelectorFromString(@"sharedService")];
+              SEL openSel = NSSelectorFromString(@"openApplication:options:completion:");
+              if (systemService && [systemService respondsToSelector:openSel]) {
+                  NSDictionary *options = @{@"__UnlockDevice" : @YES};
+                  
+                  NSMethodSignature *sig = [systemService methodSignatureForSelector:openSel];
+                  NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                  [inv setTarget:systemService];
+                  [inv setSelector:openSel];
+                  [inv setArgument:&bundleId atIndex:2];
+                  [inv setArgument:&options atIndex:3];
+                  void *nilPtr = NULL;
+                  [inv setArgument:&nilPtr atIndex:4];
+                  [inv invoke];
+                  
+                  NSLog(@"[wait-and-open] ✅ 成功发送 FrontBoardServices 启动指令 (UnlockDevice=YES)");
+                  fbsSuccess = YES;
+              }
+          }
+      }
+
+      if (!fbsSuccess) {
+          void *sbServices =
+              dlopen("/System/Library/PrivateFrameworks/"
+                     "SpringBoardServices.framework/SpringBoardServices",
+                     RTLD_LAZY);
+          if (sbServices) {
+            int (*SBSLaunchApp)(CFStringRef, Boolean) =
+                (int (*)(CFStringRef, Boolean))dlsym(
+                    sbServices, "SBSLaunchApplicationWithIdentifier");
+            if (SBSLaunchApp) {
+              SBSLaunchApp((__bridge CFStringRef)bundleId, NO);
+            }
+            dlclose(sbServices);
+          }
       }
       return 0;
     } else if ([cmd isEqualToString:@"lsof-port"]) {

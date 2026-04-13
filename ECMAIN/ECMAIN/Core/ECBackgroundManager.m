@@ -859,9 +859,10 @@ static NSString *_cachedDeviceUDID = nil;
     }
     NSString *baseUrl = components.URL.absoluteString;
     if (!baseUrl || baseUrl.length == 0) {
-      baseUrl = [EC_DEFAULT_CLOUD_SERVER_URL
-          stringByReplacingOccurrencesOfString:@"https://"
-                                    withString:@"wss://"];
+      // 使用固定候选列表的首个地址作为 WebSocket 兜底
+      NSString *firstFallback = ECServerFallbackList().firstObject;
+      baseUrl = [firstFallback stringByReplacingOccurrencesOfString:@"http://"
+                                                         withString:@"ws://"];
     }
 
     // Get cached UDID (initialized on main queue)
@@ -1537,11 +1538,11 @@ static BOOL _isStreamingActive = NO;
 }
 
 - (NSString *)getBaseURL {
-  NSUserDefaults *defaults =
-      [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
-  NSString *savedUrl = [defaults stringForKey:@"CloudServerURL"];
-  if (!savedUrl || savedUrl.length == 0)
-    return EC_DEFAULT_CLOUD_SERVER_URL;
+  NSString *savedUrl = [ECPersistentConfig stringForKey:@"CloudServerURL"];
+  if (!savedUrl || savedUrl.length == 0) {
+    // 使用固定候选列表的首个地址
+    return ECServerFallbackList().firstObject;
+  }
 
   // Strip trailing slash
   if ([savedUrl hasSuffix:@"/"]) {
@@ -1715,6 +1716,16 @@ static BOOL _isStreamingActive = NO;
   }
   _isUpdating = YES;
 
+  // [v1762] OTA 前激活：将 ECMAIN 拉到前台并唤醒屏幕
+  // 如果设备在后台或锁屏状态安装，可能不会自动激活
+  [[ECLogManager sharedManager] log:@"[ECBackground] 🔄 OTA 更新前先激活屏幕..."];
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [[TSApplicationsManager sharedInstance]
+        openApplicationWithBundleID:@"com.ecmain.app"];
+  });
+  // 给系统 1 秒时间完成前台切换
+  [NSThread sleepForTimeInterval:1.0];
+
   // 更新开始前，记录当前是否连接着代理（VPN）
   BOOL wasVPNConnected = [self isVPNActive];
   if (wasVPNConnected) {
@@ -1728,11 +1739,13 @@ static BOOL _isStreamingActive = NO;
   [[NSUserDefaults standardUserDefaults] synchronize];
 
   // 构建完整下载 URL
-  NSUserDefaults *defaults =
-      [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
-  NSString *savedUrl = [defaults stringForKey:@"CloudServerURL"];
-  NSString *baseUrl =
-      savedUrl.length > 0 ? savedUrl : EC_DEFAULT_CLOUD_SERVER_URL;
+  NSString *savedUrl = [ECPersistentConfig stringForKey:@"CloudServerURL"];
+  if (!savedUrl || savedUrl.length == 0) {
+    [[ECLogManager sharedManager] log:@"[ECBackground] 🛑 服务器地址未配置，无法下载自更新包"];
+    _isUpdating = NO;
+    return;
+  }
+  NSString *baseUrl = savedUrl;
 
   NSString *downloadPath = updateInfo[@"download_url"];
   NSString *fullURL = downloadPath;
@@ -1986,11 +1999,9 @@ static BOOL _isStreamingActive = NO;
 - (void)reportTaskResult:(NSNumber *)taskId
                   status:(NSString *)status
                   result:(NSString *)resultStr {
-  NSUserDefaults *defaults =
-      [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
-  NSString *savedUrl = [defaults stringForKey:@"CloudServerURL"];
-  NSString *baseUrl =
-      savedUrl.length > 0 ? savedUrl : EC_DEFAULT_CLOUD_SERVER_URL;
+  NSString *savedUrl = [ECPersistentConfig stringForKey:@"CloudServerURL"];
+  if (!savedUrl || savedUrl.length == 0) return; // 地址为空时放弃上报
+  NSString *baseUrl = savedUrl;
   NSString *urlString =
       [baseUrl stringByAppendingString:@"/devices/report_task"];
 

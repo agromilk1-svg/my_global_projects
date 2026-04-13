@@ -33,6 +33,27 @@ static const NSTimeInterval FBWaitInterval = 0.1;
   }
 }
 
+// [v1762] 带超时保护的版本：防止 XCTest IPC 卡死时永久阻塞主线程
+// 超时后立即返回 NO，让 HTTP 请求返回错误，ECScriptParser 的重试逻辑会自动重发
++ (BOOL)spinUntilCompletion:(void (^)(void(^completion)(void)))block
+                    timeout:(NSTimeInterval)timeout
+{
+  __block volatile atomic_bool didFinish = false;
+  block(^{
+    // 即使超时退出后此回调仍可能触发，atomic 操作是安全的
+    atomic_fetch_or(&didFinish, true);
+  });
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
+  while (!atomic_fetch_and(&didFinish, false)) {
+    if ([[NSDate date] compare:deadline] != NSOrderedAscending) {
+      // 超时：IPC 在规定时间内未完成，放弃等待
+      return NO;
+    }
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:FBWaitInterval]];
+  }
+  return YES;
+}
+
 - (instancetype)init
 {
   self = [super init];

@@ -274,6 +274,38 @@
   return foundPid;
 }
 
++ (void)wakeScreenAndBringMainAppToFront {
+  LAUNCHER_LOG(@"🌟 准备强行点亮屏幕并激活主程序到前台...");
+  Class FBSSystemServiceClass = NSClassFromString(@"FBSSystemService");
+  if (FBSSystemServiceClass) {
+    id systemService = [FBSSystemServiceClass sharedService];
+    if (systemService && [systemService respondsToSelector:@selector(openApplication:options:completion:)]) {
+      // ✅ 仅保留 __UnlockDevice 不使用 __ActivateSuspended，这样应用会被真正推到前台同时点亮屏幕
+      NSDictionary *options = @{@"__UnlockDevice" : @YES};
+      [systemService openApplication:@"com.ecmain.app"
+                             options:options
+                          completion:^(NSError *error) {
+                            if (error) {
+                              LAUNCHER_LOG(@"⚠️ FBSSystemService 尝试点亮屏幕失败: %@", error);
+                            } else {
+                              LAUNCHER_LOG(@"✅ 屏幕已被点亮并确立前台状态");
+                            }
+                          }];
+      return;
+    }
+  }
+  
+  // 兜底降级方案：使用 LSApplicationWorkspace (但不一定能黑屏亮屏)
+  LAUNCHER_LOG(@"⚠️ 找不到 FBSSystemService，使用 LSApplicationWorkspace 兜底唤醒");
+  Class LSApplicationWorkspaceClass = NSClassFromString(@"LSApplicationWorkspace");
+  if (LSApplicationWorkspaceClass) {
+    id workspace = [LSApplicationWorkspaceClass performSelector:NSSelectorFromString(@"defaultWorkspace")];
+    if (workspace && [workspace respondsToSelector:NSSelectorFromString(@"openApplicationWithBundleID:")]) {
+      [workspace performSelector:NSSelectorFromString(@"openApplicationWithBundleID:") withObject:@"com.ecmain.app"];
+    }
+  }
+}
+
 + (NSString *)executablePathForAppAtPath:(NSString *)bundlePath {
   NSString *infoPlistPath =
       [bundlePath stringByAppendingPathComponent:@"Info.plist"];

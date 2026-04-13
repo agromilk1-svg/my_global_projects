@@ -107,6 +107,33 @@ def init_db():
             )
         ''')
         
+        # [控制矩阵] 针对具体国家沉淀的标签墙
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ec_tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                country TEXT NOT NULL,
+                content TEXT NOT NULL
+            )
+        ''')
+        try:
+            cursor.execute("ALTER TABLE ec_tags ADD COLUMN group_name TEXT DEFAULT '';")
+        except Exception:
+            pass
+
+        
+        # [控制矩阵] 针对具体国家储备的文案签名材料库
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ec_bios (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                country TEXT NOT NULL,
+                content TEXT NOT NULL
+            )
+        ''')
+        try:
+            cursor.execute("ALTER TABLE ec_bios ADD COLUMN group_name TEXT DEFAULT '';")
+        except Exception:
+            pass
+        
         # [v1682.2] 自动清理逻辑：剔除 3 天未活跃的“僵尸”设备，解决 UDID 换代后的历史残留干扰
         # 防止由于 UDID 变更导致列表中出现大量同名但 UDID 不同的离线设备
         three_days_ago = time.time() - (3 * 24 * 3600)
@@ -1362,3 +1389,101 @@ def delete_oneshot_task(task_id: int) -> bool:
 
 # 初始化数据库
 init_db()
+
+# ================= 动态资产：标签与简介 =================
+
+def get_tags_by_country(country: str) -> List[dict]:
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('SELECT id, group_name, content FROM ec_tags WHERE country = ? ORDER BY id DESC', (country,))
+            return [dict(r) for r in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"Error getting tags: {e}")
+        return []
+
+def add_tag_batch(country: str, contents: List[str], group_name: str = "") -> int:
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            data = [(country, c.strip(), group_name) for c in contents if c.strip()]
+            if not data: return 0
+            cursor.executemany('INSERT INTO ec_tags (country, content, group_name) VALUES (?, ?, ?)', data)
+            conn.commit()
+            return cursor.rowcount
+    except Exception as e:
+        logger.error(f"Error adding batch tags: {e}")
+        return 0
+
+def delete_tag(tag_id: int):
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM ec_tags WHERE id = ?', (tag_id,))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Error deleting tag {tag_id}: {e}")
+
+def get_random_tag(country: str, group_name: str = "") -> str:
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            if group_name:
+                cursor.execute("SELECT content FROM ec_tags WHERE country = ? AND (group_name = '' OR group_name IS NULL OR group_name = ?) ORDER BY RANDOM() LIMIT 1", (country, group_name))
+            else:
+                cursor.execute("SELECT content FROM ec_tags WHERE country = ? ORDER BY RANDOM() LIMIT 1", (country,))
+            row = cursor.fetchone()
+            return row['content'] if row else ""
+    except Exception as e:
+        logger.error(f"Error getting random tag: {e}")
+        return ""
+
+def get_bios_by_country(country: str) -> List[dict]:
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('SELECT id, group_name, content FROM ec_bios WHERE country = ? ORDER BY id DESC', (country,))
+            return [dict(r) for r in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"Error getting bios: {e}")
+        return []
+
+def add_bio_batch(country: str, contents: List[str], group_name: str = "") -> int:
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            data = [(country, c.strip(), group_name) for c in contents if c.strip()]
+            if not data: return 0
+            cursor.executemany('INSERT INTO ec_bios (country, content, group_name) VALUES (?, ?, ?)', data)
+            conn.commit()
+            return cursor.rowcount
+    except Exception as e:
+        logger.error(f"Error adding batch bios: {e}")
+        return 0
+
+def delete_bio(bio_id: int):
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM ec_bios WHERE id = ?', (bio_id,))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Error deleting bio {bio_id}: {e}")
+
+def get_random_bio(country: str, group_name: str = "") -> str:
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            if group_name:
+                cursor.execute("SELECT content FROM ec_bios WHERE country = ? AND (group_name = '' OR group_name IS NULL OR group_name = ?) ORDER BY RANDOM() LIMIT 1", (country, group_name))
+            else:
+                cursor.execute("SELECT content FROM ec_bios WHERE country = ? ORDER BY RANDOM() LIMIT 1", (country,))
+            row = cursor.fetchone()
+            return row['content'] if row else ""
+    except Exception as e:
+        logger.error(f"Error getting random bio: {e}")
+        return ""

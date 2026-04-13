@@ -81,19 +81,16 @@
             @"%@)，开始静默桥接并缓存最新全部评论...",
             lastSyncedVersion ?: @"(首次)", fullVersionStr);
 
-      NSUserDefaults *groupDefaults =
-          [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
-      NSString *cloudUrl = [groupDefaults stringForKey:@"EC_CLOUD_SERVER_URL"];
+      NSString *cloudUrl = [ECPersistentConfig stringForKey:@"CloudServerURL"];
       if (!cloudUrl || cloudUrl.length == 0) {
-        cloudUrl = @"http://s.ecmain.site:8088";
-        NSLog(@"[ECMAIN_ERR] 未能在组字典读取到有效的 EC_CLOUD_SERVER_URL "
+        NSLog(@"[ECMAIN_ERR] 未能读取到有效的云控服务器地址 "
               @"(用户可能尚未按【保存配置】或【连接云控】)"
-              @"。本次同步将使用默认域名: %@，可能导致后续网络超时失败！",
-              cloudUrl);
+              @"。本次评论同步将跳过！");
         [[ECLogManager sharedManager]
             log:@"⚠️ "
-                @"云控地址为空，本地评论字典同步使用了公网兜底连线，如请求失败"
-                @"请手动运行一次 [同步全量评论] 或连接一次内网！"];
+                @"云控地址为空，无法自动同步评论数据。"
+                @"请在仪表盘设置服务器地址后重启 App！"];
+        return;
       } else {
         NSLog(@"[ECMAIN] 获取到本地主控端组网络地址: %@", cloudUrl);
       }

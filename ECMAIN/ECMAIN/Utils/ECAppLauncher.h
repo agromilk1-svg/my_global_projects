@@ -17,6 +17,12 @@ NS_ASSUME_NONNULL_BEGIN
                                     executablePath:(nullable NSString *)executablePath;
 
 /**
+ * 强行点亮黑屏并将 ECMAIN 拉到前台（基于 FBSSystemService 底层接口）
+ * 主要用于脚本准备执行前，确保设备环境处于活跃亮屏状态
+ */
++ (void)wakeScreenAndBringMainAppToFront;
+
+/**
  * 从 Info.plist 获取可执行文件路径
  */
 + (nullable NSString *)executablePathForAppAtPath:(NSString *)bundlePath;

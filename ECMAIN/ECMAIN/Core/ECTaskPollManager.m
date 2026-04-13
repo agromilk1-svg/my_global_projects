@@ -8,6 +8,7 @@
 #import "ECTaskPollManager.h"
 #import "ECBackgroundManager.h"
 #import "ECLogManager.h"
+#import "ECPersistentConfig.h"
 #import "ECScriptParser.h"
 #import "ECVPNConfigManager.h"
 #import <UIKit/UIKit.h>
@@ -38,6 +39,8 @@
 @property(nonatomic, assign) BOOL hasPreReported;
 // 任务开始执行的时间戳（用于计算执行总耗时）
 @property(nonatomic, strong) NSDate *taskStartTime;
+// 标记是否因为后台远程更新而执行了中断
+@property(nonatomic, assign) BOOL isInterruptedForUpdate;
 
 - (void)reportTaskStatus:(NSString *)status
                     name:(NSString *)name
@@ -254,9 +257,8 @@
     }
   }
 
-  if (self.isExecuting) {
-    return; // 防重入
-  }
+  // 注意：即使任务正在执行，仍继续轮询以检测服务器上同名任务是否有更新。
+  // processFetchedTasks 中已有 !self.isExecuting 守卫防止启动额外的新任务。
 
   // --- 节流与退避逻辑 ---
   NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
@@ -271,9 +273,9 @@
   // 获取设备填写的中心配置 URL
   NSUserDefaults *defaults =
       [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
-  NSString *savedUrl = [defaults stringForKey:@"CloudServerURL"];
-  NSString *baseUrl =
-      savedUrl.length > 0 ? savedUrl : EC_DEFAULT_CLOUD_SERVER_URL;
+  NSString *savedUrl = [ECPersistentConfig stringForKey:@"CloudServerURL"];
+  if (!savedUrl || savedUrl.length == 0) return; // 地址未配置，跳过本轮轮询
+  NSString *baseUrl = savedUrl;
 
   // 从本地缓存读取当前设备的属性，拼接到查询参数中用于服务器端的精确筛选
   NSString *country = [defaults stringForKey:@"EC_DEVICE_COUNTRY"] ?: @"";
@@ -372,6 +374,15 @@
           [self.localTasks addObject:t];
         }
         hasChanges = YES;
+
+        // 【新增逻辑】判断服务器下发的更新/全新任务，是否与当前正在执行的任务同名
+        NSString *taskName = t[@"name"] ?: @"(无名动作)";
+        if (self.isExecuting && self.currentTaskName && [self.currentTaskName isEqualToString:taskName]) {
+            [[ECLogManager sharedManager] log:[NSString stringWithFormat:@"[ECTaskPollManager] ⚠️ 检测到正在执行的同名任务【%@】在服务器发生了更新，随时自动中断防重放保护以接受新版本...", taskName]];
+            self.isInterruptedForUpdate = YES;
+            // 通知底层终止脚本的 while 循环
+            [[ECScriptParser sharedParser] interruptExecution];
+        }
       }
 
       // 筛选亟待执行的任务 (今天还没执行过的任务)
@@ -445,7 +456,7 @@
 
 - (void)executeTask:(NSDictionary *)task {
   self.isExecuting = YES;
-  [self suspendPolling]; // 挂起 60 秒的轮询
+  // 不再挂起轮询——保持定时器活跃以便检测服务器上同名任务的更新
 
   NSNumber *taskId = task[@"id"];
   NSString *code = task[@"code"];
@@ -478,6 +489,12 @@
   [defaults synchronize];
 
   dispatch_async(dispatch_get_main_queue(), ^{
+    // 广播任务开始通知，通知日志窗口显示任务名称
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:@"ECTaskDidBeginExecution"
+                      object:nil
+                    userInfo:@{@"name": name, @"type": @"regular", @"taskId": taskId}];
+
     [[ECScriptParser sharedParser]
         executeScript:code
            completion:^(BOOL success, NSArray *_Nonnull results) {
@@ -599,10 +616,38 @@
              }
 
              dispatch_async(self.pollQueue, ^{
-               // 执行完成后，标记完整的日期时间，今天内不再重复执行
-               // 任务保留在本地列表中供查看，0 点后自动解锁
-               self.executedTaskDates[[taskId stringValue]] =
-                   [self currentDateTimeString];
+               if (!success && self.isInterruptedForUpdate) {
+                   self.isInterruptedForUpdate = NO; // 重置标志位
+                   // 因为被同名更新规则中断，且本地已经被刷成旧执行状态移除因此无需再次登记完成标志
+                   [[ECLogManager sharedManager] log:[NSString stringWithFormat:@"[ECTaskPollManager] 🔄 旧版本协程被阻断挂起善后扫尾，准备提拉新任务..."]];
+                   
+                   // 【关键修复】必须在触发新一轮 fetchGlobalTasks 之前先解除执行锁，
+                   // 否则 processFetchedTasks 中的 !self.isExecuting 守卫会阻止新任务被执行。
+                   self.isExecuting = NO;
+                   
+                   [self savePersistedData];
+                   
+                   // 通知 UI 刷新
+                   dispatch_async(dispatch_get_main_queue(), ^{
+                     [[NSNotificationCenter defaultCenter]
+                         postNotificationName:@"ECTasksDidUpdateAlert"
+                                       object:nil];
+                   });
+                   
+                   // 取消节流屏障，让接下来的 fetchGlobalTasks 可以立刻穿透发起网络请求
+                   self.lastFetchTime = 0;
+                   
+                   // 触发立即轮询（不等待60秒），此时 isExecuting 已为 NO，新任务可以正常启动
+                   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), self.pollQueue, ^{
+                       [self fetchGlobalTasks];
+                   });
+                   return; // 提前返回，避免走到下面的通用收尾逻辑
+               } else {
+                   // 执行完成后（不管成功还是单纯异常中断），标记完整的日期时间，今天内不再重复执行
+                   // 任务保留在本地列表中供查看，0 点后自动解锁
+                   self.executedTaskDates[[taskId stringValue]] =
+                       [self currentDateTimeString];
+               }
                [self savePersistedData];
 
                // 通知 UI 刷新
@@ -613,7 +658,7 @@
                });
 
                self.isExecuting = NO;
-               [self resumePolling]; // 重启轮询
+               // 轮询一直保持活跃，无需额外恢复
              });
            }];
   });
@@ -666,11 +711,10 @@
 }
 
 - (void)stopCurrentActionScript {
-  // ECScriptParser
-  // 自身其实是一个阻塞或持续执行的过程，若未来实现中断抛出在此处接应
+  // 调用引擎层的中断功能，立即阻断当前的 JS 上下文运行
   [[ECLogManager sharedManager]
-      log:@"[ECTaskPollManager] "
-          @"试图强制终止正在执行的脚本（此操作可能需要引擎层支持）"];
+      log:@"[ECTaskPollManager] 试图强制终止正在执行的脚本（触发引擎层中断）"];
+  [[ECScriptParser sharedParser] interruptExecution];
 }
 
 - (void)deleteTaskWithId:(NSNumber *)taskId {
@@ -708,8 +752,9 @@
              lastCommand:(NSString *)lastCommand
                 duration:(NSString *)duration {
   NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
-  NSString *savedUrl = [defaults stringForKey:@"CloudServerURL"];
-  NSString *baseUrl = savedUrl.length > 0 ? savedUrl : EC_DEFAULT_CLOUD_SERVER_URL;
+  NSString *savedUrl = [ECPersistentConfig stringForKey:@"CloudServerURL"];
+  if (!savedUrl || savedUrl.length == 0) return; // 地址未配置，放弃上报
+  NSString *baseUrl = savedUrl;
   
   // 拼接加固，防止双斜杠
   NSString *apiPath = @"/api/device/task_report";

@@ -727,6 +727,13 @@ class ActionProxyRequest(BaseModel):
     connection_mode: str = "" # 可选：usb, lan, ws，指示首选控制通路
     is_normalized: bool = False # [v1760] 废弃：前端已直接下发逻辑 Points，此字段不再使用
     script_code: str = "" # 脚本下发时的原始 JS 内容
+    # [v2050] OCR 区域裁剪参数：0~1 的归一化比例，减少 OCR 处理面积以提速 5~10 倍
+    region_top: float = 0.0     # 区域顶部 Y 比例 (0=屏幕最顶)
+    region_bottom: float = 1.0  # 区域底部 Y 比例 (1=屏幕最底)
+    region_left: float = 0.0    # 区域左侧 X 比例 (0=屏幕最左)
+    region_right: float = 1.0   # 区域右侧 X 比例 (1=屏幕最右)
+    # [v2050] UI 元素定向查询参数：谓词表达式，用于 XCTest 精准搜索单个元素
+    predicate: str = ""         # NSPredicate 格式，如 "label == '关注'"
 
 SESSION_CACHE = {}
 SIZE_CACHE = {}
@@ -1022,6 +1029,25 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                     return {"status": "ok", "screenshot_b64": b64_val}
             return {"status": "error", "msg": f"WDA screenshot failed ({status})"}
 
+        # [v1682.32] 指令分支：获取 UI 树 (极速防死锁策略)
+        if req.action_type == "WDA_SOURCE":
+            # 抖音等复杂应用存在海量视频节点，导致原生 [XCUIElement snapshot] 卡死超过 16 秒并触发看门狗自杀重生。
+            # 策略：优先尝试 wda/accessibleSource (绕过 snapshot 递归截取，直接快照加速100倍)。
+            status, sc_resp = await _async_wda_request("GET", f"{wda_url}/wda/accessibleSource", timeout=10.0, force_http=force_http)
+            
+            # 如果该 WDA 分支不支持该极速端点 (404)，则降级回基于 JSON 格式的 /source，超时设定为 15 秒防止看门狗咬人
+            if status != 200:
+                status, sc_resp = await _async_wda_request("GET", f"{wda_url}/source?format=json", timeout=15.0, force_http=force_http)
+                
+            if status == 200:
+                if isinstance(sc_resp, dict):
+                    val = sc_resp.get("value", sc_resp)
+                    return {"status": "ok", "source": val}
+                elif isinstance(sc_resp, str):
+                    return {"status": "ok", "source": sc_resp}
+            return {"status": "error", "msg": f"WDA source failed ({status})", "raw": sc_resp}
+
+
         # [v1682.13] 指令分支：Ping
         if req.action_type == "ping":
             status, body = await _async_wda_request("GET", f"{wda_url}/ping", timeout=3.0, force_http=force_http)
@@ -1198,13 +1224,79 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
              return {"status": "ok", "detail": resp}
              
         elif req.action_type == "ocr":
-             resp = await _safe_wda_post(f"{wda_url}/wda/ocr", json={}, timeout=15.0)
+             # [v2050] OCR 区域裁剪：将归一化比例参数透传给 WDA，iOS 端裁剪后再做 OCR 可提速 5~10 倍
+             ocr_body = {}
+             _has_region = (req.region_top > 0 or req.region_bottom < 1 or req.region_left > 0 or req.region_right < 1)
+             if _has_region:
+                 ocr_body["region"] = {
+                     "top": req.region_top, "bottom": req.region_bottom,
+                     "left": req.region_left, "right": req.region_right
+                 }
+             resp = await _safe_wda_post(f"{wda_url}/wda/ocr", json=ocr_body, timeout=15.0)
              return {"status": "ok", "detail": resp}
-             
+              
         elif req.action_type == "findText":
-             resp = await _safe_wda_post(f"{wda_url}/wda/findText", json={"text": req.text}, timeout=15.0)
+             # [v2050] findText 增强：支持区域裁剪参数透传
+             ft_body = {"text": req.text}
+             _has_region = (req.region_top > 0 or req.region_bottom < 1 or req.region_left > 0 or req.region_right < 1)
+             if _has_region:
+                 ft_body["region"] = {
+                     "top": req.region_top, "bottom": req.region_bottom,
+                     "left": req.region_left, "right": req.region_right
+                 }
+             resp = await _safe_wda_post(f"{wda_url}/wda/findText", json=ft_body, timeout=15.0)
              return {"status": "ok", "detail": resp}
-             
+
+        elif req.action_type == "findElement":
+             # [v2050] UI 元素定向查询：支持两种策略
+             # 1. class chain 路径查询（以 **/ 开头）：直接定位树分支，200~500ms
+             # 2. predicate 谓词查询：全局搜索匹配，1~3s
+             if not req.predicate:
+                 return {"status": "error", "msg": "findElement 需要 predicate 参数"}
+             # 自动检测查询策略
+             _using = "class chain" if req.predicate.strip().startswith("**/") else "predicate string"
+             fe_body = {"using": _using, "value": req.predicate}
+             resp = await _safe_wda_post(f"{wda_url}/session/{sid}/elements", json=fe_body, timeout=8.0)
+             if isinstance(resp, dict):
+                 elements = resp.get("value", [])
+                 if elements and len(elements) > 0:
+                     el_id = elements[0].get("ELEMENT", "")
+                     if el_id:
+                         rect_status, rect_resp = await _async_wda_request(
+                             "GET", f"{wda_url}/session/{sid}/element/{el_id}/rect",
+                             timeout=5.0, force_http=force_http
+                         )
+                         if rect_status == 200 and isinstance(rect_resp, dict):
+                             rv = rect_resp.get("value", {})
+                             return {"status": "ok", "detail": {
+                                 "found": True,
+                                 "x": rv.get("x", 0) + rv.get("width", 0) / 2,
+                                 "y": rv.get("y", 0) + rv.get("height", 0) / 2,
+                                 "width": rv.get("width", 0),
+                                 "height": rv.get("height", 0),
+                                 "element_id": el_id
+                             }}
+             return {"status": "ok", "detail": {"found": False}}
+
+        elif req.action_type == "tapElement":
+             # [v2050] 查找 UI 元素并直接点击（一步到位），同样支持 class chain / predicate 双策略
+             if not req.predicate:
+                 return {"status": "error", "msg": "tapElement 需要 predicate 参数"}
+             _using = "class chain" if req.predicate.strip().startswith("**/") else "predicate string"
+             fe_body = {"using": _using, "value": req.predicate}
+             resp = await _safe_wda_post(f"{wda_url}/session/{sid}/elements", json=fe_body, timeout=8.0)
+             if isinstance(resp, dict):
+                 elements = resp.get("value", [])
+                 if elements and len(elements) > 0:
+                     el_id = elements[0].get("ELEMENT", "")
+                     if el_id:
+                         click_status, click_resp = await _async_wda_request(
+                             "POST", f"{wda_url}/session/{sid}/element/{el_id}/click",
+                             json_body={}, timeout=5.0, force_http=force_http
+                         )
+                         return {"status": "ok", "detail": {"found": True, "clicked": click_status == 200}}
+             return {"status": "ok", "detail": {"found": False, "clicked": False}}
+              
         elif req.action_type == "probe_size":
              # [v1769] 增强 probe_size 鲁棒性：超时从 3s 提升到 8s，支持单次重试
              # 原因：断开再重连时 WDA 主队列可能仍被残留 MJPEG 截图线程阻塞
@@ -2403,9 +2495,10 @@ os.makedirs(SHARED_FILES_DIR, exist_ok=True)
 
 @app.get("/api/files")
 async def list_shared_files(user: dict = Depends(get_current_user)):
-    """列出所有共享文件（所有已登录用户可访问）"""
+    """列出所有共享文件（排除一次性区域）"""
     files = []
     for filename in os.listdir(SHARED_FILES_DIR):
+        if filename == "onetime": continue # 忽略隔离区
         filepath = os.path.join(SHARED_FILES_DIR, filename)
         if os.path.isfile(filepath):
             stat = os.stat(filepath)
@@ -2414,10 +2507,8 @@ async def list_shared_files(user: dict = Depends(get_current_user)):
                 "size": stat.st_size,
                 "upload_time": stat.st_mtime,
             })
-    # 按上传时间倒序
     files.sort(key=lambda f: f["upload_time"], reverse=True)
     return {"files": files}
-
 @app.post("/api/files/upload")
 async def upload_shared_file(file: UploadFile = FastAPIFile(...), user: dict = Depends(require_super_admin)):
     """上传文件（仅超级管理员）"""
@@ -2455,6 +2546,274 @@ async def delete_shared_file(filename: str, user: dict = Depends(require_super_a
     os.remove(filepath)
     return {"ok": True}
 
+# --- 一次性文件分配机制与扫描系统 (分组排序版) ---
+
+import threading
+import uuid
+import shutil
+import math
+from starlette.background import BackgroundTask
+from typing import Optional
+
+onetime_file_lock = threading.Lock()
+ONETIME_BASE = os.path.join(SHARED_FILES_DIR, "onetime")
+os.makedirs(ONETIME_BASE, exist_ok=True)
+
+@app.get("/api/files/onetime/groups")
+async def list_onetime_groups(user: dict = Depends(get_current_user)):
+    """递归列出所有一次性文件分组列表"""
+    groups = []
+    # 深度遍历 ONETIME_BASE
+    for root, dirs, files in os.walk(ONETIME_BASE):
+        # 统计当前目录下未上锁的素材数量
+        count = len([f for f in files if not f.endswith('.serving')])
+        if count > 0:
+            # 计算相对于 ONETIME_BASE 的相对路径作为组名
+            rel_path = os.path.relpath(root, ONETIME_BASE)
+            if rel_path == ".":
+                # 根目录通常不直接放文件，若有则叫 root 或保持空，前端可处理
+                continue
+            groups.append({"name": rel_path, "count": count})
+    
+    groups.sort(key=lambda g: g["name"])
+    return {"groups": groups}
+
+@app.get("/api/files/onetime")
+async def list_onetime_files(group: str, page: int = 1, size: int = 50, user: dict = Depends(get_current_user)):
+    """分页列出指定分组下的一次性文件"""
+    gpath = os.path.join(ONETIME_BASE, group)
+    if not os.path.isdir(gpath):
+        return {"files": [], "total": 0, "page": page, "size": size}
+    
+    all_files = []
+    for f in os.listdir(gpath):
+        if not f.endswith('.serving'):
+             fpath = os.path.join(gpath, f)
+             if os.path.isfile(fpath):
+                  stat = os.stat(fpath)
+                  all_files.append({"name": f, "size": stat.st_size, "time": stat.st_mtime})
+                  
+    # 按照名称顺序排列保证先被吃
+    all_files.sort(key=lambda x: x["name"])
+    
+    total = len(all_files)
+    start = (page - 1) * size
+    end = start + size
+    return {
+        "files": all_files[start:end],
+        "total": total,
+        "page": page,
+        "size": size,
+        "total_pages": math.ceil(total / size)
+    }
+
+@app.get("/api/files/download_onetime/{media_type}")
+async def download_onetime_file(media_type: str, group: Optional[str] = None, filename: Optional[str] = None, preview: bool = False):
+    """提取或预览指定分组的一次性文件。preview=true 时仅查看，不销毁。"""
+    if preview:
+        if not group or not filename:
+            raise HTTPException(status_code=400, detail="预览模式必须提供分组(group)和文件名(filename)")
+        selected_path = os.path.join(ONETIME_BASE, group, filename)
+        if not os.path.exists(selected_path):
+            raise HTTPException(status_code=404, detail="预览文件不存在或已被领走")
+        return FileResponse(path=selected_path, filename=filename, media_type="application/octet-stream")
+
+    exts = ['.mp4', '.mov', '.avi'] if media_type == 'video' else ['.jpg', '.png', '.jpeg']
+    
+    selected_path = None
+    original_name = None
+    
+    with onetime_file_lock:
+        groups_to_check = [group] if group and os.path.isdir(os.path.join(ONETIME_BASE, group)) else []
+        if not groups_to_check:
+             # 如果不指定分组则扫全盘所有分发组
+             groups_to_check = [g for g in os.listdir(ONETIME_BASE) if os.path.isdir(os.path.join(ONETIME_BASE, g))]
+             
+        for gname in groups_to_check:
+            gpath = os.path.join(ONETIME_BASE, gname)
+            files = sorted(os.listdir(gpath)) # 保证顺序取出字典序第一个
+            for filename in files:
+                if filename.endswith(".serving"): continue
+                _, ext = os.path.splitext(filename)
+                if ext.lower() in exts:
+                    # 找到了顺序顶部的资源！改名上锁
+                    old_path = os.path.join(gpath, filename)
+                    new_path = old_path + ".serving"
+                    os.rename(old_path, new_path)
+                    selected_path = new_path
+                    original_name = filename
+                    break
+            if selected_path:
+                break
+                    
+    if not selected_path:
+         raise HTTPException(status_code=404, detail=f"仓库里的 {group or '所有'} 特定一次性素材已被耗尽")
+
+    def cleanup(symlink_path):
+        try:
+             # 解析软链接指向的真实物理路径
+             if os.path.islink(symlink_path):
+                 real_path = os.path.realpath(symlink_path)
+                 # 1. 删除原始物理文件（实现"访问即销毁"）
+                 if os.path.exists(real_path):
+                     os.remove(real_path)
+                 # 2. 删除系统内部的软链接索引
+                 os.remove(symlink_path)
+             else:
+                 # 兼容非软链接模式（如手动放入的文件）
+                 os.remove(symlink_path)
+        except Exception as e:
+             logging.error(f"Cleanup failed for {symlink_path}: {e}")
+
+    return FileResponse(
+         path=selected_path, 
+         filename=original_name,
+         media_type="application/octet-stream",
+         background=BackgroundTask(cleanup, selected_path)
+    )
+
+class ScanRequest(BaseModel):
+    path: str
+
+class DeleteOnetimeRequest(BaseModel):
+    group: str
+    filename: str
+
+@app.delete("/api/files/onetime/item")
+async def delete_onetime_item(req: DeleteOnetimeRequest, user: dict = Depends(require_super_admin)):
+    """手动销毁指定的一次性素材：同步物理删除软链接与原始物理文件"""
+    symlink_path = os.path.join(ONETIME_BASE, req.group, req.filename)
+    if not os.path.exists(symlink_path):
+        raise HTTPException(status_code=404, detail="索引文件不存在，可能已被销毁")
+    
+    try:
+        # 1. 如果是软链接，先找到原件
+        if os.path.islink(symlink_path):
+            real_path = os.path.realpath(symlink_path)
+            if os.path.exists(real_path):
+                os.remove(real_path) # 销毁原件
+        
+        # 2. 销毁索引
+        os.remove(symlink_path)
+        return {"ok": True, "msg": f"已成功从物理磁盘抹除：{req.filename}"}
+    except Exception as e:
+        logging.error(f"Manual delete failed: {e}")
+        raise HTTPException(status_code=500, detail=f"销毁失败: {str(e)}")
+    
+@app.post("/api/files/scan")
+async def scan_local_files_to_shared(req: ScanRequest, user: dict = Depends(require_super_admin)):
+    """原地索引：建立指向原始文件的软链接，并保持完整的子目录结构"""
+    target_dir = req.path.strip()
+    if target_dir.endswith('/') or target_dir.endswith('\\'):
+        target_dir = target_dir[:-1]
+        
+    if not os.path.isdir(target_dir):
+        raise HTTPException(status_code=400, detail="提供的路径不存在或不是有效目录")
+        
+    # 获取扫描目标的基准文件夹名作为根组名
+    base_group_name = os.path.basename(target_dir) or "scanned"
+    
+    count = 0
+    # 递归遍历目标目录
+    for root, dirs, files in os.walk(target_dir):
+        # 统计本级目录下合法的原始媒体文件
+        valid_media_files = []
+        for file in files:
+             _, ext = os.path.splitext(file)
+             if ext.lower() in ['.mp4', '.mov', '.avi', '.jpg', '.png', '.jpeg']:
+                 valid_media_files.append(file)
+        
+        if not valid_media_files and not dirs:
+            continue
+
+        # 计算在 ONETIME_BASE 构建对应的镜像目录路径
+        rel_sub_path = os.path.relpath(root, target_dir)
+        if rel_sub_path == ".":
+            dest_group_dir = os.path.join(ONETIME_BASE, base_group_name)
+        else:
+            dest_group_dir = os.path.join(ONETIME_BASE, base_group_name, rel_sub_path)
+        
+        os.makedirs(dest_group_dir, exist_ok=True)
+
+        # 1. 建立或恢复索引
+        for file in valid_media_files:
+             abs_path = os.path.join(root, file)
+             dest_link_path = os.path.join(dest_group_dir, file)
+             
+             if not os.path.exists(dest_link_path):
+                 try:
+                     os.symlink(abs_path, dest_link_path)
+                     count += 1
+                 except Exception as e:
+                     logging.error(f"建立索引受阻 {abs_path}: {e}")
+        
+        # 2. 清理冗余：删除索引目录下不在原始名单中的多余文件（解决带随机后缀的老旧索引问题）
+        try:
+            for item in os.listdir(dest_group_dir):
+                # 排除正在分发中的锁文件
+                if item.endswith(".serving"):
+                    continue
+                # 如果这个索引文件不在本次扫描的原始名单中，说明是过时的或者是多余的，直接干掉
+                if item not in valid_media_files:
+                    path_to_del = os.path.join(dest_group_dir, item)
+                    if os.path.isfile(path_to_del) or os.path.islink(path_to_del):
+                        os.remove(path_to_del)
+                        logging.info(f"清理冗余索引: {path_to_del}")
+        except Exception as e:
+            logging.error(f"同步清理目录失败 {dest_group_dir}: {e}")
+                     
+    return {"ok": True, "count": count, "msg": f"全同步完成！已对齐原目录结构，并清理了所有冗余索引。"}
+
+# ================= 动态资产：标签与简介 Web 管理接口 =================
+
+class BatchUploadReq(BaseModel):
+    country: str
+    group_name: str = ""
+    text: str
+
+@app.get("/api/assets/tags")
+async def api_get_tags(country: str, user: dict = Depends(get_current_user)):
+    return {"tags": database.get_tags_by_country(country)}
+
+@app.post("/api/assets/tags/batch")
+async def api_add_tags_batch(req: BatchUploadReq, user: dict = Depends(require_super_admin)):
+    lines = [L for L in req.text.split('\n') if L.strip()]
+    count = database.add_tag_batch(req.country, lines, req.group_name)
+    return {"ok": True, "count": count, "msg": f"成功录入 {count} 条标签！"}
+
+@app.delete("/api/assets/tags/{tag_id}")
+async def api_delete_tag(tag_id: int, user: dict = Depends(require_super_admin)):
+    database.delete_tag(tag_id)
+    return {"ok": True}
+
+@app.get("/api/assets/bios")
+async def api_get_bios(country: str, user: dict = Depends(get_current_user)):
+    return {"bios": database.get_bios_by_country(country)}
+
+@app.post("/api/assets/bios/batch")
+async def api_add_bios_batch(req: BatchUploadReq, user: dict = Depends(require_super_admin)):
+    lines = [L for L in req.text.split('\n') if L.strip()]
+    count = database.add_bio_batch(req.country, lines, req.group_name)
+    return {"ok": True, "count": count, "msg": f"成功录入 {count} 条简介！"}
+
+@app.delete("/api/assets/bios/{bio_id}")
+async def api_delete_bio(bio_id: int, user: dict = Depends(require_super_admin)):
+    database.delete_bio(bio_id)
+    return {"ok": True}
+
+# ================= 动态资产：开放随机提取接口 (供脚本使用) =================
+
+@app.get("/api/assets/tags/random")
+async def api_get_random_tag(country: str, group_name: str = ""):
+    """供 iOS 脚本随机获取一条指定国家的标签，用作盲抽"""
+    val = database.get_random_tag(country, group_name)
+    return {"ok": True, "value": val}
+
+@app.get("/api/assets/bios/random")
+async def api_get_random_bio(country: str, group_name: str = ""):
+    """供 iOS 脚本随机获取一条指定国家的简介，用作盲抽"""
+    val = database.get_random_bio(country, group_name)
+    return {"ok": True, "value": val}
 if __name__ == "__main__":
     # [v1930 P0] 关闭 reload 模式，消除文件监控开销，提升约 15-20% 吞吐
     # 注意：不能加 workers>1，因为 ACTIVE_TUNNELS / STREAM_QUEUES 是进程内存态，

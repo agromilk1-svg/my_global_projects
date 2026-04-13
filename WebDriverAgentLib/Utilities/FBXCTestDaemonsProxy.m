@@ -115,10 +115,14 @@ static BOOL _proxyNeedsRefresh = YES;
   return ((XCTRunnerDaemonSession *)[XCTRunnerDaemonSession sharedSession]).daemonProxy;
 }
 
+// [v1762] IPC 超时保护：防止 synthesizeEvent 卡死时永久阻塞主线程
+// 超时后返回错误，ECScriptParser 的 performWDAAction 会自动重试
+static const NSTimeInterval SYNTHESIZE_EVENT_TIMEOUT = 15.0;
+
 + (BOOL)synthesizeEventWithRecord:(XCSynthesizedEventRecord *)record error:(NSError *__autoreleasing*)error
 {
   __block NSError *innerError = nil;
-  [FBRunLoopSpinner spinUntilCompletion:^(void(^completion)(void)){
+  BOOL completed = [FBRunLoopSpinner spinUntilCompletion:^(void(^completion)(void)){
     void (^errorHandler)(NSError *) = ^(NSError *invokeError) {
       if (nil != invokeError) {
         innerError = invokeError;
@@ -132,7 +136,19 @@ static BOOL _proxyNeedsRefresh = YES;
     [[XCUIDevice.sharedDevice eventSynthesizer] synthesizeEvent:record completion:(id)^(BOOL result, NSError *invokeError) {
       handlerBlock(record, invokeError);
     }];
-  }];
+  } timeout:SYNTHESIZE_EVENT_TIMEOUT];
+
+  // [v1762] IPC 超时：释放主线程，让 HTTP 服务恢复响应能力
+  if (!completed) {
+    [FBLogger logFmt:@"[v1762] ⚠️ synthesizeEvent IPC 超时 (%.0fs)，释放主线程", SYNTHESIZE_EVENT_TIMEOUT];
+    if (error) {
+      *error = [[FBErrorBuilder.builder
+          withDescriptionFormat:@"XCTest IPC timeout after %.0fs for event synthesis", SYNTHESIZE_EVENT_TIMEOUT]
+          build];
+    }
+    return NO;
+  }
+
   if (nil != innerError) {
     if (error) {
       *error = innerError;

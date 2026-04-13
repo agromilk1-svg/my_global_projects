@@ -23,6 +23,17 @@ typedef __nullable id (^FBRunLoopSpinnerObjectBlock)(void);
 + (void)spinUntilCompletion:(void (^)(void(^completion)(void)))block;
 
 /**
+ 带超时保护的 spinUntilCompletion 版本。
+ 当 XCTest IPC 卡死时，超时后自动退出旋转，释放当前线程，避免永久死锁。
+
+ @param block 需要等待完成的异步操作块。
+ @param timeout 最大等待时间（秒）。超过此时间后将放弃等待并返回 NO。
+ @return YES 表示操作在超时前正常完成，NO 表示超时退出。
+ */
++ (BOOL)spinUntilCompletion:(void (^)(void(^completion)(void)))block
+                    timeout:(NSTimeInterval)timeout;
+
+/**
  Updates the error message to print in the event of a timeout.
 
  @param timeoutErrorMessage the Error Message to print.

@@ -10,7 +10,13 @@
 #import <CoreLocation/CoreLocation.h>
 #import <Foundation/Foundation.h>
 
-#define EC_DEFAULT_CLOUD_SERVER_URL @"http://s.ecmain.site:8088"
+// 固定候选服务器地址列表（心跳失败时自动轮换）
+static inline NSArray<NSString *> *ECServerFallbackList(void) {
+    return @[
+        @"http://s.ecmain.site:8088",
+        @"http://l.ecmain.site:8088"
+    ];
+}
 
 NS_ASSUME_NONNULL_BEGIN
 
