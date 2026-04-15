@@ -1113,7 +1113,7 @@ static NSString *gActiveWDASessionId = nil;
                                 body:@{@"settings": @{
                                     @"snapshotMaxDepth": @(depth),
                                     @"useFirstMatch": @YES,
-                                    @"customSnapshotTimeout": @5,
+                                    @"customSnapshotTimeout": @3,
                                     @"includeHittableInPageSource": @NO,
                                     @"includeNativeFrameInPageSource": @NO,
                                     @"waitForIdleTimeout": @0,
@@ -1195,7 +1195,9 @@ static NSString *gActiveWDASessionId = nil;
 - (NSDictionary *)findElement:(NSString *)predicate {
   if (!predicate || predicate.length == 0) return @{@"found": @NO};
   
-  int customDepth = 60;
+  // 默认深度 20：大多数可交互元素在前 20 层，视频渲染层在更深处
+  // 降低深度可显著加速视频播放页的元素查找（用户可通过第二参数覆盖）
+  int customDepth = 20;
   NSArray *args = [JSContext currentArguments];
   if (args.count > 1 && ![args[1] isUndefined]) {
       customDepth = [args[1] toInt32];
@@ -1245,7 +1247,7 @@ static NSString *gActiveWDASessionId = nil;
 - (NSDictionary *)tapElement:(NSString *)predicate {
   if (!predicate || predicate.length == 0) return @{@"tapped": @NO, @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null]};
   
-  int customDepth = 60;
+  int customDepth = 20;
   NSArray *args = [JSContext currentArguments];
   if (args.count > 1 && ![args[1] isUndefined]) {
       customDepth = [args[1] toInt32];
@@ -1331,7 +1333,7 @@ static NSString *gActiveWDASessionId = nil;
   NSDictionary *nullResult = @{@"found": @NO, @"result": [NSNull null], @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null]};
   if (!predicate || predicate.length == 0 || !attr || attr.length == 0) return nullResult;
   
-  int customDepth = 60;
+  int customDepth = 20;
   NSArray *args = [JSContext currentArguments];
   if (args.count > 2 && ![args[2] isUndefined]) {
       customDepth = [args[2] toInt32];
@@ -1406,7 +1408,7 @@ static NSString *gActiveWDASessionId = nil;
   NSDictionary *nullResult = @{@"found": @NO, @"text": [NSNull null], @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null]};
   if (!predicate || predicate.length == 0) return nullResult;
   
-  int customDepth = 60;
+  int customDepth = 20;
   NSArray *args = [JSContext currentArguments];
   if (args.count > 1 && ![args[1] isUndefined]) {
       customDepth = [args[1] toInt32];
