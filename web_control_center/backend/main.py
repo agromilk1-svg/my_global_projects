@@ -1029,46 +1029,75 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                     return {"status": "ok", "screenshot_b64": b64_val}
             return {"status": "error", "msg": f"WDA screenshot failed ({status})"}
 
-        # [v2103] 获取真实的 UI 树 (极速原生提取方案)
+        # [v2104] 获取真实 UI 树 —— 完全对齐 Appium XCUITest Driver 的调用链
+        # 参考: https://github.com/appium/appium-xcuitest-driver/blob/master/lib/commands/source.ts
+        # 核心差异点:
+        #   1. Session 创建时 capabilities 必须带 shouldWaitForQuiescence: false
+        #   2. Settings 必须在 source 调用前推送完毕
+        #   3. /source 必须带 scope=AppiumAUT（限定只扫描当前活跃 App，不扫全局系统）
         if req.action_type == "WDA_SOURCE":
-            # TikTok 的视图极其复杂，原生的 /source 会触发无限制 XCTest 快照。
-            # 最佳原生解法：直接向 Accessibility 层发出 /wda/accessibleSource 请求 (响应极快 < 1s)
             
-            # 1. 优先采用 /wda/accessibleSource (绝大多数不崩的首选)
-            status, sc_resp = await _async_wda_request("GET", f"{wda_url}/wda/accessibleSource", timeout=8.0, force_http=force_http)
+            # ── Step 1: 获取或创建一个带有防护设定的 Session ──
+            sid = SESSION_CACHE.get(cache_key)
+            if sid:
+                v_status, _ = await _async_wda_request("GET", f"{wda_url}/session/{sid}", timeout=2.0, force_http=force_http)
+                if v_status != 200:
+                    sid = None
             
-            # 2. 如果设备较老没有这个 endpoint 或失败，则降级走 Session-scoped 限制深度的 /source
-            if status != 200:
-                sid = SESSION_CACHE.get(cache_key)
-                if sid:
-                    v_status, _ = await _async_wda_request("GET", f"{wda_url}/session/{sid}", timeout=2.0, force_http=force_http)
-                    if v_status != 200: sid = None
-                    
-                if not sid:
-                    create_st, data = await _async_wda_request("POST", f"{wda_url}/session", json_body={"capabilities": {}}, timeout=5.0, force_http=force_http)
-                    if create_st == 200 and isinstance(data, dict):
-                        sid = data.get("sessionId") or data.get("value", {}).get("sessionId")
-                        SESSION_CACHE[cache_key] = sid
-                        if sid:
-                            await _async_wda_request(
-                                "POST", f"{wda_url}/session/{sid}/appium/settings",
-                                json_body={"settings": {"waitForQuiescence": False, "snapshotMaxDepth": 10, "includeAttributes": "name,rect"}}, 
-                                timeout=2.0, force_http=force_http
-                            )
-                
-                if sid:
-                    status, sc_resp = await _async_wda_request("GET", f"{wda_url}/session/{sid}/source?format=json", timeout=12.0, force_http=force_http)
-                else:
-                    status, sc_resp = await _async_wda_request("GET", f"{wda_url}/source?format=json", timeout=12.0, force_http=force_http)
-
+            if not sid:
+                # ★ 关键差异：Appium 在 capabilities 里就传入了 shouldWaitForQuiescence=false
+                # 这会在 WDA Session 初始化时直接设置 app.fb_shouldWaitForQuiescence = NO
+                # 比事后通过 /appium/settings 更早生效，避免 Session 创建本身就卡住
+                create_caps = {
+                    "capabilities": {
+                        "alwaysMatch": {
+                            "shouldWaitForQuiescence": False
+                        }
+                    }
+                }
+                create_st, data = await _async_wda_request(
+                    "POST", f"{wda_url}/session", json_body=create_caps, timeout=15.0, force_http=force_http
+                )
+                if create_st == 200 and isinstance(data, dict):
+                    sid = data.get("sessionId") or data.get("value", {}).get("sessionId")
+                    SESSION_CACHE[cache_key] = sid
+            
+            if not sid:
+                return {"status": "error", "msg": "无法建立 WDA Session，请检查 WDA 是否存活（可能已被之前的操作卡死，需重启）"}
+            
+            # ── Step 2: 推送 Appium Settings（限制快照深度、关闭动画等待）──
+            await _async_wda_request(
+                "POST", f"{wda_url}/session/{sid}/appium/settings",
+                json_body={
+                    "settings": {
+                        "snapshotMaxDepth": 10,
+                        "waitForQuiescence": False,
+                        "animationCoolOffTimeout": 0,
+                        "waitForIdleTimeout": 0
+                    }
+                },
+                timeout=3.0, force_http=force_http
+            )
+            
+            # ── Step 3: 获取 UI 树 (关键参数: scope=AppiumAUT) ──
+            # Appium 源码中始终传递 scope=AppiumAUT，告诉 WDA 只扫描当前前台 App
+            # 如果不传 scope，WDA 会尝试遍历整个系统视图（包括 SpringBoard + 通知中心 + 全部后台进程）
+            # 这就是之前一直超时的根本原因！
+            status, sc_resp = await _async_wda_request(
+                "GET",
+                f"{wda_url}/session/{sid}/source?format=json&scope=AppiumAUT",
+                timeout=20.0,
+                force_http=force_http
+            )
+            
             if status == 200:
                 if isinstance(sc_resp, dict):
                     val = sc_resp.get("value", sc_resp)
                     return {"status": "ok", "source": val}
                 elif isinstance(sc_resp, str):
                     return {"status": "ok", "source": sc_resp}
-                    
-            return {"status": "error", "msg": f"WDA source failed ({status})", "raw": sc_resp}
+            
+            return {"status": "error", "msg": f"WDA source failed ({status})，如持续失败请重启 WDA", "raw": sc_resp}
 
 
         # [v1682.13] 指令分支：Ping
@@ -1168,7 +1197,14 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
             _session_attempts = 0
             while _session_attempts < 3 and not sid:
                 _session_attempts += 1
-                status, data = await _async_wda_request("POST", f"{wda_url}/session", json_body={"capabilities": {}}, timeout=10.0, force_http=force_http)
+                # [v2104] 对齐 Appium：Session 创建时 capabilities 直接传入 shouldWaitForQuiescence=false
+                status, data = await _async_wda_request("POST", f"{wda_url}/session", json_body={
+                    "capabilities": {
+                        "alwaysMatch": {
+                            "shouldWaitForQuiescence": False
+                        }
+                    }
+                }, timeout=10.0, force_http=force_http)
                 if status == 200 and isinstance(data, dict):
                     sid = data.get("sessionId") or data.get("value", {}).get("sessionId")
                     SESSION_CACHE[cache_key] = sid
