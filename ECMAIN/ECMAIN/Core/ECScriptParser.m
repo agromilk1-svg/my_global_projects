@@ -1140,6 +1140,58 @@ static NSString *gActiveWDASessionId = nil;
                               method:@"POST"];
 }
 
+// ══════════════════════════════════════════════════════
+// 通用辅助：获取元素的 name/label/value/rect 全量属性
+// 返回格式: { name, label, value, x, y, width, height }
+// 缺失的属性会填 NSNull
+// ══════════════════════════════════════════════════════
+- (NSDictionary *)_fetchElementAttrs:(NSString *)elementId {
+    NSMutableDictionary *attrs = [NSMutableDictionary dictionary];
+    attrs[@"element_id"] = elementId ?: [NSNull null];
+    
+    // 获取 name
+    NSString *nameEp = [NSString stringWithFormat:@"/element/%@/attribute/name", elementId];
+    NSDictionary *nameRes = [self performWDAActionWithResult:@"getAttr_name" endpoint:nameEp body:nil method:@"GET"];
+    id nameVal = nameRes[@"value"];
+    if (!nameVal || [nameVal isKindOfClass:[NSNull class]]) nameVal = nameRes[@"value"] ?: [NSNull null];
+    attrs[@"name"] = (nameVal && ![nameVal isKindOfClass:[NSNull class]]) ? [NSString stringWithFormat:@"%@", nameVal] : [NSNull null];
+    
+    // 获取 label
+    NSString *labelEp = [NSString stringWithFormat:@"/element/%@/attribute/label", elementId];
+    NSDictionary *labelRes = [self performWDAActionWithResult:@"getAttr_label" endpoint:labelEp body:nil method:@"GET"];
+    id labelVal = labelRes[@"value"];
+    attrs[@"label"] = (labelVal && ![labelVal isKindOfClass:[NSNull class]]) ? [NSString stringWithFormat:@"%@", labelVal] : [NSNull null];
+    
+    // 获取 value
+    NSString *valEp = [NSString stringWithFormat:@"/element/%@/attribute/value", elementId];
+    NSDictionary *valRes = [self performWDAActionWithResult:@"getAttr_value" endpoint:valEp body:nil method:@"GET"];
+    id valVal = valRes[@"value"];
+    attrs[@"value"] = (valVal && ![valVal isKindOfClass:[NSNull class]]) ? [NSString stringWithFormat:@"%@", valVal] : [NSNull null];
+    
+    // 获取 rect
+    NSString *rectEp = [NSString stringWithFormat:@"/element/%@/rect", elementId];
+    NSDictionary *rectRes = [self performWDAActionWithResult:@"getAttr_rect" endpoint:rectEp body:nil method:@"GET"];
+    NSDictionary *rv = nil;
+    if (rectRes[@"value"] && [rectRes[@"value"] isKindOfClass:[NSDictionary class]]) {
+        rv = rectRes[@"value"];
+    } else if (rectRes[@"x"] != nil && rectRes[@"width"] != nil) {
+        rv = rectRes;
+    }
+    if (rv) {
+        attrs[@"x"] = rv[@"x"] ?: @0;
+        attrs[@"y"] = rv[@"y"] ?: @0;
+        attrs[@"width"] = rv[@"width"] ?: @0;
+        attrs[@"height"] = rv[@"height"] ?: @0;
+    } else {
+        attrs[@"x"] = [NSNull null];
+        attrs[@"y"] = [NSNull null];
+        attrs[@"width"] = [NSNull null];
+        attrs[@"height"] = [NSNull null];
+    }
+    
+    return [attrs copy];
+}
+
 - (NSDictionary *)findElement:(NSString *)predicate {
   if (!predicate || predicate.length == 0) return @{@"found": @NO};
   
@@ -1163,43 +1215,35 @@ static NSString *gActiveWDASessionId = nil;
       if ([elements isKindOfClass:[NSArray class]] && elements.count > 0) {
           NSString *elementId = elements[0][@"ELEMENT"];
           if (elementId && [elementId isKindOfClass:[NSString class]]) {
-              NSString *rectEndpoint = [NSString stringWithFormat:@"/element/%@/rect", elementId];
-              NSDictionary *rectRes = [self performWDAActionWithResult:@"getElementRect"
-                                                              endpoint:rectEndpoint
-                                                                  body:nil
-                                                                method:@"GET"];
-              if (rectRes) {
-                  NSDictionary *rv = nil;
-                  if (rectRes[@"value"] && [rectRes[@"value"] isKindOfClass:[NSDictionary class]]) {
-                      rv = rectRes[@"value"];
-                  } else if (rectRes[@"x"] != nil && rectRes[@"width"] != nil) {
-                      rv = rectRes;
-                  }
-                  if (rv) {
-                      double w = [rv[@"width"] doubleValue];
-                      double h = [rv[@"height"] doubleValue];
-                      double x = [rv[@"x"] doubleValue] + w / 2.0;
-                      double y = [rv[@"y"] doubleValue] + h / 2.0;
-                      [self restoreWDADepth:customDepth];
-                      return @{
-                          @"found": @YES,
-                          @"x": @(x),
-                          @"y": @(y),
-                          @"width": @(w),
-                          @"height": @(h),
-                          @"element_id": elementId
-                      };
-                  }
+              // 使用通用辅助方法获取全量属性
+              NSDictionary *allAttrs = [self _fetchElementAttrs:elementId];
+              if (allAttrs[@"x"] && ![allAttrs[@"x"] isKindOfClass:[NSNull class]]) {
+                  double w = [allAttrs[@"width"] doubleValue];
+                  double h = [allAttrs[@"height"] doubleValue];
+                  double cx = [allAttrs[@"x"] doubleValue] + w / 2.0;
+                  double cy = [allAttrs[@"y"] doubleValue] + h / 2.0;
+                  [self restoreWDADepth:customDepth];
+                  return @{
+                      @"found": @YES,
+                      @"x": @(cx),
+                      @"y": @(cy),
+                      @"width": @(w),
+                      @"height": @(h),
+                      @"element_id": elementId,
+                      @"name": allAttrs[@"name"] ?: [NSNull null],
+                      @"label": allAttrs[@"label"] ?: [NSNull null],
+                      @"value": allAttrs[@"value"] ?: [NSNull null]
+                  };
               }
           }
       }
   }
   [self restoreWDADepth:customDepth];
-  return @{@"found": @NO};
+  return @{@"found": @NO, @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null]};
 }
 
-- (BOOL)tapElement:(NSString *)predicate {
-  if (!predicate || predicate.length == 0) return NO;
+- (NSDictionary *)tapElement:(NSString *)predicate {
+  if (!predicate || predicate.length == 0) return @{@"tapped": @NO, @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null]};
   
   int customDepth = 60;
   NSArray *args = [JSContext currentArguments];
@@ -1220,44 +1264,41 @@ static NSString *gActiveWDASessionId = nil;
       if ([elements isKindOfClass:[NSArray class]] && elements.count > 0) {
           NSString *elementId = elements[0][@"ELEMENT"];
           if (elementId && [elementId isKindOfClass:[NSString class]]) {
-              // 获取元素的 rect，用于随机坐标点击（模拟真人，规避风控）
-              NSString *rectEndpoint = [NSString stringWithFormat:@"/element/%@/rect", elementId];
-              NSDictionary *rectRes = [self performWDAActionWithResult:@"getElementRect"
-                                                              endpoint:rectEndpoint
-                                                                  body:nil
-                                                                method:@"GET"];
-              if (rectRes) {
-                  // 兼容两种 WDA 响应格式：
-                  // 旧版: { status: 0, value: { x, y, width, height } }
-                  // 新版: 直接 { x, y, width, height } （rect 数据在顶层）
-                  NSDictionary *rv = nil;
-                  if (rectRes[@"value"] && [rectRes[@"value"] isKindOfClass:[NSDictionary class]]) {
-                      rv = rectRes[@"value"];
-                  } else if (rectRes[@"x"] != nil && rectRes[@"width"] != nil) {
-                      rv = rectRes; // rect 数据直接在顶层
-                  }
-                  if (rv) {
-                      double ex = [rv[@"x"] doubleValue];
-                      double ey = [rv[@"y"] doubleValue];
-                      double ew = [rv[@"width"] doubleValue];
-                      double eh = [rv[@"height"] doubleValue];
-                      
-                      // 内缩 20% 安全边距，防止点到边缘外
-                      double padX = MAX(1.0, ew * 0.2);
-                      double padY = MAX(1.0, eh * 0.2);
-                      double minX = ex + padX;
-                      double maxX = ex + ew - padX;
-                      double minY = ey + padY;
-                      double maxY = ey + eh - padY;
-                      
-                      // 在安全区域内随机取点
-                      double tapX = minX + (arc4random_uniform((uint32_t)MAX(1, (maxX - minX) * 10))) / 10.0;
-                      double tapY = minY + (arc4random_uniform((uint32_t)MAX(1, (maxY - minY) * 10))) / 10.0;
-                      
-                      [self log:[NSString stringWithFormat:@"✅ tapElement 随机点击: (%.1f, %.1f) 元素区域: (%.0f,%.0f,%.0f×%.0f) 匹配: %@", tapX, tapY, ex, ey, ew, eh, predicate]];
-                      [self restoreWDADepth:customDepth];
-                      return [self tap:@(tapX) y:@(tapY)];
-                  }
+              // 使用通用辅助方法获取全量属性
+              NSDictionary *allAttrs = [self _fetchElementAttrs:elementId];
+              
+              if (allAttrs[@"x"] && ![allAttrs[@"x"] isKindOfClass:[NSNull class]]) {
+                  double ex = [allAttrs[@"x"] doubleValue];
+                  double ey = [allAttrs[@"y"] doubleValue];
+                  double ew = [allAttrs[@"width"] doubleValue];
+                  double eh = [allAttrs[@"height"] doubleValue];
+                  
+                  // 内缩 20% 安全边距，防止点到边缘外
+                  double padX = MAX(1.0, ew * 0.2);
+                  double padY = MAX(1.0, eh * 0.2);
+                  double minX = ex + padX;
+                  double maxX = ex + ew - padX;
+                  double minY = ey + padY;
+                  double maxY = ey + eh - padY;
+                  
+                  // 在安全区域内随机取点
+                  double tapX = minX + (arc4random_uniform((uint32_t)MAX(1, (maxX - minX) * 10))) / 10.0;
+                  double tapY = minY + (arc4random_uniform((uint32_t)MAX(1, (maxY - minY) * 10))) / 10.0;
+                  
+                  [self log:[NSString stringWithFormat:@"✅ tapElement 随机点击: (%.1f, %.1f) 元素区域: (%.0f,%.0f,%.0f×%.0f) 匹配: %@", tapX, tapY, ex, ey, ew, eh, predicate]];
+                  BOOL tapOK = [self tap:@(tapX) y:@(tapY)];
+                  [self restoreWDADepth:customDepth];
+                  return @{
+                      @"tapped": @(tapOK),
+                      @"x": @(tapX),
+                      @"y": @(tapY),
+                      @"width": @(ew),
+                      @"height": @(eh),
+                      @"element_id": elementId,
+                      @"name": allAttrs[@"name"] ?: [NSNull null],
+                      @"label": allAttrs[@"label"] ?: [NSNull null],
+                      @"value": allAttrs[@"value"] ?: [NSNull null]
+                  };
               }
               
               // 回退：如果获取 rect 失败，降级使用原生 click（点中心）
@@ -1269,18 +1310,26 @@ static NSString *gActiveWDASessionId = nil;
                                                                 method:@"POST"];
               if ([clickRes[@"status"] integerValue] == 0) {
                   [self restoreWDADepth:customDepth];
-                  return YES;
+                  return @{
+                      @"tapped": @YES,
+                      @"element_id": elementId,
+                      @"name": allAttrs[@"name"] ?: [NSNull null],
+                      @"label": allAttrs[@"label"] ?: [NSNull null],
+                      @"value": allAttrs[@"value"] ?: [NSNull null],
+                      @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null]
+                  };
               }
           }
       }
   }
   [self log:[NSString stringWithFormat:@"❌ tapElement 未找到目标元素: %@", predicate]];
   [self restoreWDADepth:customDepth];
-  return NO;
+  return @{@"tapped": @NO, @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null]};
 }
 
-- (NSString *)getElementAttribute:(NSString *)predicate attribute:(NSString *)attr {
-  if (!predicate || predicate.length == 0 || !attr || attr.length == 0) return @"";
+- (NSDictionary *)getElementAttribute:(NSString *)predicate attribute:(NSString *)attr {
+  NSDictionary *nullResult = @{@"found": @NO, @"result": [NSNull null], @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null]};
+  if (!predicate || predicate.length == 0 || !attr || attr.length == 0) return nullResult;
   
   int customDepth = 60;
   NSArray *args = [JSContext currentArguments];
@@ -1304,22 +1353,44 @@ static NSString *gActiveWDASessionId = nil;
           NSString *elementId = elements[0][@"ELEMENT"];
           [self log:[NSString stringWithFormat:@"✅ [getElementAttribute] 元素已找到 (共%lu个匹配), ID=%@", (unsigned long)elements.count, elementId]];
           if (elementId && [elementId isKindOfClass:[NSString class]]) {
+              // 获取全量属性
+              NSDictionary *allAttrs = [self _fetchElementAttrs:elementId];
+              
+              // 获取用户请求的特定属性
               NSString *attrEndpoint = [NSString stringWithFormat:@"/element/%@/attribute/%@", elementId, attr];
               NSDictionary *attrRes = [self performWDAActionWithResult:@"getElementAttribute"
                                                               endpoint:attrEndpoint
                                                                   body:nil
                                                                 method:@"GET"];
-              if ([attrRes[@"status"] integerValue] == 0) {
-                  id val = attrRes[@"value"];
-                  if (val && ![val isKindOfClass:[NSNull class]]) {
-                      [self log:[NSString stringWithFormat:@"✅ [getElementAttribute] 属性 '%@' = %@", attr, val]];
-                      [self restoreWDADepth:customDepth];
-                      return [NSString stringWithFormat:@"%@", val];
-                  }
-                  [self log:[NSString stringWithFormat:@"⚠️ [getElementAttribute] 元素已找到但属性 '%@' 为空(null)！该元素可能是容器，实际文字在子元素中。建议改用 getElementText 或更精确的子元素谓词。", attr]];
+              id specificVal = [NSNull null];
+              if ([attrRes[@"status"] integerValue] == 0 && attrRes[@"value"] && ![attrRes[@"value"] isKindOfClass:[NSNull class]]) {
+                  specificVal = [NSString stringWithFormat:@"%@", attrRes[@"value"]];
+                  [self log:[NSString stringWithFormat:@"✅ [getElementAttribute] 属性 '%@' = %@", attr, specificVal]];
               } else {
-                  [self log:[NSString stringWithFormat:@"⚠️ [getElementAttribute] 读取属性 '%@' 失败 (status=%@)", attr, attrRes[@"status"]]];
+                  [self log:[NSString stringWithFormat:@"⚠️ [getElementAttribute] 属性 '%@' 为空或读取失败", attr]];
               }
+              
+              double cx = 0, cy = 0, w = 0, h = 0;
+              if (allAttrs[@"x"] && ![allAttrs[@"x"] isKindOfClass:[NSNull class]]) {
+                  w = [allAttrs[@"width"] doubleValue];
+                  h = [allAttrs[@"height"] doubleValue];
+                  cx = [allAttrs[@"x"] doubleValue] + w / 2.0;
+                  cy = [allAttrs[@"y"] doubleValue] + h / 2.0;
+              }
+              
+              [self restoreWDADepth:customDepth];
+              return @{
+                  @"found": @YES,
+                  @"result": specificVal,
+                  @"element_id": elementId,
+                  @"name": allAttrs[@"name"] ?: [NSNull null],
+                  @"label": allAttrs[@"label"] ?: [NSNull null],
+                  @"value": allAttrs[@"value"] ?: [NSNull null],
+                  @"x": (allAttrs[@"x"] && ![allAttrs[@"x"] isKindOfClass:[NSNull class]]) ? @(cx) : [NSNull null],
+                  @"y": (allAttrs[@"y"] && ![allAttrs[@"y"] isKindOfClass:[NSNull class]]) ? @(cy) : [NSNull null],
+                  @"width": allAttrs[@"width"] ?: [NSNull null],
+                  @"height": allAttrs[@"height"] ?: [NSNull null]
+              };
           }
       } else {
           [self log:[NSString stringWithFormat:@"❌ [getElementAttribute] 未找到匹配元素: %@", predicate]];
@@ -1328,11 +1399,12 @@ static NSString *gActiveWDASessionId = nil;
       [self log:[NSString stringWithFormat:@"❌ [getElementAttribute] 搜索请求失败或返回为空: %@", predicate]];
   }
   [self restoreWDADepth:customDepth];
-  return @"";
+  return nullResult;
 }
 
-- (NSString *)getElementText:(NSString *)predicate {
-  if (!predicate || predicate.length == 0) return @"";
+- (NSDictionary *)getElementText:(NSString *)predicate {
+  NSDictionary *nullResult = @{@"found": @NO, @"text": [NSNull null], @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null]};
+  if (!predicate || predicate.length == 0) return nullResult;
   
   int customDepth = 60;
   NSArray *args = [JSContext currentArguments];
@@ -1353,52 +1425,45 @@ static NSString *gActiveWDASessionId = nil;
       if ([elements isKindOfClass:[NSArray class]] && elements.count > 0) {
           NSString *elementId = elements[0][@"ELEMENT"];
           if (elementId && [elementId isKindOfClass:[NSString class]]) {
-              // 优先取 label (很多控件在 iOS 里的文本是存在 label 里的)
-              NSString *lblEndpoint = [NSString stringWithFormat:@"/element/%@/attribute/label", elementId];
-              NSDictionary *lblRes = [self performWDAActionWithResult:@"getElementLabel"
-                                                             endpoint:lblEndpoint
-                                                                 body:nil
-                                                               method:@"GET"];
-              if ([lblRes[@"status"] integerValue] == 0 && lblRes[@"value"] && ![lblRes[@"value"] isKindOfClass:[NSNull class]]) {
-                  NSString *lblStr = [NSString stringWithFormat:@"%@", lblRes[@"value"]];
-                  if (lblStr.length > 0) {
-                      [self restoreWDADepth:customDepth];
-                      return lblStr;
-                  }
+              // 使用通用辅助方法一次性获取全量属性（name/label/value/rect）
+              NSDictionary *allAttrs = [self _fetchElementAttrs:elementId];
+              
+              // 确定文本：优先 label → value → name
+              NSString *text = @"";
+              if (allAttrs[@"label"] && ![allAttrs[@"label"] isKindOfClass:[NSNull class]] && [allAttrs[@"label"] length] > 0) {
+                  text = allAttrs[@"label"];
+              } else if (allAttrs[@"value"] && ![allAttrs[@"value"] isKindOfClass:[NSNull class]] && [allAttrs[@"value"] length] > 0) {
+                  text = allAttrs[@"value"];
+              } else if (allAttrs[@"name"] && ![allAttrs[@"name"] isKindOfClass:[NSNull class]] && [allAttrs[@"name"] length] > 0) {
+                  text = allAttrs[@"name"];
               }
               
-              // 如果 label 没有，取 value
-              NSString *valEndpoint = [NSString stringWithFormat:@"/element/%@/attribute/value", elementId];
-              NSDictionary *valRes = [self performWDAActionWithResult:@"getElementValue"
-                                                             endpoint:valEndpoint
-                                                                 body:nil
-                                                               method:@"GET"];
-              if ([valRes[@"status"] integerValue] == 0 && valRes[@"value"] && ![valRes[@"value"] isKindOfClass:[NSNull class]]) {
-                  NSString *valStr = [NSString stringWithFormat:@"%@", valRes[@"value"]];
-                  if (valStr.length > 0) {
-                      [self restoreWDADepth:customDepth];
-                      return valStr;
-                  }
+              double cx = 0, cy = 0, w = 0, h = 0;
+              if (allAttrs[@"x"] && ![allAttrs[@"x"] isKindOfClass:[NSNull class]]) {
+                  w = [allAttrs[@"width"] doubleValue];
+                  h = [allAttrs[@"height"] doubleValue];
+                  cx = [allAttrs[@"x"] doubleValue] + w / 2.0;
+                  cy = [allAttrs[@"y"] doubleValue] + h / 2.0;
               }
-
-              // 最后退化取 name
-              NSString *nmEndpoint = [NSString stringWithFormat:@"/element/%@/attribute/name", elementId];
-              NSDictionary *nmRes = [self performWDAActionWithResult:@"getElementName"
-                                                            endpoint:nmEndpoint
-                                                                body:nil
-                                                              method:@"GET"];
-              if ([nmRes[@"status"] integerValue] == 0 && nmRes[@"value"] && ![nmRes[@"value"] isKindOfClass:[NSNull class]]) {
-                  NSString *nmStr = [NSString stringWithFormat:@"%@", nmRes[@"value"]];
-                  if (nmStr.length > 0) {
-                      [self restoreWDADepth:customDepth];
-                      return nmStr;
-                  }
-              }
+              
+              [self restoreWDADepth:customDepth];
+              return @{
+                  @"found": @YES,
+                  @"text": text,
+                  @"element_id": elementId,
+                  @"name": allAttrs[@"name"] ?: [NSNull null],
+                  @"label": allAttrs[@"label"] ?: [NSNull null],
+                  @"value": allAttrs[@"value"] ?: [NSNull null],
+                  @"x": (allAttrs[@"x"] && ![allAttrs[@"x"] isKindOfClass:[NSNull class]]) ? @(cx) : [NSNull null],
+                  @"y": (allAttrs[@"y"] && ![allAttrs[@"y"] isKindOfClass:[NSNull class]]) ? @(cy) : [NSNull null],
+                  @"width": allAttrs[@"width"] ?: [NSNull null],
+                  @"height": allAttrs[@"height"] ?: [NSNull null]
+              };
           }
       }
   }
   [self restoreWDADepth:customDepth];
-  return @"";
+  return nullResult;
 }
 
 - (BOOL)tapText:(NSString *)text {
