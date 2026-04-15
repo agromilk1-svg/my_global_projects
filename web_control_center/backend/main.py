@@ -1029,71 +1029,43 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                     return {"status": "ok", "screenshot_b64": b64_val}
             return {"status": "error", "msg": f"WDA screenshot failed ({status})"}
 
-        # [v2100] 指令分支：获取 UI 树 (截图+OCR 降维打击方案)
+        # [v2102] 获取真实的 UI 树 (强制携带 Appium 防死锁高速设定的 Session 方案)
         if req.action_type == "WDA_SOURCE":
-            # ═══════════════════════════════════════════════════════════════
-            # 【致命问题】TikTok 等复杂 APP 的视图树层级高达数万节点，
-            # 无论使用 /source?format=xml/json/description 还是 /wda/accessibleSource，
-            # 底层都不可避免地调用 [XCUIElement snapshot]，该私有 API 在 XCTest 主线程上
-            # 进行全量递归遍历，导致 8~16 秒的完全阻塞，最终被 iOS 看门狗判定为死锁并强杀 WDA。
-            #
-            # 【终极方案】彻底绕过 Accessibility 引擎：
-            # 1. 截图 (/screenshot) → 走 IOSurface 帧缓冲区，~100ms，不经过 XCTest
-            # 2. OCR (/wda/ocr) → 走 Vision.framework 本地推理，~300ms，不经过 XCTest
-            # 两者并行执行，总耗时 < 500ms，永远不会触发看门狗！
-            # ═══════════════════════════════════════════════════════════════
+            # TikTok 的视图极其复杂，原生的全局 /source 会触发无限制递归从而卡死 XCTest。
+            # 解法：先建立或验证 Session -> 将 Session 的等待动画和扫描深度斩断 -> 获取 Session-scoped 的 source！
             
-            # 并发发射：截图 + OCR 同时执行
-            screenshot_task = asyncio.create_task(
-                _async_wda_request("GET", f"{wda_url}/screenshot", timeout=5.0, force_http=force_http)
-            )
-            ocr_task = asyncio.create_task(
-                _async_wda_request("POST", f"{wda_url}/wda/ocr", json_body={}, timeout=10.0, force_http=force_http)
-            )
+            sid = SESSION_CACHE.get(cache_key)
+            if sid:
+                status, _ = await _async_wda_request("GET", f"{wda_url}/session/{sid}", timeout=2.0, force_http=force_http)
+                if status != 200: sid = None
+                
+            if not sid:
+                status, data = await _async_wda_request("POST", f"{wda_url}/session", json_body={"capabilities": {}}, timeout=5.0, force_http=force_http)
+                if status == 200 and isinstance(data, dict):
+                    sid = data.get("sessionId") or data.get("value", {}).get("sessionId")
+                    SESSION_CACHE[cache_key] = sid
+                    if sid:
+                        # 强力设定防御：最大深度15，不等待动画停歇！
+                        await _async_wda_request(
+                            "POST", f"{wda_url}/session/{sid}/appium/settings",
+                            json_body={"settings": {"waitForQuiescence": False, "snapshotMaxDepth": 15}}, 
+                            timeout=3.0, force_http=force_http
+                        )
             
-            # 等待两个任务完成
-            sc_status, sc_resp = await screenshot_task
-            ocr_status, ocr_resp = await ocr_task
+            if not sid:
+                return {"status": "error", "msg": "WDA 无法建立防死锁会话，UI扫描失败。"}
+                
+            # 从携带防护属性的 Session 限定管线下发 source 指令，极大加快响应速度。
+            status, sc_resp = await _async_wda_request("GET", f"{wda_url}/session/{sid}/source?format=json", timeout=12.0, force_http=force_http)
             
-            # 提取截图 base64
-            screenshot_b64 = ""
-            if sc_status == 200 and isinstance(sc_resp, dict):
-                screenshot_b64 = sc_resp.get("value", "")
-            
-            # 提取 OCR 识别结果，重建为前端可消费的 UI 元素列表
-            ocr_elements = []
-            if ocr_status == 200 and isinstance(ocr_resp, dict):
-                ocr_val = ocr_resp.get("value", ocr_resp)
-                if isinstance(ocr_val, dict):
-                    texts = ocr_val.get("texts", [])
-                elif isinstance(ocr_val, list):
-                    texts = ocr_val
-                else:
-                    texts = []
-                for t in texts:
-                    if isinstance(t, dict) and "text" in t:
-                        ocr_elements.append({
-                            "type": "OCRText",
-                            "label": t.get("text", ""),
-                            "name": "",
-                            "value": t.get("text", ""),
-                            "x": t.get("x", 0),
-                            "y": t.get("y", 0),
-                            "width": t.get("width", 0),
-                            "height": t.get("height", 0),
-                            "confidence": t.get("confidence", 0)
-                        })
-            
-            if not ocr_elements and not screenshot_b64:
-                return {"status": "error", "msg": "截图和OCR均失败，请检查 WDA 状态"}
-            
-            return {
-                "status": "ok",
-                "scan_mode": "ocr",
-                "screenshot_b64": screenshot_b64,
-                "elements": ocr_elements,
-                "element_count": len(ocr_elements)
-            }
+            if status == 200:
+                if isinstance(sc_resp, dict):
+                    val = sc_resp.get("value", sc_resp)
+                    return {"status": "ok", "source": val}
+                elif isinstance(sc_resp, str):
+                    return {"status": "ok", "source": sc_resp}
+                    
+            return {"status": "error", "msg": f"WDA session source failed ({status})", "raw": sc_resp}
 
 
         # [v1682.13] 指令分支：Ping
@@ -1196,17 +1168,29 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                 status, data = await _async_wda_request("POST", f"{wda_url}/session", json_body={"capabilities": {}}, timeout=10.0, force_http=force_http)
                 if status == 200 and isinstance(data, dict):
                     sid = data.get("sessionId") or data.get("value", {}).get("sessionId")
-                    if sid:
-                        # [v2101] 立即应用 Appium 黄金配置：限制层级、关闭静默等待、精简属性
-                        # 这是解决 TikTok 等复杂列表在 findElement 时动辄死锁或超时的关键！
-                        await _async_wda_request("POST", f"{wda_url}/session/{sid}/appium/settings", json_body={
-                            "settings": {
-                                "snapshotMaxDepth": 10,
-                                "waitForQuiescence": False,
-                                "includeAttributes": "name,type,rect"
-                            }
-                        }, timeout=3.0, force_http=force_http)
                     SESSION_CACHE[cache_key] = sid
+                    
+                    # [v2101] 在新建立的 Session 上应用 Appium 高速设置，防止 XCTest 等待动画/深层递归卡死
+                    if sid:
+                        try:
+                            # 通过 fire & forget 方式提速，不需要等待配置回调
+                            asyncio.create_task(_async_wda_request(
+                                "POST", f"{wda_url}/session/{sid}/appium/settings",
+                                json_body={
+                                    "settings": {
+                                        # "waitForQuiescence": false → 让 XCTest 不要死等屏幕动画停止（关键防死锁！）
+                                        "waitForQuiescence": False,
+                                        # "snapshotMaxDepth": 10 → 控制递归拍快照的最大层级，防卡死
+                                        "snapshotMaxDepth": 10,
+                                        # "includeAttributes": 仅返回核心属性不拿乱七八糟的 private 属性
+                                        "includeAttributes": "name,type,rect"
+                                    }
+                                },
+                                timeout=3.0, force_http=force_http
+                            ))
+                        except Exception as e:
+                            pass
+                            
                 elif _session_attempts < 3:
                     logging.warning(f"[SESSION] 第{_session_attempts}次创建失败 (status={status})，1秒后重试...")
                     await asyncio.sleep(1.0)
