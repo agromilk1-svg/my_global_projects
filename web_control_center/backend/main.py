@@ -1041,29 +1041,46 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
             custom_depth = getattr(req, "max_depth", 60) or 60
             
             # ═══════════════════════════════════════════════════════════════
-            # 视频播放页防卡死策略：
-            # iOS accessibility 服务在视频播放时会完全卡死（Cannot take screenshot within 8000ms）
-            # WDA 会无限重试内部快照，导致整个 HTTP 服务器卡死不响应
-            # 
-            # 解决方案：
-            # 1. 设置极短的 customSnapshotTimeout（3秒）→ WDA 内部快速放弃
-            # 2. HTTP 请求超时 8 秒 → 我们也快速放弃
-            # 3. 失败后主动销毁卡死 Session → 让 WDA 释放阻塞线程
-            # 4. 等待 3 秒让 WDA 恢复 → 重试一次最浅深度
+            # 视频播放页自适应扫描策略（v3）：
+            #
+            # 三阶段降级：
+            # 1️⃣ 用户请求深度 + 动态超时（深度越深允许时间越长）
+            # 2️⃣ /wda/accessibleSource（只返回可交互元素，跳过视频渲染层）
+            # 3️⃣ 最浅深度 5 兜底
+            #
+            # 超时公式：snapTimeout = max(3, depth * 0.4)
+            #           httpTimeout = snapTimeout + 5
+            # 例：depth=25 → snap=10s, http=15s（暂停视频后足够扫完）
+            #     depth=60 → snap=24s, http=29s
+            #     depth=10 → snap=4s, http=9s
             # ═══════════════════════════════════════════════════════════════
             
-            # 两次尝试：第1次用户深度，第2次最浅深度5
+            # 动态计算超时（深度越大越宽容，但有上限）
+            snap_t = min(25, max(3, int(custom_depth * 0.4)))
+            http_t = snap_t + 5
+            
+            # 三阶段尝试
             attempts = [
-                {"depth": custom_depth, "snap_timeout": 3, "http_timeout": 8.0},
-                {"depth": 5,            "snap_timeout": 2, "http_timeout": 6.0},
+                # 第1阶段：用户请求的完整深度
+                {"depth": custom_depth, "snap_timeout": snap_t, "http_timeout": float(http_t),
+                 "endpoint": "source?format=json", "label": "完整扫描"},
+                # 第2阶段：accessibleSource（只返回有 accessibility 标记的可交互元素）
+                # 这个端点跳过装饰性视图/视频渲染层，速度快很多
+                {"depth": custom_depth, "snap_timeout": snap_t, "http_timeout": float(http_t),
+                 "endpoint": "wda/accessibleSource", "label": "可交互元素扫描"},
+                # 第3阶段：最浅深度兜底
+                {"depth": 5, "snap_timeout": 3, "http_timeout": 8.0,
+                 "endpoint": "source?format=json", "label": "浅层兜底扫描"},
             ]
             
             for attempt_idx, attempt_cfg in enumerate(attempts):
                 try_depth = attempt_cfg["depth"]
                 snap_timeout = attempt_cfg["snap_timeout"]
                 http_timeout = attempt_cfg["http_timeout"]
+                endpoint = attempt_cfg["endpoint"]
+                label = attempt_cfg["label"]
                 
-                # ── Step 1: 获取或创建 Session（短超时，防止 WDA 已卡死） ──
+                # ── Step 1: 获取或创建 Session ──
                 sid = SESSION_CACHE.get(cache_key)
                 if sid:
                     v_status, _ = await _async_wda_request("GET", f"{wda_url}/session/{sid}", timeout=3.0, force_http=force_http)
@@ -1086,14 +1103,12 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                         SESSION_CACHE[cache_key] = sid
                 
                 if not sid:
-                    if attempt_idx == 0:
-                        # 第一次就连 Session 都建不起来，说明 WDA 可能已被上次操作卡死
-                        # 等 3 秒让 WDA 恢复后再试
+                    if attempt_idx < len(attempts) - 1:
                         await asyncio.sleep(3)
                         continue
-                    return {"status": "error", "msg": "WDA 无响应（可能被视频播放页卡死）。建议：1. 先退出视频播放页再扫描 2. 重启 WDA"}
+                    return {"status": "error", "msg": "WDA 无响应。建议：1. 退出视频播放页 2. 重启 WDA"}
                 
-                # ── Step 2: 推送极速设置（短超时防卡死） ──
+                # ── Step 2: 推送设置 ──
                 settings_ok, _ = await _async_wda_request(
                     "POST", f"{wda_url}/session/{sid}/appium/settings",
                     json_body={
@@ -1114,17 +1129,16 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                 )
                 
                 if settings_ok != 200:
-                    # 连 settings 都推不进去，WDA 已卡死
                     SESSION_CACHE.pop(cache_key, None)
-                    if attempt_idx == 0:
+                    if attempt_idx < len(attempts) - 1:
                         await asyncio.sleep(3)
                         continue
-                    return {"status": "error", "msg": "WDA 无响应（无法推送设置）。建议先退出视频播放页再扫描，或重启 WDA"}
+                    return {"status": "error", "msg": "WDA 无响应（无法推送设置）。建议退出视频播放页或重启 WDA"}
                 
-                # ── Step 3: 获取 UI 树（极短超时！） ──
+                # ── Step 3: 获取 UI 树 ──
                 status, sc_resp = await _async_wda_request(
                     "GET",
-                    f"{wda_url}/session/{sid}/source?format=json",
+                    f"{wda_url}/session/{sid}/{endpoint}",
                     timeout=http_timeout,
                     force_http=force_http
                 )
@@ -1136,24 +1150,25 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                         if attempt_idx > 0:
                             result["degraded"] = True
                             result["actual_depth"] = try_depth
-                            result["msg"] = f"⚠️ 当前页面较复杂(可能有视频播放)，已自动降级到深度 {try_depth} 扫描成功"
+                            result["msg"] = f"⚠️ [{label}] 成功（第 {attempt_idx+1} 阶段降级）"
                         return result
                     elif isinstance(sc_resp, str):
-                        return {"status": "ok", "source": sc_resp}
+                        # accessibleSource 返回 XML 字符串
+                        return {"status": "ok", "source": sc_resp, 
+                                "degraded": attempt_idx > 0,
+                                "msg": f"⚠️ [{label}] 返回 XML 格式" if attempt_idx > 0 else None}
                 
-                # ── 失败处理：主动销毁卡死的 Session，让 WDA 释放阻塞线程 ──
+                # ── 失败：销毁 Session + 等待恢复 ──
                 if sid:
-                    # 尝试主动 DELETE session，即使失败也无所谓
                     await _async_wda_request("DELETE", f"{wda_url}/session/{sid}", timeout=2.0, force_http=force_http)
                 SESSION_CACHE.pop(cache_key, None)
                 
-                if attempt_idx == 0:
-                    # 等待 WDA 从卡死中恢复（accessibility 超时释放后 WDA 会恢复响应）
+                if attempt_idx < len(attempts) - 1:
                     await asyncio.sleep(3)
             
             return {
                 "status": "error", 
-                "msg": "⚠️ 当前页面（可能正在播放视频）导致 iOS accessibility 服务超时，WDA 无法获取 UI 快照。\n\n建议：\n1. 先暂停视频或退出视频播放页，再点击扫描\n2. 如 WDA 仍无响应，需重启 WDA"
+                "msg": "⚠️ 三阶段扫描均失败。当前页面 accessibility 服务完全不可用。\n\n建议：\n1. 暂停视频 + 关闭弹幕后重试\n2. 滑到评论区（静态页面）再扫描\n3. 如 WDA 无响应，需重启 WDA"
             }
 
 
