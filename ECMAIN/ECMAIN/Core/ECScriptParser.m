@@ -1945,10 +1945,10 @@ static NSString *gActiveWDASessionId = nil;
     NSLog(@"[ECScriptEngine] 自动预创 WDA Session, 获取到 ID: %@",
           gActiveWDASessionId ?: @"(nil)");
           
-    if (gActiveWDASessionId) {
+      if (gActiveWDASessionId) {
         NSDictionary *settingsPayload = @{
             @"settings": @{
-                @"snapshotMaxDepth": @10,
+                @"snapshotMaxDepth": @60,
                 @"waitForQuiescence": @NO,
                 @"animationCoolOffTimeout": @0,
                 @"waitForIdleTimeout": @0

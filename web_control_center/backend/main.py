@@ -1070,7 +1070,7 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                 "POST", f"{wda_url}/session/{sid}/appium/settings",
                 json_body={
                     "settings": {
-                        "snapshotMaxDepth": 10,
+                        "snapshotMaxDepth": 60,
                         "waitForQuiescence": False,
                         "animationCoolOffTimeout": 0,
                         "waitForIdleTimeout": 0
