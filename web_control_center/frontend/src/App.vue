@@ -660,14 +660,29 @@ const parseUITree = (treeData: any) => {
                         w = typeof node.width === 'number' ? node.width : parseFloat(node.width);
                         h = typeof node.height === 'number' ? node.height : parseFloat(node.height);
                     }
+                    
+                    // [修复] 如果上面都没有，但原生的 'frame' 字段有数据: "{{x, y}, {w, h}}"
+                    if ((isNaN(x) || isNaN(w)) && node.frame && typeof node.frame === 'string' && node.frame.startsWith('{{')) {
+                        const matches = node.frame.match(/\{\{([-\d.]+),\s*([-\d.]+)\},\s*\{([-\d.]+),\s*([-\d.]+)\}\}/);
+                        if (matches && matches.length === 5) {
+                            x = parseFloat(matches[1]);
+                            y = parseFloat(matches[2]);
+                            w = parseFloat(matches[3]);
+                            h = parseFloat(matches[4]);
+                        }
+                    }
 
                     if (!isNaN(x) && !isNaN(y) && !isNaN(w) && !isNaN(h)) {
+                        let vis = '';
+                        if (node.isVisible !== undefined) vis = String(node.isVisible);
+                        else if (node.visible !== undefined) vis = String(node.visible);
+                        
                         nodes.push({
                             type: node.type,
                             name: node.name || '',
                             label: node.label || '',
                             value: node.value || '',
-                            visible: node.visible !== undefined ? String(node.visible) : '',
+                            visible: vis,
                             x, y, w, h
                         });
                     }
