@@ -1222,6 +1222,8 @@ static NSString *gActiveWDASessionId = nil;
   [self applyWDADepth:customDepth];
   
   NSString *using = [predicate hasPrefix:@"**/"] ? @"class chain" : @"predicate string";
+  [self log:[NSString stringWithFormat:@"🔎 [getElementAttribute] 搜索元素: %@ (属性=%@, 深度=%d)", predicate, attr, customDepth]];
+  
   NSDictionary *elementsRes = [self performWDAActionWithResult:@"findAttrElement"
                                                         endpoint:@"/elements"
                                                             body:@{@"using": using, @"value": predicate}
@@ -1231,6 +1233,7 @@ static NSString *gActiveWDASessionId = nil;
       NSArray *elements = elementsRes[@"value"];
       if ([elements isKindOfClass:[NSArray class]] && elements.count > 0) {
           NSString *elementId = elements[0][@"ELEMENT"];
+          [self log:[NSString stringWithFormat:@"✅ [getElementAttribute] 元素已找到 (共%lu个匹配), ID=%@", (unsigned long)elements.count, elementId]];
           if (elementId && [elementId isKindOfClass:[NSString class]]) {
               NSString *attrEndpoint = [NSString stringWithFormat:@"/element/%@/attribute/%@", elementId, attr];
               NSDictionary *attrRes = [self performWDAActionWithResult:@"getElementAttribute"
@@ -1240,12 +1243,20 @@ static NSString *gActiveWDASessionId = nil;
               if ([attrRes[@"status"] integerValue] == 0) {
                   id val = attrRes[@"value"];
                   if (val && ![val isKindOfClass:[NSNull class]]) {
+                      [self log:[NSString stringWithFormat:@"✅ [getElementAttribute] 属性 '%@' = %@", attr, val]];
                       [self restoreWDADepth:customDepth];
                       return [NSString stringWithFormat:@"%@", val];
                   }
+                  [self log:[NSString stringWithFormat:@"⚠️ [getElementAttribute] 元素已找到但属性 '%@' 为空(null)！该元素可能是容器，实际文字在子元素中。建议改用 getElementText 或更精确的子元素谓词。", attr]];
+              } else {
+                  [self log:[NSString stringWithFormat:@"⚠️ [getElementAttribute] 读取属性 '%@' 失败 (status=%@)", attr, attrRes[@"status"]]];
               }
           }
+      } else {
+          [self log:[NSString stringWithFormat:@"❌ [getElementAttribute] 未找到匹配元素: %@", predicate]];
       }
+  } else {
+      [self log:[NSString stringWithFormat:@"❌ [getElementAttribute] 搜索请求失败或返回为空: %@", predicate]];
   }
   [self restoreWDADepth:customDepth];
   return @"";

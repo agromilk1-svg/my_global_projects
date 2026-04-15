@@ -609,7 +609,7 @@ const parseUITree = (treeData: any) => {
         if (typeof treeData === 'string' && treeData.trim().startsWith('<')) {
             const parser = new DOMParser();
             const doc = parser.parseFromString(treeData, "text/xml");
-            const walkXML = (node: any) => {
+            const walkXML = (node: any, depth: number = 0) => {
                 if (node.nodeType === 1) { // Node.ELEMENT_NODE
                     const x = parseFloat(node.getAttribute('x') || 'NaN');
                     const y = parseFloat(node.getAttribute('y') || 'NaN');
@@ -622,11 +622,12 @@ const parseUITree = (treeData: any) => {
                             label: node.getAttribute('label'),
                             value: node.getAttribute('value'),
                             visible: node.getAttribute('visible'),
+                            depth,
                             x, y, w: width, h: height
                         });
                     }
                     for (let i = 0; i < node.childNodes.length; i++) {
-                        walkXML(node.childNodes[i]);
+                        walkXML(node.childNodes[i], depth + 1);
                     }
                 }
             };
@@ -643,7 +644,7 @@ const parseUITree = (treeData: any) => {
                 root = root.value;
             }
             
-            const walkJSON = (node: any) => {
+            const walkJSON = (node: any, depth: number = 0) => {
                 if (!node) return;
                 let isNodeValid = false;
                 if (node.type) {
@@ -683,6 +684,7 @@ const parseUITree = (treeData: any) => {
                             label: node.label || '',
                             value: node.value || '',
                             visible: vis,
+                            depth,
                             x, y, w, h
                         });
                     }
@@ -691,7 +693,7 @@ const parseUITree = (treeData: any) => {
                 // 深度遍历
                 if (node.children && Array.isArray(node.children)) {
                     for (const child of node.children) {
-                        walkJSON(child);
+                        walkJSON(child, depth + 1);
                     }
                 }
             };
@@ -3715,24 +3717,12 @@ const endDraw = async (e: MouseEvent) => {
           const rndMaxY = node.y + node.h - padY;
           const shortType = node.type.replace('XCUIElementType', '');
           const desc = node.name || node.label || node.value || shortType;
-          log(`🔍 [节点捕获] Type=${shortType}, Name="${node.name || ''}", Label="${node.label || ''}", Rect=(${node.x},${node.y},${node.w}×${node.h}), 中心=(${cx},${cy})`);
+          const nodeDepth = node.depth ?? 60;
+          // 推荐深度：节点实际深度 + 5 的安全余量，最小 10，最大 60
+          const suggestedDepth = Math.min(60, Math.max(10, nodeDepth + 5));
+          log(`🔍 [节点捕获] Type=${shortType}, Name="${node.name || ''}", Label="${node.label || ''}", Depth=${nodeDepth}, Rect=(${node.x},${node.y},${node.w}×${node.h}), 中心=(${cx},${cy})`);
           
-          // 生成与动作库风格一致的同步代码片段
-          const lines = [];
-          lines.push(`// ━━━ 节点: ${desc} ━━━`);
-          lines.push(`// 类型: ${shortType} | 坐标: (${node.x}, ${node.y}) | 尺寸: ${node.w}×${node.h}`);
-          if (node.name) lines.push(`// name: "${node.name}"`);
-          if (node.label && node.label !== node.name) lines.push(`// label: "${node.label}"`);
-          if (node.value) lines.push(`// value: "${node.value}"`);
-          lines.push(``);
-          lines.push(`// 方式1: 精确坐标盲按`);
-          lines.push(`// wda.tap(${cx}, ${cy});`);
-          lines.push(``);
-          lines.push(`// 方式2: 随机坐标盲按（模拟真人，节点范围内缩）`);
-          lines.push(`// wda.tap(wda.randomInt(${rndMinX}, ${rndMaxX}), wda.randomInt(${rndMinY}, ${rndMaxY}));`);
-          lines.push(``);
-          lines.push(`// 方式3: 智能元素定位点击（推荐！换手机不失效）`);
-          
+          // 构建谓词字符串
           let predicateStr = '';
           if (node.name) {
               predicateStr = `name == \\"${node.name}\\"`;
@@ -3740,15 +3730,44 @@ const endDraw = async (e: MouseEvent) => {
               predicateStr = `label == \\"${node.label}\\"`;
           }
           
+          // 生成 4 种动作带层级的代码片段
+          const lines = [];
+          lines.push(`// ━━━ 节点: ${desc} ━━━`);
+          lines.push(`// 类型: ${shortType} | 层级: ${nodeDepth} | 坐标: (${node.x}, ${node.y}) | 尺寸: ${node.w}×${node.h}`);
+          if (node.name) lines.push(`// name: "${node.name}"`);
+          if (node.label && node.label !== node.name) lines.push(`// label: "${node.label}"`);
+          if (node.value) lines.push(`// value: "${node.value}"`);
+          lines.push(``);
+          lines.push(`// ▸ 方式1: 精确坐标盲按`);
+          lines.push(`// wda.tap(${cx}, ${cy});`);
+          lines.push(``);
+          lines.push(`// ▸ 方式2: 随机坐标盲按（模拟真人）`);
+          lines.push(`// wda.tap(wda.randomInt(${rndMinX}, ${rndMaxX}), wda.randomInt(${rndMinY}, ${rndMaxY}));`);
+          
           if (predicateStr) {
-              lines.push(`var el = wda.tapElement('type == "XCUIElementType${shortType}" AND ${predicateStr}');`);
-              lines.push(`if (!el || !el.found) {`);
-              lines.push(`    wda.log("⚠️ 未找到该元素，降级使用坐标盲按...");`);
-              lines.push(`    wda.tap(wda.randomInt(${rndMinX}, ${rndMaxX}), wda.randomInt(${rndMinY}, ${rndMaxY}));`);
+              const fullPred = `'type == "XCUIElementType${shortType}" AND ${predicateStr}'`;
+              lines.push(``);
+              lines.push(`// ▸ 方式3: findElement 查找元素（返回坐标，可二次处理）`);
+              lines.push(`var el = wda.findElement(${fullPred}, ${suggestedDepth});`);
+              lines.push(`if (el && el.found) {`);
+              lines.push(`    wda.log("✅ 找到 ${desc}，坐标: (" + el.x + ", " + el.y + ")");`);
+              lines.push(`    wda.tap(el.x + wda.randomInt(-el.width/4, el.width/4), el.y + wda.randomInt(-el.height/4, el.height/4));`);
               lines.push(`}`);
+              lines.push(``);
+              lines.push(`// ▸ 方式4: tapElement 一键查找并点击（最简）`);
+              lines.push(`var ok = wda.tapElement(${fullPred}, ${suggestedDepth});`);
+              lines.push(`if (!ok) wda.log("⚠️ 未找到 ${desc}");`);
+              lines.push(``);
+              lines.push(`// ▸ 方式5: getElementText 获取文字内容`);
+              lines.push(`var text = wda.getElementText(${fullPred}, ${suggestedDepth});`);
+              lines.push(`wda.log("文字: " + text);`);
+              lines.push(``);
+              lines.push(`// ▸ 方式6: getElementAttribute 获取指定属性`);
+              lines.push(`var attr = wda.getElementAttribute(${fullPred}, "label", ${suggestedDepth});`);
+              lines.push(`wda.log("属性值: " + attr);`);
           } else {
-              lines.push(`// ⚠️ 警告：该元素没有 name 或 label 属性，难以使用查询语句精确定位。`);
-              lines.push(`// 可尝试使用父级包裹节点进行寻找，或者使用如下坐标点击：`);
+              lines.push(``);
+              lines.push(`// ⚠️ 该元素没有 name 或 label，无法生成精确谓词，使用坐标点击：`);
               lines.push(`wda.tap(wda.randomInt(${rndMinX}, ${rndMaxX}), wda.randomInt(${rndMinY}, ${rndMaxY}));`);
           }
           
@@ -4551,7 +4570,10 @@ const handleImageUpload = (event: Event) => {
 
             <!-- 悬浮的节点检查器面罩信息框 -->
             <div v-if="isInspectorMode && hoveredUINode" class="absolute top-2 left-2 z-[200] max-w-[280px] bg-gray-950/95 border border-sky-500/80 shadow-2xl rounded p-2.5 pointer-events-none backdrop-blur-md">
-               <div class="text-[10px] text-sky-400 font-bold break-all mb-1.5 uppercase tracking-wider border-b border-sky-900/50 pb-1">{{ hoveredUINode.type.replace('XCUIElementType', '') }}</div>
+               <div class="text-[10px] text-sky-400 font-bold break-all mb-1.5 uppercase tracking-wider border-b border-sky-900/50 pb-1 flex justify-between items-center">
+                 <span>{{ hoveredUINode.type.replace('XCUIElementType', '') }}</span>
+                 <span class="text-amber-400 normal-case tracking-normal">Depth: {{ hoveredUINode.depth ?? '?' }}</span>
+               </div>
                <div class="flex flex-col gap-1 text-[9px] text-gray-300 font-mono">
                    <div v-if="hoveredUINode.name"><span class="text-gray-500">Name:</span> <span class="text-sky-200 break-all">{{ hoveredUINode.name }}</span></div>
                    <div v-if="hoveredUINode.label"><span class="text-gray-500">Label:</span> <span class="text-emerald-200 break-all">{{ hoveredUINode.label }}</span></div>
