@@ -1029,35 +1029,38 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                     return {"status": "ok", "screenshot_b64": b64_val}
             return {"status": "error", "msg": f"WDA screenshot failed ({status})"}
 
-        # [v2102] 获取真实的 UI 树 (强制携带 Appium 防死锁高速设定的 Session 方案)
+        # [v2103] 获取真实的 UI 树 (极速原生提取方案)
         if req.action_type == "WDA_SOURCE":
-            # TikTok 的视图极其复杂，原生的全局 /source 会触发无限制递归从而卡死 XCTest。
-            # 解法：先建立或验证 Session -> 将 Session 的等待动画和扫描深度斩断 -> 获取 Session-scoped 的 source！
+            # TikTok 的视图极其复杂，原生的 /source 会触发无限制 XCTest 快照。
+            # 最佳原生解法：直接向 Accessibility 层发出 /wda/accessibleSource 请求 (响应极快 < 1s)
             
-            sid = SESSION_CACHE.get(cache_key)
-            if sid:
-                status, _ = await _async_wda_request("GET", f"{wda_url}/session/{sid}", timeout=2.0, force_http=force_http)
-                if status != 200: sid = None
+            # 1. 优先采用 /wda/accessibleSource (绝大多数不崩的首选)
+            status, sc_resp = await _async_wda_request("GET", f"{wda_url}/wda/accessibleSource", timeout=8.0, force_http=force_http)
+            
+            # 2. 如果设备较老没有这个 endpoint 或失败，则降级走 Session-scoped 限制深度的 /source
+            if status != 200:
+                sid = SESSION_CACHE.get(cache_key)
+                if sid:
+                    v_status, _ = await _async_wda_request("GET", f"{wda_url}/session/{sid}", timeout=2.0, force_http=force_http)
+                    if v_status != 200: sid = None
+                    
+                if not sid:
+                    create_st, data = await _async_wda_request("POST", f"{wda_url}/session", json_body={"capabilities": {}}, timeout=5.0, force_http=force_http)
+                    if create_st == 200 and isinstance(data, dict):
+                        sid = data.get("sessionId") or data.get("value", {}).get("sessionId")
+                        SESSION_CACHE[cache_key] = sid
+                        if sid:
+                            await _async_wda_request(
+                                "POST", f"{wda_url}/session/{sid}/appium/settings",
+                                json_body={"settings": {"waitForQuiescence": False, "snapshotMaxDepth": 10, "includeAttributes": "name,rect"}}, 
+                                timeout=2.0, force_http=force_http
+                            )
                 
-            if not sid:
-                status, data = await _async_wda_request("POST", f"{wda_url}/session", json_body={"capabilities": {}}, timeout=5.0, force_http=force_http)
-                if status == 200 and isinstance(data, dict):
-                    sid = data.get("sessionId") or data.get("value", {}).get("sessionId")
-                    SESSION_CACHE[cache_key] = sid
-                    if sid:
-                        # 强力设定防御：最大深度15，不等待动画停歇！
-                        await _async_wda_request(
-                            "POST", f"{wda_url}/session/{sid}/appium/settings",
-                            json_body={"settings": {"waitForQuiescence": False, "snapshotMaxDepth": 15}}, 
-                            timeout=3.0, force_http=force_http
-                        )
-            
-            if not sid:
-                return {"status": "error", "msg": "WDA 无法建立防死锁会话，UI扫描失败。"}
-                
-            # 从携带防护属性的 Session 限定管线下发 source 指令，极大加快响应速度。
-            status, sc_resp = await _async_wda_request("GET", f"{wda_url}/session/{sid}/source?format=json", timeout=12.0, force_http=force_http)
-            
+                if sid:
+                    status, sc_resp = await _async_wda_request("GET", f"{wda_url}/session/{sid}/source?format=json", timeout=12.0, force_http=force_http)
+                else:
+                    status, sc_resp = await _async_wda_request("GET", f"{wda_url}/source?format=json", timeout=12.0, force_http=force_http)
+
             if status == 200:
                 if isinstance(sc_resp, dict):
                     val = sc_resp.get("value", sc_resp)
@@ -1065,7 +1068,7 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                 elif isinstance(sc_resp, str):
                     return {"status": "ok", "source": sc_resp}
                     
-            return {"status": "error", "msg": f"WDA session source failed ({status})", "raw": sc_resp}
+            return {"status": "error", "msg": f"WDA source failed ({status})", "raw": sc_resp}
 
 
         # [v1682.13] 指令分支：Ping
