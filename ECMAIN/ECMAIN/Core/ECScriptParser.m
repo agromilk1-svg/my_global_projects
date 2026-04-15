@@ -1099,21 +1099,33 @@ static NSString *gActiveWDASessionId = nil;
 }
 
 - (void)applyWDADepth:(int)depth {
-    if (depth <= 0 || depth == 60) return;
     [self ensureWDASessionId];
     if (!gActiveWDASessionId) return;
+    // 推送加速设置：
+    // - snapshotMaxDepth: 限制扫描深度
+    // - useFirstMatch: 找到第一个匹配项就立刻返回，不遍历全树（视频页面关键优化）
+    // - waitForIdleTimeout: 0 = 不等待 App 动画停止
+    // - animationCoolOffTimeout: 0 = 不等待动画冷却
     [self performWDAActionWithResult:@"setSettings"
                             endpoint:[NSString stringWithFormat:@"/session/%@/appium/settings", gActiveWDASessionId]
-                                body:@{@"settings": @{@"snapshotMaxDepth": @(depth)}}
+                                body:@{@"settings": @{
+                                    @"snapshotMaxDepth": @(depth),
+                                    @"useFirstMatch": @YES,
+                                    @"waitForIdleTimeout": @0,
+                                    @"animationCoolOffTimeout": @0
+                                }}
                               method:@"POST"];
 }
 
 - (void)restoreWDADepth:(int)depth {
-    if (depth <= 0 || depth == 60) return;
     if (!gActiveWDASessionId) return;
+    // 恢复默认配置；保留 useFirstMatch=YES 因为全局都受益于此优化
     [self performWDAActionWithResult:@"setSettings"
                             endpoint:[NSString stringWithFormat:@"/session/%@/appium/settings", gActiveWDASessionId]
-                                body:@{@"settings": @{@"snapshotMaxDepth": @60}}
+                                body:@{@"settings": @{
+                                    @"snapshotMaxDepth": @60,
+                                    @"useFirstMatch": @YES
+                                }}
                               method:@"POST"];
 }
 
