@@ -1058,6 +1058,7 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                 {"depth": 5,            "snap_timeout": 2, "http_timeout": 6.0},
             ]
             
+            import asyncio
             for attempt_idx, attempt_cfg in enumerate(attempts):
                 try_depth = attempt_cfg["depth"]
                 snap_timeout = attempt_cfg["snap_timeout"]
@@ -1089,7 +1090,6 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                     if attempt_idx == 0:
                         # 第一次就连 Session 都建不起来，说明 WDA 可能已被上次操作卡死
                         # 等 3 秒让 WDA 恢复后再试
-                        import asyncio
                         await asyncio.sleep(3)
                         continue
                     return {"status": "error", "msg": "WDA 无响应（可能被视频播放页卡死）。建议：1. 先退出视频播放页再扫描 2. 重启 WDA"}
@@ -1118,7 +1118,6 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                     # 连 settings 都推不进去，WDA 已卡死
                     SESSION_CACHE.pop(cache_key, None)
                     if attempt_idx == 0:
-                        import asyncio
                         await asyncio.sleep(3)
                         continue
                     return {"status": "error", "msg": "WDA 无响应（无法推送设置）。建议先退出视频播放页再扫描，或重启 WDA"}
@@ -1151,7 +1150,6 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                 
                 if attempt_idx == 0:
                     # 等待 WDA 从卡死中恢复（accessibility 超时释放后 WDA 会恢复响应）
-                    import asyncio
                     await asyncio.sleep(3)
             
             return {
