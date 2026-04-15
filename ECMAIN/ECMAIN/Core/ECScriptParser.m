@@ -1847,7 +1847,13 @@ static NSString *gActiveWDASessionId = nil;
 
 - (void)ensureWDASessionId {
   if (!gActiveWDASessionId) {
-    NSDictionary *caps = @{@"capabilities" : @{@"alwaysMatch" : @{}}};
+    NSDictionary *caps = @{
+        @"capabilities" : @{
+            @"alwaysMatch" : @{
+                @"shouldWaitForQuiescence": @NO
+            }
+        }
+    };
     // 这里使用无拦截的原生 GET/POST 或者直接让底层的 perform 进去时还未判定挂载
     [self performWDAActionWithResult:@"createSession"
                             endpoint:@"/session"
@@ -1855,6 +1861,31 @@ static NSString *gActiveWDASessionId = nil;
                               method:@"POST"];
     NSLog(@"[ECScriptEngine] 自动预创 WDA Session, 获取到 ID: %@",
           gActiveWDASessionId ?: @"(nil)");
+          
+    if (gActiveWDASessionId) {
+        NSDictionary *settingsPayload = @{
+            @"settings": @{
+                @"snapshotMaxDepth": @10,
+                @"waitForQuiescence": @NO,
+                @"animationCoolOffTimeout": @0,
+                @"waitForIdleTimeout": @0
+            }
+        };
+        NSString *settingsEndpoint = [NSString stringWithFormat:@"/session/%@/appium/settings", gActiveWDASessionId];
+        // 直接构造并发送请求，跳过内部 performWDAActionWithResult 会附带的 session 拼接
+        NSString *urlString = [NSString stringWithFormat:@"http://127.0.0.1:%d%@", kWDAPort, settingsEndpoint];
+        NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]];
+        req.HTTPMethod = @"POST";
+        req.timeoutInterval = 3.0;
+        [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+        req.HTTPBody = [NSJSONSerialization dataWithJSONObject:settingsPayload options:0 error:nil];
+        dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+        [[[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *d, NSURLResponse *r, NSError *e){
+            dispatch_semaphore_signal(sema);
+        }] resume];
+        dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC));
+        NSLog(@"[ECScriptEngine] 成功推送 Appium 防崩溃 Settings (snapshotMaxDepth=10)");
+    }
   }
 }
 
