@@ -3707,10 +3707,10 @@ const endDraw = async (e: MouseEvent) => {
           if (node.value) lines.push(`// value: "${node.value}"`);
           lines.push(``);
           lines.push(`// 方式1: 精确坐标盲按`);
-          lines.push(`# wda.tap(${cx}, ${cy});`);
+          lines.push(`// wda.tap(${cx}, ${cy});`);
           lines.push(``);
           lines.push(`// 方式2: 随机坐标盲按（模拟真人，节点范围内缩）`);
-          lines.push(`# wda.tap(wda.randomInt(${rndMinX}, ${rndMaxX}), wda.randomInt(${rndMinY}, ${rndMaxY}));`);
+          lines.push(`// wda.tap(wda.randomInt(${rndMinX}, ${rndMaxX}), wda.randomInt(${rndMinY}, ${rndMaxY}));`);
           lines.push(``);
           lines.push(`// 方式3: 智能元素定位点击（推荐！换手机不失效）`);
           
