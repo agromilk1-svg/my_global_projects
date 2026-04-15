@@ -1038,71 +1038,79 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
         #   2. Settings 必须在 source 调用前推送完毕
         #   3. /source 必须带 scope=AppiumAUT（限定只扫描当前活跃 App，不扫全局系统）
         if req.action_type == "WDA_SOURCE":
-            
-            # ── Step 1: 获取或创建一个带有防护设定的 Session ──
-            sid = SESSION_CACHE.get(cache_key)
-            if sid:
-                v_status, _ = await _async_wda_request("GET", f"{wda_url}/session/{sid}", timeout=2.0, force_http=force_http)
-                if v_status != 200:
-                    sid = None
-            
-            if not sid:
-                # ★ 关键差异：Appium 在 capabilities 里就传入了 shouldWaitForQuiescence=false
-                # 这会在 WDA Session 初始化时直接设置 app.fb_shouldWaitForQuiescence = NO
-                # 比事后通过 /appium/settings 更早生效，避免 Session 创建本身就卡住
-                create_caps = {
-                    "capabilities": {
-                        "alwaysMatch": {
-                            "shouldWaitForQuiescence": False
+            max_attempts = 2
+            for attempt in range(max_attempts):
+                # ── Step 1: 获取或创建一个带有防护设定的 Session ──
+                sid = SESSION_CACHE.get(cache_key)
+                if sid:
+                    v_status, _ = await _async_wda_request("GET", f"{wda_url}/session/{sid}", timeout=2.0, force_http=force_http)
+                    if v_status != 200:
+                        sid = None
+                
+                if not sid:
+                    # ★ 关键差异：Appium 在 capabilities 里就传入了 shouldWaitForQuiescence=false
+                    # 这会在 WDA Session 初始化时直接设置 app.fb_shouldWaitForQuiescence = NO
+                    # 比事后通过 /appium/settings 更早生效，避免 Session 创建本身就卡住
+                    create_caps = {
+                        "capabilities": {
+                            "alwaysMatch": {
+                                "shouldWaitForQuiescence": False
+                            }
                         }
                     }
-                }
-                create_st, data = await _async_wda_request(
-                    "POST", f"{wda_url}/session", json_body=create_caps, timeout=15.0, force_http=force_http
+                    create_st, data = await _async_wda_request(
+                        "POST", f"{wda_url}/session", json_body=create_caps, timeout=15.0, force_http=force_http
+                    )
+                    if create_st == 200 and isinstance(data, dict):
+                        sid = data.get("sessionId") or data.get("value", {}).get("sessionId")
+                        SESSION_CACHE[cache_key] = sid
+                
+                if not sid:
+                    return {"status": "error", "msg": "无法建立 WDA Session，请检查 WDA 是否存活（可能已被之前的操作卡死，需重启）"}
+                
+                # ── Step 2: 推送 Appium Settings（限制快照深度、关闭动画等待）──
+                custom_depth = getattr(req, "max_depth", 60) or 60
+                await _async_wda_request(
+                    "POST", f"{wda_url}/session/{sid}/appium/settings",
+                    json_body={
+                        "settings": {
+                            "snapshotMaxDepth": custom_depth,
+                            "waitForQuiescence": False,
+                            "animationCoolOffTimeout": 0,
+                            "waitForIdleTimeout": 0
+                        }
+                    },
+                    timeout=3.0, force_http=force_http
                 )
-                if create_st == 200 and isinstance(data, dict):
-                    sid = data.get("sessionId") or data.get("value", {}).get("sessionId")
-                    SESSION_CACHE[cache_key] = sid
-            
-            if not sid:
-                return {"status": "error", "msg": "无法建立 WDA Session，请检查 WDA 是否存活（可能已被之前的操作卡死，需重启）"}
-            
-            # ── Step 2: 推送 Appium Settings（限制快照深度、关闭动画等待）──
-            custom_depth = getattr(req, "max_depth", 60) or 60
-            await _async_wda_request(
-                "POST", f"{wda_url}/session/{sid}/appium/settings",
-                json_body={
-                    "settings": {
-                        "snapshotMaxDepth": custom_depth,
-                        "waitForQuiescence": False,
-                        "animationCoolOffTimeout": 0,
-                        "waitForIdleTimeout": 0
-                    }
-                },
-                timeout=3.0, force_http=force_http
-            )
-            
-            # ── Step 3: 获取 UI 树 ──
-            # [v2105 修复] 去掉 scope=AppiumAUT：该参数要求 WDA 只返回"被测 App"的树，
-            # 但我们创建 Session 时没有指定 bundleId，WDA 无法识别 AUT 是谁，
-            # 导致只返回一个空壳根节点（即用户看到的 OTHER）。
-            # 去掉 scope 后 WDA 返回当前前台 App（含系统 UI）的完整视图层级。
-            # snapshotMaxDepth=60 已在 Step 2 设置，深层节点可正常扫出。
-            status, sc_resp = await _async_wda_request(
-                "GET",
-                f"{wda_url}/session/{sid}/source?format=json",
-                timeout=30.0,
-                force_http=force_http
-            )
-            
-            if status == 200:
-                if isinstance(sc_resp, dict):
-                    val = sc_resp.get("value", sc_resp)
-                    return {"status": "ok", "source": val}
-                elif isinstance(sc_resp, str):
-                    return {"status": "ok", "source": sc_resp}
-            
-            return {"status": "error", "msg": f"WDA source failed ({status})，如持续失败请重启 WDA", "raw": sc_resp}
+                
+                # ── Step 3: 获取 UI 树 ──
+                # [v2105 修复] 去掉 scope=AppiumAUT：该参数要求 WDA 只返回"被测 App"的树，
+                # 但我们创建 Session 时没有指定 bundleId，WDA 无法识别 AUT 是谁，
+                # 导致只返回一个空壳根节点（即用户看到的 OTHER）。
+                # 去掉 scope 后 WDA 返回当前前台 App（含系统 UI）的完整视图层级。
+                # snapshotMaxDepth=60 已在 Step 2 设置，深层节点可正常扫出。
+                status, sc_resp = await _async_wda_request(
+                    "GET",
+                    f"{wda_url}/session/{sid}/source?format=json",
+                    timeout=30.0,
+                    force_http=force_http
+                )
+                
+                if status == 200:
+                    if isinstance(sc_resp, dict):
+                        val = sc_resp.get("value", sc_resp)
+                        return {"status": "ok", "source": val}
+                    elif isinstance(sc_resp, str):
+                        return {"status": "ok", "source": sc_resp}
+                else:
+                    # [修复] 视频播放页等极速变化的页面容易导致 WDA Session 中的元素引用过期或解析超时
+                    # 此时会返回 404 (stale element reference) 或 500
+                    # 如果是第一次尝试失败，清理失效的 session 缓存并重试
+                    if attempt < max_attempts - 1:
+                        SESSION_CACHE.pop(cache_key, None)
+                        continue
+                
+                return {"status": "error", "msg": f"WDA source failed ({status})，如持续失败请重启 WDA", "raw": sc_resp}
 
 
         # [v1682.13] 指令分支：Ping
