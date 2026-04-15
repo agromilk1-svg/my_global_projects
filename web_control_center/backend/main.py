@@ -1082,14 +1082,16 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                 timeout=3.0, force_http=force_http
             )
             
-            # ── Step 3: 获取 UI 树 (关键参数: scope=AppiumAUT) ──
-            # Appium 源码中始终传递 scope=AppiumAUT，告诉 WDA 只扫描当前前台 App
-            # 如果不传 scope，WDA 会尝试遍历整个系统视图（包括 SpringBoard + 通知中心 + 全部后台进程）
-            # 这就是之前一直超时的根本原因！
+            # ── Step 3: 获取 UI 树 ──
+            # [v2105 修复] 去掉 scope=AppiumAUT：该参数要求 WDA 只返回"被测 App"的树，
+            # 但我们创建 Session 时没有指定 bundleId，WDA 无法识别 AUT 是谁，
+            # 导致只返回一个空壳根节点（即用户看到的 OTHER）。
+            # 去掉 scope 后 WDA 返回当前前台 App（含系统 UI）的完整视图层级。
+            # snapshotMaxDepth=60 已在 Step 2 设置，深层节点可正常扫出。
             status, sc_resp = await _async_wda_request(
                 "GET",
-                f"{wda_url}/session/{sid}/source?format=json&scope=AppiumAUT",
-                timeout=20.0,
+                f"{wda_url}/session/{sid}/source?format=json",
+                timeout=30.0,
                 force_http=force_http
             )
             

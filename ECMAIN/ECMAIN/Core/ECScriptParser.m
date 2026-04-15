@@ -1213,6 +1213,14 @@ static NSString *gActiveWDASessionId = nil;
 - (NSString *)getElementAttribute:(NSString *)predicate attribute:(NSString *)attr {
   if (!predicate || predicate.length == 0 || !attr || attr.length == 0) return @"";
   
+  int customDepth = 60;
+  NSArray *args = [JSContext currentArguments];
+  if (args.count > 2 && ![args[2] isUndefined]) {
+      customDepth = [args[2] toInt32];
+  }
+  
+  [self applyWDADepth:customDepth];
+  
   NSString *using = [predicate hasPrefix:@"**/"] ? @"class chain" : @"predicate string";
   NSDictionary *elementsRes = [self performWDAActionWithResult:@"findAttrElement"
                                                         endpoint:@"/elements"
