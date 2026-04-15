@@ -1203,16 +1203,29 @@ static NSString *gActiveWDASessionId = nil;
 // ══════════════════════════════════════════════════════
 
 // 获取 UI 树 JSON（一次 HTTP 请求拿到全部元素属性）
+// 优先使用 /wda/accessibleSource：只返回 accessible=YES 的元素
+// 自动跳过视频渲染层（AVPlayerLayer、Metal 层等非 accessible 元素）
+// 失败时降级到标准 /source
 - (NSDictionary *)_getSourceTreeJSON {
     [self ensureWDASessionId];
     if (!gActiveWDASessionId) return nil;
     
-    NSString *endpoint = [NSString stringWithFormat:@"/session/%@/source?format=json", gActiveWDASessionId];
-    NSDictionary *res = [self performWDAActionWithResult:@"getSourceTree" endpoint:endpoint body:nil method:@"GET"];
+    // 第一阶段：尝试 accessibleSource（更快，跳过视频渲染层）
+    NSString *accessibleEndpoint = [NSString stringWithFormat:@"/session/%@/wda/accessibleSource", gActiveWDASessionId];
+    NSDictionary *res = [self performWDAActionWithResult:@"getAccessibleSource" endpoint:accessibleEndpoint body:nil method:@"GET"];
     if (res && res[@"value"] && [res[@"value"] isKindOfClass:[NSDictionary class]]) {
         return res[@"value"];
     }
-    return res; // 可能直接就是树根
+    
+    // 第二阶段：降级到标准 source
+    [self log:@"⚠️ accessibleSource 失败，降级到标准 source"];
+    NSString *sourceEndpoint = [NSString stringWithFormat:@"/session/%@/source?format=json", gActiveWDASessionId];
+    res = [self performWDAActionWithResult:@"getSourceTree" endpoint:sourceEndpoint body:nil method:@"GET"];
+    if (res && res[@"value"] && [res[@"value"] isKindOfClass:[NSDictionary class]]) {
+        return res[@"value"];
+    }
+    return res;
+
 }
 
 // 在 JSON 树中递归搜索匹配的元素节点
@@ -1225,8 +1238,36 @@ static NSString *gActiveWDASessionId = nil;
 //   label BEGINSWITH "xxx" → 前缀匹配
 //   AND / OR 组合         → 逻辑组合
 // 返回第一个匹配的节点字典（包含 type, name, label, value, rect）
+//
+// 优化：自动跳过 rect 完全在屏幕外的子树（解决 TikTok 预加载缓存视频导致搜索慢）
 - (NSDictionary *)_searchNode:(NSDictionary *)node predicate:(NSString *)predicate {
     if (!node || ![node isKindOfClass:[NSDictionary class]]) return nil;
+    
+    // 离屏子树剪枝：如果节点完全在屏幕外，跳过整棵子树
+    // TikTok 会预加载上下 2-3 个视频，它们的 rect.y 在屏幕范围外
+    NSDictionary *rect = node[@"rect"];
+    if (rect && [rect isKindOfClass:[NSDictionary class]]) {
+        double ny = [rect[@"y"] doubleValue];
+        double nh = [rect[@"height"] doubleValue];
+        double nw = [rect[@"width"] doubleValue];
+        double nx = [rect[@"x"] doubleValue];
+        
+        // 获取屏幕尺寸（iPhone 7: 375x667, iPhone X系列: 375x812 等）
+        CGSize screenSize = [UIScreen mainScreen].bounds.size;
+        double margin = 50.0; // 容差：防止边缘元素被误跳
+        
+        // 节点完全在屏幕下方
+        if (ny > screenSize.height + margin) return nil;
+        // 节点完全在屏幕上方
+        if (ny + nh < -margin) return nil;
+        // 节点完全在屏幕右侧外
+        if (nx > screenSize.width + margin) return nil;
+        // 节点完全在屏幕左侧外
+        if (nx + nw < -margin) return nil;
+        
+        // 跳过宽高为 0 的不可见元素（通常是隐藏容器）
+        if (nw <= 0 && nh <= 0) return nil;
+    }
     
     // 检查当前节点是否匹配
     if ([self _nodeMatches:node predicate:predicate]) {
