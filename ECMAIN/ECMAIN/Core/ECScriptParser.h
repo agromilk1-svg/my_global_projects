@@ -49,6 +49,8 @@ JSExportAs(setWifi,
 JSExportAs(findText, -(NSDictionary *)findText : (NSString *)text);
 JSExportAs(findElement, -(NSDictionary *)findElement : (NSString *)predicate);
 JSExportAs(tapElement, -(BOOL)tapElement : (NSString *)predicate);
+JSExportAs(getElementText, -(NSString *)getElementText : (NSString *)predicate);
+JSExportAs(getElementAttribute, -(NSString *)getElementAttribute : (NSString *)predicate attribute:(NSString *)attr);
 - (BOOL)tapText:(NSString *)text;
 - (NSDictionary *)ocr;
 

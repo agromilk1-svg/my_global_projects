@@ -1170,6 +1170,89 @@ static NSString *gActiveWDASessionId = nil;
   return NO;
 }
 
+- (NSString *)getElementAttribute:(NSString *)predicate attribute:(NSString *)attr {
+  if (!predicate || predicate.length == 0 || !attr || attr.length == 0) return @"";
+  
+  NSString *using = [predicate hasPrefix:@"**/"] ? @"class chain" : @"predicate string";
+  NSDictionary *elementsRes = [self performWDAActionWithResult:@"findAttrElement"
+                                                        endpoint:@"/elements"
+                                                            body:@{@"using": using, @"value": predicate}
+                                                          method:@"POST"];
+  
+  if (elementsRes && elementsRes[@"value"]) {
+      NSArray *elements = elementsRes[@"value"];
+      if ([elements isKindOfClass:[NSArray class]] && elements.count > 0) {
+          NSString *elementId = elements[0][@"ELEMENT"];
+          if (elementId && [elementId isKindOfClass:[NSString class]]) {
+              NSString *attrEndpoint = [NSString stringWithFormat:@"/element/%@/attribute/%@", elementId, attr];
+              NSDictionary *attrRes = [self performWDAActionWithResult:@"getElementAttribute"
+                                                              endpoint:attrEndpoint
+                                                                  body:nil
+                                                                method:@"GET"];
+              if ([attrRes[@"status"] integerValue] == 0) {
+                  id val = attrRes[@"value"];
+                  if (val && ![val isKindOfClass:[NSNull class]]) {
+                      return [NSString stringWithFormat:@"%@", val];
+                  }
+              }
+          }
+      }
+  }
+  return @"";
+}
+
+- (NSString *)getElementText:(NSString *)predicate {
+  if (!predicate || predicate.length == 0) return @"";
+  
+  NSString *using = [predicate hasPrefix:@"**/"] ? @"class chain" : @"predicate string";
+  NSDictionary *elementsRes = [self performWDAActionWithResult:@"getTextElement"
+                                                        endpoint:@"/elements"
+                                                            body:@{@"using": using, @"value": predicate}
+                                                          method:@"POST"];
+  
+  if (elementsRes && elementsRes[@"value"]) {
+      NSArray *elements = elementsRes[@"value"];
+      if ([elements isKindOfClass:[NSArray class]] && elements.count > 0) {
+          NSString *elementId = elements[0][@"ELEMENT"];
+          if (elementId && [elementId isKindOfClass:[NSString class]]) {
+              // 优先取 label (很多控件在 iOS 里的文本是存在 label 里的)
+              NSString *lblEndpoint = [NSString stringWithFormat:@"/element/%@/attribute/label", elementId];
+              NSDictionary *lblRes = [self performWDAActionWithResult:@"getElementLabel"
+                                                             endpoint:lblEndpoint
+                                                                 body:nil
+                                                               method:@"GET"];
+              if ([lblRes[@"status"] integerValue] == 0 && lblRes[@"value"] && ![lblRes[@"value"] isKindOfClass:[NSNull class]]) {
+                  NSString *lblStr = [NSString stringWithFormat:@"%@", lblRes[@"value"]];
+                  if (lblStr.length > 0) return lblStr;
+              }
+              
+              // 如果 label 没有，取 value
+              NSString *valEndpoint = [NSString stringWithFormat:@"/element/%@/attribute/value", elementId];
+              NSDictionary *valRes = [self performWDAActionWithResult:@"getElementValue"
+                                                             endpoint:valEndpoint
+                                                                 body:nil
+                                                               method:@"GET"];
+              if ([valRes[@"status"] integerValue] == 0 && valRes[@"value"] && ![valRes[@"value"] isKindOfClass:[NSNull class]]) {
+                  NSString *valStr = [NSString stringWithFormat:@"%@", valRes[@"value"]];
+                  if (valStr.length > 0) return valStr;
+              }
+
+              // 最后退化取 name
+              NSString *nmEndpoint = [NSString stringWithFormat:@"/element/%@/attribute/name", elementId];
+              NSDictionary *nmRes = [self performWDAActionWithResult:@"getElementName"
+                                                            endpoint:nmEndpoint
+                                                                body:nil
+                                                              method:@"GET"];
+              if ([nmRes[@"status"] integerValue] == 0 && nmRes[@"value"] && ![nmRes[@"value"] isKindOfClass:[NSNull class]]) {
+                  NSString *nmStr = [NSString stringWithFormat:@"%@", nmRes[@"value"]];
+                  if (nmStr.length > 0) return nmStr;
+              }
+          }
+      }
+  }
+  return @"";
+}
+
 - (BOOL)tapText:(NSString *)text {
   // 使用 findText+随机点击的模式重构，替代 WDA 硬编码的无偏移定点点击
   NSDictionary *res = [self findText:text];
