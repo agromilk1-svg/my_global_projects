@@ -760,6 +760,10 @@ const fetchUITree = async () => {
         isInspectorMode.value = true;
       }
       log('✓ [UI 树] 安全防死锁拓扑快照获取成功！');
+      // 如果后端自动降级了深度，提示用户
+      if (res.degraded && res.msg) {
+        log(`⚠️ ${res.msg}`, 'warn');
+      }
     } else if (res.status === 'ok' && res.detail) {
       uiTreeData.value = typeof res.detail === 'string' ? res.detail : JSON.stringify(res.detail, null, 2);
       log('✓ [UI 树] 安全防死锁拓扑快照获取成功！ (detail)');
