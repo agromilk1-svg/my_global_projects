@@ -1098,14 +1098,42 @@ static NSString *gActiveWDASessionId = nil;
   return result ?: @{@"found" : @NO};
 }
 
+- (void)applyWDADepth:(int)depth {
+    if (depth <= 0 || depth == 60) return;
+    [self ensureWDASessionId];
+    if (!gActiveWDASessionId) return;
+    [self performWDAActionWithResult:@"setSettings"
+                            endpoint:[NSString stringWithFormat:@"/session/%@/appium/settings", gActiveWDASessionId]
+                                body:@{@"settings": @{@"snapshotMaxDepth": @(depth)}}
+                              method:@"POST"];
+}
+
+- (void)restoreWDADepth:(int)depth {
+    if (depth <= 0 || depth == 60) return;
+    if (!gActiveWDASessionId) return;
+    [self performWDAActionWithResult:@"setSettings"
+                            endpoint:[NSString stringWithFormat:@"/session/%@/appium/settings", gActiveWDASessionId]
+                                body:@{@"settings": @{@"snapshotMaxDepth": @60}}
+                              method:@"POST"];
+}
+
 - (NSDictionary *)findElement:(NSString *)predicate {
   if (!predicate || predicate.length == 0) return @{@"found": @NO};
+  
+  int customDepth = 60;
+  NSArray *args = [JSContext currentArguments];
+  if (args.count > 1 && ![args[1] isUndefined]) {
+      customDepth = [args[1] toInt32];
+  }
+  
+  [self applyWDADepth:customDepth];
   
   NSString *using = [predicate hasPrefix:@"**/"] ? @"class chain" : @"predicate string";
   NSDictionary *elementsRes = [self performWDAActionWithResult:@"findElement"
                                                         endpoint:@"/elements"
                                                             body:@{@"using": using, @"value": predicate}
                                                           method:@"POST"];
+
   
   if (elementsRes && elementsRes[@"value"]) {
       NSArray *elements = elementsRes[@"value"];
@@ -1124,6 +1152,7 @@ static NSString *gActiveWDASessionId = nil;
                       double h = [rv[@"height"] doubleValue];
                       double x = [rv[@"x"] doubleValue] + w / 2.0;
                       double y = [rv[@"y"] doubleValue] + h / 2.0;
+                      [self restoreWDADepth:customDepth];
                       return @{
                           @"found": @YES,
                           @"x": @(x),
@@ -1137,11 +1166,20 @@ static NSString *gActiveWDASessionId = nil;
           }
       }
   }
+  [self restoreWDADepth:customDepth];
   return @{@"found": @NO};
 }
 
 - (BOOL)tapElement:(NSString *)predicate {
   if (!predicate || predicate.length == 0) return NO;
+  
+  int customDepth = 60;
+  NSArray *args = [JSContext currentArguments];
+  if (args.count > 1 && ![args[1] isUndefined]) {
+      customDepth = [args[1] toInt32];
+  }
+  
+  [self applyWDADepth:customDepth];
   
   NSString *using = [predicate hasPrefix:@"**/"] ? @"class chain" : @"predicate string";
   NSDictionary *elementsRes = [self performWDAActionWithResult:@"tapElement"
@@ -1161,12 +1199,14 @@ static NSString *gActiveWDASessionId = nil;
                                                                 method:@"POST"];
               if ([clickRes[@"status"] integerValue] == 0) {
                   [self log:[NSString stringWithFormat:@"✅ tapElement 成功点击匹配项: %@", predicate]];
+                  [self restoreWDADepth:customDepth];
                   return YES;
               }
           }
       }
   }
   [self log:[NSString stringWithFormat:@"❌ tapElement 未找到目标元素: %@", predicate]];
+  [self restoreWDADepth:customDepth];
   return NO;
 }
 
@@ -1192,17 +1232,27 @@ static NSString *gActiveWDASessionId = nil;
               if ([attrRes[@"status"] integerValue] == 0) {
                   id val = attrRes[@"value"];
                   if (val && ![val isKindOfClass:[NSNull class]]) {
+                      [self restoreWDADepth:customDepth];
                       return [NSString stringWithFormat:@"%@", val];
                   }
               }
           }
       }
   }
+  [self restoreWDADepth:customDepth];
   return @"";
 }
 
 - (NSString *)getElementText:(NSString *)predicate {
   if (!predicate || predicate.length == 0) return @"";
+  
+  int customDepth = 60;
+  NSArray *args = [JSContext currentArguments];
+  if (args.count > 1 && ![args[1] isUndefined]) {
+      customDepth = [args[1] toInt32];
+  }
+  
+  [self applyWDADepth:customDepth];
   
   NSString *using = [predicate hasPrefix:@"**/"] ? @"class chain" : @"predicate string";
   NSDictionary *elementsRes = [self performWDAActionWithResult:@"getTextElement"
@@ -1245,11 +1295,15 @@ static NSString *gActiveWDASessionId = nil;
                                                               method:@"GET"];
               if ([nmRes[@"status"] integerValue] == 0 && nmRes[@"value"] && ![nmRes[@"value"] isKindOfClass:[NSNull class]]) {
                   NSString *nmStr = [NSString stringWithFormat:@"%@", nmRes[@"value"]];
-                  if (nmStr.length > 0) return nmStr;
+                  if (nmStr.length > 0) {
+                      [self restoreWDADepth:customDepth];
+                      return nmStr;
+                  }
               }
           }
       }
   }
+  [self restoreWDADepth:customDepth];
   return @"";
 }
 

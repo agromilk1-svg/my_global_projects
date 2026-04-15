@@ -734,6 +734,8 @@ class ActionProxyRequest(BaseModel):
     region_right: float = 1.0   # 区域右侧 X 比例 (1=屏幕最右)
     # [v2050] UI 元素定向查询参数：谓词表达式，用于 XCTest 精准搜索单个元素
     predicate: str = ""         # NSPredicate 格式，如 "label == '关注'"
+    # [v2105] UI 树扫描与元素定点搜索的层级最大深度
+    max_depth: int = 60
 
 SESSION_CACHE = {}
 SIZE_CACHE = {}
@@ -1066,11 +1068,12 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                 return {"status": "error", "msg": "无法建立 WDA Session，请检查 WDA 是否存活（可能已被之前的操作卡死，需重启）"}
             
             # ── Step 2: 推送 Appium Settings（限制快照深度、关闭动画等待）──
+            custom_depth = getattr(req, "max_depth", 60) or 60
             await _async_wda_request(
                 "POST", f"{wda_url}/session/{sid}/appium/settings",
                 json_body={
                     "settings": {
-                        "snapshotMaxDepth": 60,
+                        "snapshotMaxDepth": custom_depth,
                         "waitForQuiescence": False,
                         "animationCoolOffTimeout": 0,
                         "waitForIdleTimeout": 0
