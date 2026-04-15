@@ -1058,7 +1058,6 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                 {"depth": 5,            "snap_timeout": 2, "http_timeout": 6.0},
             ]
             
-            import asyncio
             for attempt_idx, attempt_cfg in enumerate(attempts):
                 try_depth = attempt_cfg["depth"]
                 snap_timeout = attempt_cfg["snap_timeout"]
