@@ -1101,6 +1101,8 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                         "settings": {
                             "snapshotMaxDepth": try_depth,
                             "customSnapshotTimeout": snap_timeout,
+                            "includeHittableInPageSource": False,
+                            "includeNativeFrameInPageSource": False,
                             "waitForQuiescence": False,
                             "animationCoolOffTimeout": 0,
                             "waitForIdleTimeout": 0,
