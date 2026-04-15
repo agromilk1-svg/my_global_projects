@@ -1098,6 +1098,78 @@ static NSString *gActiveWDASessionId = nil;
   return result ?: @{@"found" : @NO};
 }
 
+- (NSDictionary *)findElement:(NSString *)predicate {
+  if (!predicate || predicate.length == 0) return @{@"found": @NO};
+  
+  NSString *using = [predicate hasPrefix:@"**/"] ? @"class chain" : @"predicate string";
+  NSDictionary *elementsRes = [self performWDAActionWithResult:@"findElement"
+                                                        endpoint:@"/elements"
+                                                            body:@{@"using": using, @"value": predicate}
+                                                          method:@"POST"];
+  
+  if (elementsRes && elementsRes[@"value"]) {
+      NSArray *elements = elementsRes[@"value"];
+      if ([elements isKindOfClass:[NSArray class]] && elements.count > 0) {
+          NSString *elementId = elements[0][@"ELEMENT"];
+          if (elementId && [elementId isKindOfClass:[NSString class]]) {
+              NSString *rectEndpoint = [NSString stringWithFormat:@"/element/%@/rect", elementId];
+              NSDictionary *rectRes = [self performWDAActionWithResult:@"getElementRect"
+                                                              endpoint:rectEndpoint
+                                                                  body:nil
+                                                                method:@"GET"];
+              if (rectRes && [rectRes[@"status"] integerValue] == 0) {
+                  NSDictionary *rv = rectRes[@"value"];
+                  if ([rv isKindOfClass:[NSDictionary class]]) {
+                      double w = [rv[@"width"] doubleValue];
+                      double h = [rv[@"height"] doubleValue];
+                      double x = [rv[@"x"] doubleValue] + w / 2.0;
+                      double y = [rv[@"y"] doubleValue] + h / 2.0;
+                      return @{
+                          @"found": @YES,
+                          @"x": @(x),
+                          @"y": @(y),
+                          @"width": @(w),
+                          @"height": @(h),
+                          @"element_id": elementId
+                      };
+                  }
+              }
+          }
+      }
+  }
+  return @{@"found": @NO};
+}
+
+- (BOOL)tapElement:(NSString *)predicate {
+  if (!predicate || predicate.length == 0) return NO;
+  
+  NSString *using = [predicate hasPrefix:@"**/"] ? @"class chain" : @"predicate string";
+  NSDictionary *elementsRes = [self performWDAActionWithResult:@"tapElement"
+                                                        endpoint:@"/elements"
+                                                            body:@{@"using": using, @"value": predicate}
+                                                          method:@"POST"];
+  
+  if (elementsRes && elementsRes[@"value"]) {
+      NSArray *elements = elementsRes[@"value"];
+      if ([elements isKindOfClass:[NSArray class]] && elements.count > 0) {
+          NSString *elementId = elements[0][@"ELEMENT"];
+          if (elementId && [elementId isKindOfClass:[NSString class]]) {
+              NSString *clickEndpoint = [NSString stringWithFormat:@"/element/%@/click", elementId];
+              NSDictionary *clickRes = [self performWDAActionWithResult:@"clickElement"
+                                                              endpoint:clickEndpoint
+                                                                  body:nil
+                                                                method:@"POST"];
+              if ([clickRes[@"status"] integerValue] == 0) {
+                  [self log:[NSString stringWithFormat:@"✅ tapElement 成功点击匹配项: %@", predicate]];
+                  return YES;
+              }
+          }
+      }
+  }
+  [self log:[NSString stringWithFormat:@"❌ tapElement 未找到目标元素: %@", predicate]];
+  return NO;
+}
+
 - (BOOL)tapText:(NSString *)text {
   // 使用 findText+随机点击的模式重构，替代 WDA 硬编码的无偏移定点点击
   NSDictionary *res = [self findText:text];
@@ -1832,10 +1904,10 @@ static NSString *gActiveWDASessionId = nil;
   // - /wda/ 前缀的端点默认不加 session（绝大多数都是 withoutSession）
   // - /wda/apps/ 前缀的端点需要 session（launch/activate/terminate/state 均需要 session）
   // - /alert/ 前缀的端点需要 session（有 session 和 withoutSession 双版本）
-  // - /wda/alert/ 前缀的端点需要 session（仅有带 session 版本）
+  // - /element/ 前缀或 /elements 端点需要 session
   // - /screenshot 等其他端点不需要 session
   if ([endpoint hasPrefix:@"/alert/"] || [endpoint hasPrefix:@"/wda/alert/"] ||
-      [endpoint hasPrefix:@"/wda/apps/"]) {
+      [endpoint hasPrefix:@"/wda/apps/"] || [endpoint hasPrefix:@"/element"]) {
     [self ensureWDASessionId];
     if (gActiveWDASessionId) {
       actualEndpoint = [NSString

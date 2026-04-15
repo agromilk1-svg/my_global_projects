@@ -47,6 +47,8 @@ JSExportAs(setWifi,
 
 // Text / OCR
 JSExportAs(findText, -(NSDictionary *)findText : (NSString *)text);
+JSExportAs(findElement, -(NSDictionary *)findElement : (NSString *)predicate);
+JSExportAs(tapElement, -(BOOL)tapElement : (NSString *)predicate);
 - (BOOL)tapText:(NSString *)text;
 - (NSDictionary *)ocr;
 
