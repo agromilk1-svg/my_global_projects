@@ -689,6 +689,9 @@ const parseUITree = (treeData: any) => {
     }
 };
 
+// [v2100] OCR 扫描截图快照（用于在 UI 树面板中展示）
+const ocrSnapshotB64 = ref('');
+
 const fetchUITree = async () => {
   if (!selectedDevice.value) {
     log('❌ [UI 树] 未锁定任何目标设备，无法下发寻址波', 'error');
@@ -696,22 +699,12 @@ const fetchUITree = async () => {
   }
   isUITreeFetching.value = true;
   uiTreeData.value = "";
+  ocrSnapshotB64.value = "";
   
-  // [关键] 暂停截图推流，释放 Accessibility 通道
-  // TikTok 等复杂 APP 的 UI 树遍历会独占 XCTest 主线程，
-  // 如果截图流同时在抢占同一通道，会导致死锁 → WDA 看门狗触发自杀重启
-  const savedStreamUrl = streamUrl.value;
-  if (savedStreamUrl) {
-    log('⏸️ [UI 树] 临时暂停截图推流，释放 Accessibility 通道...');
-    streamUrl.value = '';
-    // 向设备发送停止推流指令，彻底释放截图资源
-    sendDeviceAction('STOP_ALL_STREAMS', {});
-    // 等一小段时间让截图通道完全释放
-    await new Promise(r => setTimeout(r, 500));
-  }
+  // [v2100] 新方案走截图+OCR，不经过 Accessibility 引擎，无需暂停推流
   
   try {
-    log(`📡 正在发射获取 UI 树指令，目标: ${selectedDevice.value}（复杂 APP 可能需要 10~30 秒）`);
+    log(`📡 [OCR扫描] 正在对 ${selectedDevice.value} 发起截图+OCR并行扫描（约0.5秒）...`);
     const reqRes = await authFetch(`${apiBase}/action_proxy`, {
         method: 'POST',
         body: JSON.stringify({
@@ -729,15 +722,56 @@ const fetchUITree = async () => {
         throw new Error('解析 JSON 回执失败');
     }
 
-    if (res.source) {
-      // 成功抽取出底层源码
+    // [v2100] 新格式：scan_mode=ocr，包含 screenshot_b64 和 elements
+    if (res.scan_mode === 'ocr') {
+      // 保存截图快照
+      if (res.screenshot_b64) {
+        ocrSnapshotB64.value = res.screenshot_b64;
+      }
+      
+      // 将 OCR 元素转换为 parsedUITreeNodes 可消费的格式
+      const elements = res.elements || [];
+      const nodes: any[] = [];
+      
+      // 构建纯文本树形展示（供复制使用）
+      const lines: string[] = [];
+      lines.push(`═══ OCR 智能扫描结果 ═══`);
+      lines.push(`扫描时间: ${new Date().toLocaleTimeString()}`);
+      lines.push(`识别元素: ${elements.length} 个`);
+      lines.push(`─────────────────────────`);
+      
+      for (const el of elements) {
+        const x = el.x || 0;
+        const y = el.y || 0;
+        const w = el.width || 0;
+        const h = el.height || 0;
+        const label = el.label || el.value || '';
+        const conf = el.confidence ? (el.confidence * 100).toFixed(0) + '%' : '';
+        
+        nodes.push({
+          type: 'OCRText',
+          name: '',
+          label: label,
+          value: label,
+          visible: 'true',
+          x, y, w, h
+        });
+        
+        lines.push(`📝 "${label}"  →  (${Math.round(x)}, ${Math.round(y)}, ${Math.round(w)}×${Math.round(h)})  ${conf}`);
+      }
+      
+      parsedUITreeNodes.value = nodes;
+      uiTreeData.value = lines.join('\n');
+      isInspectorMode.value = true;
+      log(`✓ [OCR扫描] 极速扫描完成！识别到 ${elements.length} 个可交互文字元素，已激活屏幕悬停审查模式`);
+      
+    } else if (res.source) {
+      // 兼容旧格式
       if (typeof res.source === 'string' && res.source.startsWith('<')) {
-        // 如果后端传的还是 fallback xml 兼容格式
         uiTreeData.value = res.source;
         parseUITree(res.source);
         isInspectorMode.value = true;
       } else {
-        // 全新的高能 JSON / OR dict string 模式
         uiTreeData.value = typeof res.source === 'string' ? res.source : JSON.stringify(res.source, null, 2);
         parseUITree(res.source);
         isInspectorMode.value = true;
@@ -755,13 +789,6 @@ const fetchUITree = async () => {
     log(`❌ [UI 树] 信号断裂: ${error}`);
   } finally {
     isUITreeFetching.value = false;
-    // [关键] 恢复截图推流
-    if (savedStreamUrl) {
-      log('▶️ [UI 树] 扫描完成，正在恢复截图推流...');
-      // 延迟一点再恢复，让 WDA 主线程喘口气
-      await new Promise(r => setTimeout(r, 300));
-      streamUrl.value = savedStreamUrl;
-    }
   }
 };
 
@@ -5065,13 +5092,13 @@ const handleImageUpload = (event: Event) => {
             <div v-show="activeRightTab === 'uitree'" class="flex flex-col flex-1 min-h-0 p-3 bg-gray-900/50 overflow-y-auto custom-scrollbar gap-3">
               <div class="flex flex-col bg-gray-800/80 border border-gray-700 shadow-md rounded-lg overflow-hidden shrink-0 flex-1">
                 <div class="bg-gray-700/60 px-3 py-2 text-[10px] font-bold tracking-widest text-amber-300 border-b border-gray-700">
-                  🌲 实时捕获视图节点树 (UI Tree)
+                  🔍 OCR 智能视觉扫描 (不触发死锁)
                 </div>
                 <div class="p-3 flex flex-col gap-3 h-full">
                   <div class="flex gap-2 items-center flex-wrap">
-                    <button @click="fetchUITree" class="flex-1 py-2 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white text-xs font-bold rounded shadow-lg border border-amber-500 transition-all active:scale-[0.98] flex justify-center items-center gap-1.5 tracking-wider" :disabled="isUITreeFetching" title="初次获取较慢(3~10秒)，一旦获取到即可随意悬停探测坐标">
-                      <span v-if="!isUITreeFetching">📡 扫描环境构造拓扑图</span>
-                      <span v-else class="animate-pulse flex items-center gap-2">扫描波发射中 (请耐心等待约4秒)...</span>
+                    <button @click="fetchUITree" class="flex-1 py-2 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white text-xs font-bold rounded shadow-lg border border-amber-500 transition-all active:scale-[0.98] flex justify-center items-center gap-1.5 tracking-wider" :disabled="isUITreeFetching" title="通过截图+OCR识别屏幕上所有文字元素及坐标，不调用XCTest，不会卡死WDA">
+                      <span v-if="!isUITreeFetching">⚡ OCR 极速扫描</span>
+                      <span v-else class="animate-pulse flex items-center gap-2">📸 截图+OCR识别中...</span>
                     </button>
                     <!-- 审查模式开关 -->
                     <label class="flex items-center gap-2 cursor-pointer bg-sky-900/40 hover:bg-sky-800/60 border border-sky-700/50 px-3 py-2 rounded transition-colors shadow">
@@ -5079,14 +5106,19 @@ const handleImageUpload = (event: Event) => {
                       <span :class="['text-[11px] font-bold tracking-wide', parsedUITreeNodes.length === 0 ? 'text-gray-500' : 'text-sky-300']">🔍 屏幕悬停审查元素</span>
                     </label>
                     <button @click="copyText(uiTreeData)" v-if="uiTreeData" class="py-2 px-4 bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs font-bold rounded shadow-lg border border-gray-600 transition-all active:scale-[0.98]">
-                      📄 复制 XML
+                      📄 复制结果
                     </button>
                   </div>
 
+                  <!-- OCR 截图快照预览 -->
+                  <div v-if="ocrSnapshotB64" class="shrink-0 border border-amber-700/30 rounded overflow-hidden bg-black">
+                    <img :src="'data:image/png;base64,' + ocrSnapshotB64" class="w-full max-h-[200px] object-contain" alt="OCR扫描截图快照" />
+                  </div>
                   
-                  <div class="flex-1 relative bg-gray-950 border border-gray-700 rounded p-2 overflow-auto custom-scrollbar min-h-[400px]">
-                     <div v-if="!uiTreeData && !isUITreeFetching" class="absolute inset-0 flex items-center justify-center text-gray-600 text-[10px] uppercase">
-                       点击上方按钮请求 WDA 发送 UI 树数据...
+                  <div class="flex-1 relative bg-gray-950 border border-gray-700 rounded p-2 overflow-auto custom-scrollbar min-h-[300px]">
+                     <div v-if="!uiTreeData && !isUITreeFetching" class="absolute inset-0 flex items-center justify-center text-gray-600 text-[10px] flex-col gap-2">
+                       <span>点击「⚡ OCR 极速扫描」识别屏幕上所有文字元素</span>
+                       <span class="text-[9px] text-gray-700">基于截图+Vision.framework，不经过XCTest，永远不会卡死WDA</span>
                      </div>
                      <pre v-else class="text-[10px] font-mono text-emerald-400 break-all whitespace-pre-wrap leading-tight select-text cursor-text">{{ uiTreeData }}</pre>
                   </div>

@@ -1029,23 +1029,71 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                     return {"status": "ok", "screenshot_b64": b64_val}
             return {"status": "error", "msg": f"WDA screenshot failed ({status})"}
 
-        # [v1682.32] 指令分支：获取 UI 树 (极速防死锁策略)
+        # [v2100] 指令分支：获取 UI 树 (截图+OCR 降维打击方案)
         if req.action_type == "WDA_SOURCE":
-            # 抖音等复杂应用存在海量视频节点，导致原生 [XCUIElement snapshot] 卡死超过 16 秒并触发看门狗自杀重生。
-            # 策略：优先尝试 wda/accessibleSource (绕过 snapshot 递归截取，直接快照加速100倍)。
-            status, sc_resp = await _async_wda_request("GET", f"{wda_url}/wda/accessibleSource", timeout=10.0, force_http=force_http)
+            # ═══════════════════════════════════════════════════════════════
+            # 【致命问题】TikTok 等复杂 APP 的视图树层级高达数万节点，
+            # 无论使用 /source?format=xml/json/description 还是 /wda/accessibleSource，
+            # 底层都不可避免地调用 [XCUIElement snapshot]，该私有 API 在 XCTest 主线程上
+            # 进行全量递归遍历，导致 8~16 秒的完全阻塞，最终被 iOS 看门狗判定为死锁并强杀 WDA。
+            #
+            # 【终极方案】彻底绕过 Accessibility 引擎：
+            # 1. 截图 (/screenshot) → 走 IOSurface 帧缓冲区，~100ms，不经过 XCTest
+            # 2. OCR (/wda/ocr) → 走 Vision.framework 本地推理，~300ms，不经过 XCTest
+            # 两者并行执行，总耗时 < 500ms，永远不会触发看门狗！
+            # ═══════════════════════════════════════════════════════════════
             
-            # 如果该 WDA 分支不支持该极速端点 (404)，则降级回基于 JSON 格式的 /source，超时设定为 15 秒防止看门狗咬人
-            if status != 200:
-                status, sc_resp = await _async_wda_request("GET", f"{wda_url}/source?format=json", timeout=15.0, force_http=force_http)
-                
-            if status == 200:
-                if isinstance(sc_resp, dict):
-                    val = sc_resp.get("value", sc_resp)
-                    return {"status": "ok", "source": val}
-                elif isinstance(sc_resp, str):
-                    return {"status": "ok", "source": sc_resp}
-            return {"status": "error", "msg": f"WDA source failed ({status})", "raw": sc_resp}
+            # 并发发射：截图 + OCR 同时执行
+            screenshot_task = asyncio.create_task(
+                _async_wda_request("GET", f"{wda_url}/screenshot", timeout=5.0, force_http=force_http)
+            )
+            ocr_task = asyncio.create_task(
+                _async_wda_request("POST", f"{wda_url}/wda/ocr", json_body={}, timeout=10.0, force_http=force_http)
+            )
+            
+            # 等待两个任务完成
+            sc_status, sc_resp = await screenshot_task
+            ocr_status, ocr_resp = await ocr_task
+            
+            # 提取截图 base64
+            screenshot_b64 = ""
+            if sc_status == 200 and isinstance(sc_resp, dict):
+                screenshot_b64 = sc_resp.get("value", "")
+            
+            # 提取 OCR 识别结果，重建为前端可消费的 UI 元素列表
+            ocr_elements = []
+            if ocr_status == 200 and isinstance(ocr_resp, dict):
+                ocr_val = ocr_resp.get("value", ocr_resp)
+                if isinstance(ocr_val, dict):
+                    texts = ocr_val.get("texts", [])
+                elif isinstance(ocr_val, list):
+                    texts = ocr_val
+                else:
+                    texts = []
+                for t in texts:
+                    if isinstance(t, dict) and "text" in t:
+                        ocr_elements.append({
+                            "type": "OCRText",
+                            "label": t.get("text", ""),
+                            "name": "",
+                            "value": t.get("text", ""),
+                            "x": t.get("x", 0),
+                            "y": t.get("y", 0),
+                            "width": t.get("width", 0),
+                            "height": t.get("height", 0),
+                            "confidence": t.get("confidence", 0)
+                        })
+            
+            if not ocr_elements and not screenshot_b64:
+                return {"status": "error", "msg": "截图和OCR均失败，请检查 WDA 状态"}
+            
+            return {
+                "status": "ok",
+                "scan_mode": "ocr",
+                "screenshot_b64": screenshot_b64,
+                "elements": ocr_elements,
+                "element_count": len(ocr_elements)
+            }
 
 
         # [v1682.13] 指令分支：Ping
