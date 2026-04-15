@@ -1101,30 +1101,41 @@ static NSString *gActiveWDASessionId = nil;
 - (void)applyWDADepth:(int)depth {
     [self ensureWDASessionId];
     if (!gActiveWDASessionId) return;
-    // 推送加速设置：
+    // 推送全量加速设置（与后端 WDA_SOURCE 保持同步）：
     // - snapshotMaxDepth: 限制扫描深度
-    // - useFirstMatch: 找到第一个匹配项就立刻返回，不遍历全树（视频页面关键优化）
-    // - waitForIdleTimeout: 0 = 不等待 App 动画停止
-    // - animationCoolOffTimeout: 0 = 不等待动画冷却
+    // - useFirstMatch: 找到第一个匹配项就立刻返回，不遍历全树
+    // - customSnapshotTimeout: 快照超时秒数，防止视频页无限阻塞
+    // - includeHittableInPageSource: NO = 禁止截图判定可点击性（视频页卡死元凶）
+    // - waitForIdleTimeout / animationCoolOffTimeout: 0 = 不等待动画
+    // - shouldUseCompactResponses: YES = 精简返回数据
     [self performWDAActionWithResult:@"setSettings"
                             endpoint:[NSString stringWithFormat:@"/session/%@/appium/settings", gActiveWDASessionId]
                                 body:@{@"settings": @{
                                     @"snapshotMaxDepth": @(depth),
                                     @"useFirstMatch": @YES,
+                                    @"customSnapshotTimeout": @5,
+                                    @"includeHittableInPageSource": @NO,
+                                    @"includeNativeFrameInPageSource": @NO,
                                     @"waitForIdleTimeout": @0,
-                                    @"animationCoolOffTimeout": @0
+                                    @"animationCoolOffTimeout": @0,
+                                    @"shouldUseCompactResponses": @YES,
+                                    @"elementResponseAttributes": @"type,name,label,value,rect"
                                 }}
                               method:@"POST"];
 }
 
 - (void)restoreWDADepth:(int)depth {
     if (!gActiveWDASessionId) return;
-    // 恢复默认配置；保留 useFirstMatch=YES 因为全局都受益于此优化
+    // 恢复默认配置；保留核心加速项（全局受益）
     [self performWDAActionWithResult:@"setSettings"
                             endpoint:[NSString stringWithFormat:@"/session/%@/appium/settings", gActiveWDASessionId]
                                 body:@{@"settings": @{
                                     @"snapshotMaxDepth": @60,
-                                    @"useFirstMatch": @YES
+                                    @"useFirstMatch": @YES,
+                                    @"customSnapshotTimeout": @15,
+                                    @"includeHittableInPageSource": @NO,
+                                    @"includeNativeFrameInPageSource": @NO,
+                                    @"shouldUseCompactResponses": @YES
                                 }}
                               method:@"POST"];
 }
