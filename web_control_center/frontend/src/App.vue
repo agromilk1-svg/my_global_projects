@@ -3706,11 +3706,32 @@ const endDraw = async (e: MouseEvent) => {
           if (node.label && node.label !== node.name) lines.push(`// label: "${node.label}"`);
           if (node.value) lines.push(`// value: "${node.value}"`);
           lines.push(``);
-          lines.push(`// 方式1: 精确点击中心`);
-          lines.push(`wda.tap(${cx}, ${cy});`);
+          lines.push(`// 方式1: 精确坐标盲按`);
+          lines.push(`# wda.tap(${cx}, ${cy});`);
           lines.push(``);
-          lines.push(`// 方式2: 随机坐标点击（模拟真人，节点范围内缩20%）`);
-          lines.push(`wda.tap(wda.randomInt(${rndMinX}, ${rndMaxX}), wda.randomInt(${rndMinY}, ${rndMaxY}));`);
+          lines.push(`// 方式2: 随机坐标盲按（模拟真人，节点范围内缩）`);
+          lines.push(`# wda.tap(wda.randomInt(${rndMinX}, ${rndMaxX}), wda.randomInt(${rndMinY}, ${rndMaxY}));`);
+          lines.push(``);
+          lines.push(`// 方式3: 智能元素定位点击（推荐！换手机不失效）`);
+          
+          let predicateStr = '';
+          if (node.name) {
+              predicateStr = `name == \\"${node.name}\\"`;
+          } else if (node.label) {
+              predicateStr = `label == \\"${node.label}\\"`;
+          }
+          
+          if (predicateStr) {
+              lines.push(`var el = wda.tapElement('type == "XCUIElementType${shortType}" AND ${predicateStr}');`);
+              lines.push(`if (!el || !el.found) {`);
+              lines.push(`    wda.log("⚠️ 未找到该元素，降级使用坐标盲按...");`);
+              lines.push(`    wda.tap(wda.randomInt(${rndMinX}, ${rndMaxX}), wda.randomInt(${rndMinY}, ${rndMaxY}));`);
+              lines.push(`}`);
+          } else {
+              lines.push(`// ⚠️ 警告：该元素没有 name 或 label 属性，难以使用查询语句精确定位。`);
+              lines.push(`// 可尝试使用父级包裹节点进行寻找，或者使用如下坐标点击：`);
+              lines.push(`wda.tap(wda.randomInt(${rndMinX}, ${rndMaxX}), wda.randomInt(${rndMinY}, ${rndMaxY}));`);
+          }
           
           const snippet = lines.join('\n');
           generatedJs.value += (generatedJs.value ? '\n\n' : '') + snippet;
