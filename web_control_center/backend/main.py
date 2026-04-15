@@ -1196,6 +1196,16 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                 status, data = await _async_wda_request("POST", f"{wda_url}/session", json_body={"capabilities": {}}, timeout=10.0, force_http=force_http)
                 if status == 200 and isinstance(data, dict):
                     sid = data.get("sessionId") or data.get("value", {}).get("sessionId")
+                    if sid:
+                        # [v2101] 立即应用 Appium 黄金配置：限制层级、关闭静默等待、精简属性
+                        # 这是解决 TikTok 等复杂列表在 findElement 时动辄死锁或超时的关键！
+                        await _async_wda_request("POST", f"{wda_url}/session/{sid}/appium/settings", json_body={
+                            "settings": {
+                                "snapshotMaxDepth": 10,
+                                "waitForQuiescence": False,
+                                "includeAttributes": "name,type,rect"
+                            }
+                        }, timeout=3.0, force_http=force_http)
                     SESSION_CACHE[cache_key] = sid
                 elif _session_attempts < 3:
                     logging.warning(f"[SESSION] 第{_session_attempts}次创建失败 (status={status})，1秒后重试...")
