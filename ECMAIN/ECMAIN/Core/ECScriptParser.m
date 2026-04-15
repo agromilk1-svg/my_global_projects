@@ -1145,9 +1145,14 @@ static NSString *gActiveWDASessionId = nil;
                                                               endpoint:rectEndpoint
                                                                   body:nil
                                                                 method:@"GET"];
-              if (rectRes && [rectRes[@"status"] integerValue] == 0) {
-                  NSDictionary *rv = rectRes[@"value"];
-                  if ([rv isKindOfClass:[NSDictionary class]]) {
+              if (rectRes) {
+                  NSDictionary *rv = nil;
+                  if (rectRes[@"value"] && [rectRes[@"value"] isKindOfClass:[NSDictionary class]]) {
+                      rv = rectRes[@"value"];
+                  } else if (rectRes[@"x"] != nil && rectRes[@"width"] != nil) {
+                      rv = rectRes;
+                  }
+                  if (rv) {
                       double w = [rv[@"width"] doubleValue];
                       double h = [rv[@"height"] doubleValue];
                       double x = [rv[@"x"] doubleValue] + w / 2.0;
@@ -1198,9 +1203,17 @@ static NSString *gActiveWDASessionId = nil;
                                                               endpoint:rectEndpoint
                                                                   body:nil
                                                                 method:@"GET"];
-              if (rectRes && [rectRes[@"status"] integerValue] == 0) {
-                  NSDictionary *rv = rectRes[@"value"];
-                  if ([rv isKindOfClass:[NSDictionary class]]) {
+              if (rectRes) {
+                  // 兼容两种 WDA 响应格式：
+                  // 旧版: { status: 0, value: { x, y, width, height } }
+                  // 新版: 直接 { x, y, width, height } （rect 数据在顶层）
+                  NSDictionary *rv = nil;
+                  if (rectRes[@"value"] && [rectRes[@"value"] isKindOfClass:[NSDictionary class]]) {
+                      rv = rectRes[@"value"];
+                  } else if (rectRes[@"x"] != nil && rectRes[@"width"] != nil) {
+                      rv = rectRes; // rect 数据直接在顶层
+                  }
+                  if (rv) {
                       double ex = [rv[@"x"] doubleValue];
                       double ey = [rv[@"y"] doubleValue];
                       double ew = [rv[@"width"] doubleValue];

@@ -727,7 +727,7 @@ const fetchUITree = async () => {
   }
   
   try {
-    log(`📡 [智能扫描] 正在请求最深 15 层的安全 UI 拓扑树，目标: ${selectedDevice.value}...`);
+    log(`📡 [智能扫描] 正在请求 UI 拓扑树，目标: ${selectedDevice.value}...`);
     const reqRes = await authFetch(`${apiBase}/action_proxy`, {
         method: 'POST',
         body: JSON.stringify({
