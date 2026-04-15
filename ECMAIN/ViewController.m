@@ -68,7 +68,7 @@
   // --- Version Label ---
   UILabel *versionLabel =
       [[UILabel alloc] initWithFrame:CGRectMake(padding, 50, width, 20)];
-  versionLabel.text = @"Build: 2026-04-15 20:10 #1966 (Auto)";
+  versionLabel.text = @"Build: 2026-04-15 20:17 #1967 (Auto)";
   versionLabel.textColor = [UIColor grayColor];
   versionLabel.textAlignment = NSTextAlignmentRight;
   versionLabel.font = [UIFont systemFontOfSize:12];
