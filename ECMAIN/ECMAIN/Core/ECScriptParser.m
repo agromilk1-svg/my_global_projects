@@ -1192,13 +1192,46 @@ static NSString *gActiveWDASessionId = nil;
       if ([elements isKindOfClass:[NSArray class]] && elements.count > 0) {
           NSString *elementId = elements[0][@"ELEMENT"];
           if (elementId && [elementId isKindOfClass:[NSString class]]) {
+              // 获取元素的 rect，用于随机坐标点击（模拟真人，规避风控）
+              NSString *rectEndpoint = [NSString stringWithFormat:@"/element/%@/rect", elementId];
+              NSDictionary *rectRes = [self performWDAActionWithResult:@"getElementRect"
+                                                              endpoint:rectEndpoint
+                                                                  body:nil
+                                                                method:@"GET"];
+              if (rectRes && [rectRes[@"status"] integerValue] == 0) {
+                  NSDictionary *rv = rectRes[@"value"];
+                  if ([rv isKindOfClass:[NSDictionary class]]) {
+                      double ex = [rv[@"x"] doubleValue];
+                      double ey = [rv[@"y"] doubleValue];
+                      double ew = [rv[@"width"] doubleValue];
+                      double eh = [rv[@"height"] doubleValue];
+                      
+                      // 内缩 20% 安全边距，防止点到边缘外
+                      double padX = MAX(1.0, ew * 0.2);
+                      double padY = MAX(1.0, eh * 0.2);
+                      double minX = ex + padX;
+                      double maxX = ex + ew - padX;
+                      double minY = ey + padY;
+                      double maxY = ey + eh - padY;
+                      
+                      // 在安全区域内随机取点
+                      double tapX = minX + (arc4random_uniform((uint32_t)MAX(1, (maxX - minX) * 10))) / 10.0;
+                      double tapY = minY + (arc4random_uniform((uint32_t)MAX(1, (maxY - minY) * 10))) / 10.0;
+                      
+                      [self log:[NSString stringWithFormat:@"✅ tapElement 随机点击: (%.1f, %.1f) 元素区域: (%.0f,%.0f,%.0f×%.0f) 匹配: %@", tapX, tapY, ex, ey, ew, eh, predicate]];
+                      [self restoreWDADepth:customDepth];
+                      return [self tap:@(tapX) y:@(tapY)];
+                  }
+              }
+              
+              // 回退：如果获取 rect 失败，降级使用原生 click（点中心）
+              [self log:@"⚠️ tapElement 获取 rect 失败，降级使用原生 click"];
               NSString *clickEndpoint = [NSString stringWithFormat:@"/element/%@/click", elementId];
               NSDictionary *clickRes = [self performWDAActionWithResult:@"clickElement"
                                                               endpoint:clickEndpoint
                                                                   body:nil
                                                                 method:@"POST"];
               if ([clickRes[@"status"] integerValue] == 0) {
-                  [self log:[NSString stringWithFormat:@"✅ tapElement 成功点击匹配项: %@", predicate]];
                   [self restoreWDADepth:customDepth];
                   return YES;
               }
