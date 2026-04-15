@@ -1059,15 +1059,15 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
             snap_t = min(25, max(3, int(custom_depth * 0.4)))
             http_t = snap_t + 5
             
-            # 三阶段尝试
+            # 三阶段尝试（v1983 优化: accessibleSource 提升为第一优先级）
             attempts = [
-                # 第1阶段：用户请求的完整深度
-                {"depth": custom_depth, "snap_timeout": snap_t, "http_timeout": float(http_t),
-                 "endpoint": "source?format=json", "label": "完整扫描"},
-                # 第2阶段：accessibleSource（只返回有 accessibility 标记的可交互元素）
-                # 这个端点跳过装饰性视图/视频渲染层，速度快很多
+                # 第1阶段：accessibleSource（只返回有 accessibility 标记的可交互元素）
+                # 自动跳过视频渲染层 + 缓存视频的全部子元素，速度最快
                 {"depth": custom_depth, "snap_timeout": snap_t, "http_timeout": float(http_t),
                  "endpoint": "wda/accessibleSource", "label": "可交互元素扫描"},
+                # 第2阶段：用户请求的完整深度（包含所有元素，较慢但更完整）
+                {"depth": custom_depth, "snap_timeout": snap_t, "http_timeout": float(http_t),
+                 "endpoint": "source?format=json", "label": "完整扫描"},
                 # 第3阶段：最浅深度兜底
                 {"depth": 5, "snap_timeout": 3, "http_timeout": 8.0,
                  "endpoint": "source?format=json", "label": "浅层兜底扫描"},
