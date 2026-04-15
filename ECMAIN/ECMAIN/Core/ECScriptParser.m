@@ -1292,7 +1292,10 @@ static NSString *gActiveWDASessionId = nil;
                                                                method:@"GET"];
               if ([lblRes[@"status"] integerValue] == 0 && lblRes[@"value"] && ![lblRes[@"value"] isKindOfClass:[NSNull class]]) {
                   NSString *lblStr = [NSString stringWithFormat:@"%@", lblRes[@"value"]];
-                  if (lblStr.length > 0) return lblStr;
+                  if (lblStr.length > 0) {
+                      [self restoreWDADepth:customDepth];
+                      return lblStr;
+                  }
               }
               
               // 如果 label 没有，取 value
@@ -1303,7 +1306,10 @@ static NSString *gActiveWDASessionId = nil;
                                                                method:@"GET"];
               if ([valRes[@"status"] integerValue] == 0 && valRes[@"value"] && ![valRes[@"value"] isKindOfClass:[NSNull class]]) {
                   NSString *valStr = [NSString stringWithFormat:@"%@", valRes[@"value"]];
-                  if (valStr.length > 0) return valStr;
+                  if (valStr.length > 0) {
+                      [self restoreWDADepth:customDepth];
+                      return valStr;
+                  }
               }
 
               // 最后退化取 name
