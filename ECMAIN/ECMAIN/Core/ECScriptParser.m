@@ -1217,9 +1217,9 @@ static NSString *gActiveWDASessionId = nil;
     NSString *sourceEndpoint = [NSString stringWithFormat:@"/session/%@/source?format=json", gActiveWDASessionId];
     NSString *settingsEndpoint = [NSString stringWithFormat:@"/session/%@/appium/settings", gActiveWDASessionId];
     
-    // 用户若未显式指定（导致传入默认值 60，可能导致严重超时）则转录为较安全的预扫描深度 15
+    // 用户若未显式指定（导致传入默认值 60，可能导致严重超时）则转录为较安全的预扫描深度 16 (TikTok安全上限)
     // 若用户显式传入了 0（无限层）或其他特殊层级，则完全尊重用户的参数
-    int safeDepth = (requestedDepth == 60) ? 15 : requestedDepth;
+    int safeDepth = (requestedDepth == 60) ? 16 : requestedDepth;
     
     // 第一阶段：尊重用户深度（或转为 safeDepth 兜底）
     [self performWDAActionWithResult:@"fastSettings"
