@@ -1428,6 +1428,9 @@ static NSString *gActiveWDASessionId = nil;
             @"x": @(cx), @"y": @(cy),
             @"width": @(w), @"height": @(h),
             @"name": name, @"label": label, @"value": value,
+            // 首字母大写兼容版本，包含 Rect 字典
+            @"Name": name, @"Label": label, @"Value": value,
+            @"Rect": @{@"x": @(x), @"y": @(y), @"width": @(w), @"height": @(h)},
             @"type": [self _safeString:node[@"type"]] ?: (id)[NSNull null]
         };
     }
@@ -1437,12 +1440,15 @@ static NSString *gActiveWDASessionId = nil;
         @"x": [NSNull null], @"y": [NSNull null],
         @"width": [NSNull null], @"height": [NSNull null],
         @"name": name, @"label": label, @"value": value,
+        // 首字母大写兼容版本，包含 Rect 字典
+        @"Name": name, @"Label": label, @"Value": value,
+        @"Rect": [NSNull null],
         @"type": [self _safeString:node[@"type"]] ?: (id)[NSNull null]
     };
 }
 
 - (NSDictionary *)findElement:(NSString *)predicate {
-  NSDictionary *nullResult = @{@"found": @NO, @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null]};
+  NSDictionary *nullResult = @{@"found": @NO, @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null], @"Name": [NSNull null], @"Label": [NSNull null], @"Value": [NSNull null], @"Rect": [NSNull null]};
   if (!predicate || predicate.length == 0) return nullResult;
   
   int customDepth = 60;
@@ -1470,7 +1476,7 @@ static NSString *gActiveWDASessionId = nil;
 }
 
 - (NSDictionary *)tapElement:(NSString *)predicate {
-  NSDictionary *nullResult = @{@"tapped": @NO, @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null]};
+  NSDictionary *nullResult = @{@"tapped": @NO, @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null], @"Name": [NSNull null], @"Label": [NSNull null], @"Value": [NSNull null], @"Rect": [NSNull null]};
   if (!predicate || predicate.length == 0) return nullResult;
   
   int customDepth = 60;
@@ -1524,7 +1530,7 @@ static NSString *gActiveWDASessionId = nil;
 }
 
 - (NSDictionary *)getElementAttribute:(NSString *)predicate attribute:(NSString *)attr {
-  NSDictionary *nullResult = @{@"found": @NO, @"result": [NSNull null], @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null]};
+  NSDictionary *nullResult = @{@"found": @NO, @"result": [NSNull null], @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null], @"Name": [NSNull null], @"Label": [NSNull null], @"Value": [NSNull null], @"Rect": [NSNull null]};
   if (!predicate || predicate.length == 0 || !attr || attr.length == 0) return nullResult;
   
   int customDepth = 60;
@@ -1579,7 +1585,7 @@ static NSString *gActiveWDASessionId = nil;
 }
 
 - (NSDictionary *)getElementText:(NSString *)predicate {
-  NSDictionary *nullResult = @{@"found": @NO, @"text": [NSNull null], @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null]};
+  NSDictionary *nullResult = @{@"found": @NO, @"text": [NSNull null], @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null], @"Name": [NSNull null], @"Label": [NSNull null], @"Value": [NSNull null], @"Rect": [NSNull null]};
   if (!predicate || predicate.length == 0) return nullResult;
   
   int customDepth = 60;
