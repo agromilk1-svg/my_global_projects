@@ -3210,59 +3210,184 @@ const addAllVpnNodesToScript = () => {
 };
 
 const actionLibrary = [
-  { label: '[点击] Tap', type: 'TAP', desc: '模拟触碰屏幕指定的绝对物理坐标点', usage: '点按普通按钮、图标或链接', params: 'x: 横向绝对坐标\ny: 纵向绝对坐标\n▶ 返回值: [布尔值] true/false', example: 'var r = wda.tap(100, 200);\nif(r) wda.log("点击成功");' },
-  { label: '[双击] Double Tap', type: 'DOUBLE_TAP', desc: '在指定点进行极速两次连续点击', usage: '点赞、缩放地图', params: 'x: 横向绝对坐标\ny: 纵向绝对坐标\n▶ 返回值: [布尔值] true/false', example: 'var ok = wda.doubleTap(100, 200);' },
-  { label: '[长按] Long Press', type: 'LONG_PRESS', desc: '在目标坐标持续按下一定时间', usage: '唤出长按菜单、拖拽准备', params: 'x, y: 落点的绝对坐标\nduration: 按压时长(毫秒)\n▶ 返回值: [布尔值] true/false', example: 'wda.longPress(100, 200, 1000);' },
-  { label: '[滑动] Swipe', type: 'SWIPE', desc: '模拟手指从起点拖拉摩擦至终点', usage: '翻阅商品、滑动屏幕、拖动滑块', params: 'fromX, fromY: 起点坐标\ntoX, toY: 终点坐标\nduration: 滑动所耗时间(毫秒)\n▶ 返回值: [布尔值] true/false', example: 'wda.swipe(200, 800, 200, 200, 500);' },
-  { label: '[随机点击] Random Tap', type: 'RANDOM_TAP', desc: '在一个矩阵框选域内进行带抖动的仿生概率点击', usage: '防风控检测、随机点防检测', params: 'x1, x2: 横向随机落点区间\ny1, y2: 纵向落点区间\n▶ 返回值: [布尔值] true/false', example: 'wda.tap(wda.randomInt(10, 50), wda.randomInt(20, 60));' },
-  { label: '[随机双击] Random DTap', type: 'RANDOM_DTAP', desc: '在设定限制宽幅内打出的偏移双击', usage: '随机化双击点赞以躲避防卫检查', params: 'x1, x2: 横区间的下限与上限\ny1, y2: 纵区间的下限与上限\n▶ 返回值: [布尔值] true/false', example: 'wda.doubleTap(wda.randomInt(10, 50), wda.randomInt(20, 60));' },
-  { label: '[随机长按] Random LPress', type: 'RANDOM_LPRESS', desc: '不但坐标随机且按压时长也在两个极大跨度区间跳跃', usage: '消除高频重复作业的机器化体征', params: 'x1~x2, y1~y2: 坐标界限\ndMin~dMax: 按压时长上下限(毫秒)\n▶ 返回值: [布尔值] true/false', example: 'wda.longPress(wda.randomInt(10, 50), wda.randomInt(20, 60), wda.randomInt(1000, 1500));' },
-  { label: '[随机滑动] Random Swipe', type: 'RANDOM_SWIPE', desc: '起点终点以及滑动耗时全维度离散随机化', usage: '核心看播刷视频极高安全防风控动作', params: 'fromX1~fromX2, fromY1~fromY2: 起点区间\ntoX1~toX2, toY1~toY2: 终点区间\ndurationMin~Max: 时间区间\n▶ 返回值: [布尔值] true/false', example: 'wda.swipe(wda.randomInt(150, 160), wda.randomInt(400, 500),\n  wda.randomInt(150, 180), wda.randomInt(250, 300),\n  wda.randomInt(130, 350));' },
-  { label: '[等待] Sleep', type: 'SLEEP', desc: '阻塞当前宏脚本的时钟', usage: '等待复杂动画加载', params: 'seconds: 等待的秒数(支持小数)\n▶ 返回值: 无', example: 'wda.sleep(1.5);' },
-  { label: '[随机等待] Random Wait', type: 'RANDOM_WAIT', desc: '防风控动态睡眠', usage: '使宏观任务产生时间天然散度', params: 'tMin, tMax: 挂起随机范围(秒)\n▶ 返回值: 无', example: 'wda.sleep(wda.random(2.0, 5.0));' },
-  { label: '[主屏幕] Home', type: 'HOME', desc: '按压设备主屏幕Home键', usage: '强行退回桌面', params: '无\n▶ 返回值: [布尔值] true/false', example: 'var ok = wda.home();\nwda.log("回到桌面: " + ok);' },
-  { label: '[启动APP] Launch', type: 'LAUNCH', desc: '唤醒激活APP', usage: '底层级启动目标软件', params: 'bundleId: 苹果包名标识\n▶ 返回值: [布尔值] true/false', example: 'var success = wda.launch("com.zhiliaoapp.musically");\nif(!success) wda.log("启动失败");' },
-  { label: '[输入文本] Input', type: 'INPUT', desc: '为当前焦点元素输入字符串', usage: '自动打字', params: 'text: 要键入的内容\n▶ 返回值: [布尔值] true/false', example: 'wda.input("Hello Automation");' },
-  { label: '[日志] Log', type: 'LOG', desc: '在控制台打印日志并推送到后端', usage: '方便排查', params: 'message: 需要暴露打印的内容\n▶ 返回值: 无', example: 'wda.log("运行到了第5步");' },
-  { label: '[找图] Find Image', type: 'FIND_IMAGE', desc: '比对识别图片计算坐标(支持区域极速找图)', usage: '精确锚点物料匹配', params: '★ wda.findImage(template, threshold?, region?)\ntemplate: 图片的Base64\nthreshold: 置信度(默认0.8)\nregion: [可选] 限定搜索数组 [x起点, y起点, 框宽, 框高]\n▶ 返回值: [对象] {found: true/false, x, y, width, height, confidence}', example: '// ━━━ 用法1: 局部极速找图 ━━━\nvar res = wda.findImage("BASE...64", 0.8, [200, 400, 175, 200]);\nif (res && res.found) wda.tap(res.x, res.y);' },
-  { label: '[找图点击] Find+Tap', type: 'FIND_IMAGE_TAP', desc: '搜图 -> 取中点 -> 自动点击动作集成', usage: '无脑搜图按钮点击', params: 'template, threshold?, region?\n▶ 返回值: [布尔值] true/false', example: 'var ok = wda.findImageAndTap("...", 0.8, [100, 100, 200, 200]);\nif (ok) wda.log("找到了且点过了");' },
-  { label: '[取色] Get Color', type: 'GET_COLOR', desc: '提取指定单像素原生特征色(Hex型)', usage: '判断特定UI组件是否高亮', params: 'x, y: 坐标\n▶ 返回值: [对象] {value: "#Hex十六进制"}', example: 'var res = wda.getColorAt(100, 200);\nif(res && res.value === "#FF0000") wda.log("红包来了");' },
-  { label: '[多点找色点击] MultiColor', type: 'MULTICOLOR', desc: '规避图像特征点反爬抓取的多点色抓取组合', usage: '极端反爬环境', params: '★ wda.findMultiColor(colors, sim?, region?)\ncolors: 矩阵色点字符串\nsim: 相似度(默认0.9)\nregion: [可选] 限定数组 [x,y,w,h]\n▶ 返回值: [对象] {found: true/false, x, y}', example: 'var pos = wda.findMultiColor("...", 0.9, [0, 500, 375, 167]);\nif (pos && pos.value && pos.value.found) {\n    wda.tap(pos.value.x, pos.value.y); \n}' },
-  { label: '[截图] Screenshot', type: 'SCREENSHOT', desc: '截捕设备无损画幅存入缓存栈', usage: '验证长效宏脚本', params: '无\n▶ 返回值: [布尔值] true/false', example: 'wda.screenshot();' },
-  { label: '[VPN] 全套网关协议', type: 'VPN_HYSTERIA', desc: '网络协议接驳', usage: '底层路由截断接驳方法簇', params: 'config: 协议配置字典\n▶ 返回值: [布尔值] true/false', example: '// Configured for Protocol...' },
-  { label: '[关闭APP] Terminate', type: 'TERMINATE', desc: '终止指定原生沙盒进程', usage: '关闭目标APP释放资源', params: 'bundleId: 目标包名苹果标识\n▶ 返回值: [布尔值] true/false', example: 'wda.terminate("com.zhiliaoapp.musically");' },
-  { label: '[关闭所有应用] Kill All', type: 'TERMINATE_ALL', desc: '清理所有后台应用进程', usage: '批量释放内存环境', params: '无\n▶ 返回值: [布尔值] true/false', example: 'wda.terminateAll();' },
-  { label: '[抹除APP数据] Wipe Data', type: 'WIPE_APP', desc: '清除应用核心沙盒、缓存及Keychain', usage: '解决风控封存残留防死锁特征', params: 'bundleId: 目标包名\n▶ 返回值: [布尔值] true/false', example: 'wda.wipeApp("com.zhiliaoapp.musically");' },
-  { label: '[飞行模式开] AirplaneON', type: 'AIRPLANE_ON', desc: '启动飞行模式打断联网', usage: '断网重置IP网络环境', params: '无\n▶ 返回值: 无', example: 'wda.airplaneOn();' },
-  { label: '[飞行模式关] AirplaneOFF', type: 'AIRPLANE_OFF', desc: '关闭飞行模式恢复连接', usage: '重连热点基站换取全新IP', params: '无\n▶ 返回值: 无', example: 'wda.airplaneOff();' },
-  { label: '[任务完成上报] ReportFinished', type: 'REPORT_FINISHED', desc: '向中控汇报剧本成功杀青信号', usage: '防止设备断网前丢失业务线报', params: '无\n▶ 返回值: 无', example: 'wda.reportFinished();' },
-  { label: '[设置IP] Static IP', type: 'SET_IP', desc: '底层根证书替换静态网络池配置', usage: '独享代理IP隧道强行注入绑定', params: 'ip: IP\nsubnet: 子网掩码\ngateway: 网关\n▶ 返回值: 无', example: '// wda.sleep(0.5);' },
-  { label: '[设置WiFi] Connect WiFi', type: 'SET_WIFI', desc: '控制iOS原生网络组件切桥', usage: '自动寻找新基站切换网络', params: 'ssid: 基站名, pw:口令\n▶ 返回值: [布尔值] true/false', example: 'wda.setWifi("MyWiFi", "12345678");' },
-  { label: '[获取VPN状态] Get VPN Status', type: 'IS_VPN_CONNECTED', desc: '判断系统隧道池是否有活跃 VPN', usage: '动态剧本分支', params: '无\n▶ 返回值: [布尔值] true(连接中)/false(未连接)', example: 'if(wda.isVPNConnected()) wda.log("已经接通");' },
-  { label: '[弹窗手动交互] Alert Manual', type: 'ALERT_MANUAL', desc: '获取原生弹窗的所有文字信息及按钮名', usage: '拦截系统升级、无权限异常崩溃弹窗', params: 'getAlertText() -> 弹窗文字\ngetAlertButtons() -> 按钮数组\nclickAlertButton(name) -> 点击\nacceptAlert() / dismissAlert()\n▶ 返回值: 依据对应API不同返回数组或字符串', example: 'let text = wda.getAlertText();\nif (!text) { return; }\n\nlet btns = wda.getAlertButtons() || [];\nwda.log("包含选项: " + JSON.stringify(btns));\nif (btns.includes("允许完全访问")) {\n    wda.clickAlertButton("允许完全访问");\n} else {\n    wda.acceptAlert();\n}' },
-  { label: '[系统弹窗自动扫雷] Auto Alert Handling', type: 'CHECK_ALERT', desc: '全自动系统弹窗识别清点扫除机（附多语言通吃规则）', usage: '直接放在剧本顶端做守卫防御罩', params: '无\n▶ 返回值: 当次触发清理则为 true', example: 'function autoHandleAlert() {\n    let msg = wda.getAlertText();\n    if (!msg) return false;\n    wda.acceptAlert();\n    return true;\n}' },
-  { label: '[💬 抽取双擎评论]', type: 'RANDOM_COMMENT', desc: '高速机侧词频缓冲池，云端协同联动抽取', usage: '极速发弹幕或者写长评填充', params: '★ 常用国家语言代号:\nes-MX, pt-BR, de-DE, en-SG, ja-JP,\nen-US, es-ES, en-GB, fr-FR, zh-CN\n▶ 返回值: [字符串] 抽得的文案内容', example: 'var cmt = wda.getRandomComment("en-US");\nwda.input(cmt);' },
-  { label: '[TK主账号] 输入用户名', type: 'TK_MASTER_ACCOUNT', desc: '拉取该机专属配档用户名剪切输入', usage: '跨维登录接驳', params: '无\n▶ 返回值: [字符串] 成功抓取的文本', example: 'var acc = wda.getMasterTkAccount();\nif(acc && acc.length > 0) wda.input(acc);' },
-  { label: '[TK主账号] 输入密码', type: 'TK_MASTER_PASSWORD', desc: '自动拉取设备指定配置密码并打在焦距窗', usage: '静默登录补全', params: '无\n▶ 返回值: [字符串] 密码字符串', example: 'var pwd = wda.getMasterTkPassword();\nif(pwd && pwd.length > 0) wda.input(pwd);' },
-  { label: '[TK主账号] 输入邮箱', type: 'TK_MASTER_EMAIL', desc: '自动拉取配置预置邮箱打出', usage: '账号解封申述/静默登录', params: '无\n▶ 返回值: [字符串] 邮箱字符串', example: 'var email = wda.getMasterTkEmail();\nif(email && email.length > 0) wda.input(email);' },
-  { label: '[🔄 立即更新配置] Sync Config', type: 'SYNC_CONFIG', desc: '不等待心跳轮训，当场向中央控制塔索取刷新令牌配置字典', usage: '应对实时的配置篡改操作的即时生效', params: '无\n▶ 返回值: 无', example: 'wda.syncConfig();\nwda.log("配置已接驳到主控最新快照");' },
-  { label: '[📥 下载IPA文件] Download IPA', type: 'DOWNLOAD_IPA', desc: '基于超文本传输协议从远端基站偷运IPA回已下载沙盒储备', usage: '全自动无人值守大规模集群换包升级', params: 'url: 下载直链\n▶ 返回值: [布尔值] true/false', example: 'var ok = wda.downloadIPA("https://example.com/app.ipa");\nif(ok) wda.log("就绪");' },
-  { label: '[📦 注入安装] Inject Install', type: 'INSTALL_IPA', desc: '解包提取、越狱抹皮注入、再封印成包最后模拟真机安装的超强自动化核设施', usage: '全机房自动一键批装矩阵系统底座', params: 'filename: 储备名\nclone: 脱壳克隆分路\nspoof_config: 防真机识别字典伪装网\n▶ 返回值: [对象] {installed: true/false, ...}', example: '// 包体需在上面步骤使用 DOWNLOAD_IPA 完成储备\nvar result = wda.installIPA({\n    filename: "TikTok",\n    clone_number: "2",\n    spoof_config: { machineModel: "iPhone9,1" }\n});' }
-];
+  // ====================== 基础触摸与按键 ======================
+  { label: '[基础] 点击 Tap', type: 'TAP', desc: '模拟触碰屏幕指定的绝对物理坐标点', usage: '点按普通按钮、图标或链接', params: 'x: 横向绝对坐标
+y: 纵向绝对坐标
+▶ 返回值: [布尔值] 是否成功', example: 'var r = wda.tap(100, 200);
+if(r) wda.log("点击成功");' },
+  { label: '[基础] 双击 Double Tap', type: 'DOUBLE_TAP', desc: '在指定点进行极速两次连续点击', usage: '点赞、放大画面', params: 'x: 横坐标
+y: 纵坐标
+▶ 返回值: [布尔值]', example: 'var ok = wda.doubleTap(100, 200);' },
+  { label: '[基础] 长按 Long Press', type: 'LONG_PRESS', desc: '在目标坐标持续按下一定时间', usage: '唤出长按菜单功能', params: 'x, y: 落点的绝对坐标
+duration: 按压时长(毫秒)
+▶ 返回值: [布尔值]', example: 'wda.longPress(100, 200, 1000);' },
+  { label: '[基础] 滑动 Swipe', type: 'SWIPE', desc: '模拟手指从起点平滑划拉至终点', usage: '翻阅商品、滑动屏幕页面', params: 'fromX, fromY: 起点坐标
+toX, toY: 终点坐标
+duration: 滑动所耗时长(毫秒)
+▶ 返回值: [布尔值]', example: 'wda.swipe(200, 800, 200, 200, 500);' },
+  { label: '[基础] 延时阻塞 Sleep', type: 'SLEEP', desc: '阻塞当前宏脚本时钟以等待操作响应', usage: '等待复杂动画加载', params: 'seconds: 等待秒数(支持小数)
+▶ 返回值: [布尔值] 中断保护状态', example: 'wda.sleep(1.5);' },
+  { label: '[基础] 输入文本 Input', type: 'INPUT', desc: '利用底层通道为焦点元素输入字符串', usage: '自动检索、表单键入', params: 'text: 欲键入的内容
+▶ 返回值: [布尔值]', example: 'wda.input("Hello World");' },
+  { label: '[按键] 主屏幕 Home', type: 'HOME', desc: '调用设备的 Home 键将应用退隐至后台', usage: '强行退回系统桌面', params: '无传参
+▶ 返回值: [布尔值]', example: 'wda.home();' },
+  { label: '[按键] 锁屏 Lock', type: 'LOCK', desc: '直接锁定设备物理屏幕（触发锁屏动作）', usage: '运行毕后主动休眠减小能耗及屏蔽检测', params: '无传参
+▶ 返回值: [布尔值]', example: 'wda.lock();' },
+  { label: '[按键] 音量加 Volume UP', type: 'VOLUME_UP', desc: '单击设备音量＋实体操作键', usage: '激活媒体或掩人耳目的行为特征', params: '无传参
+▶ 返回值: [布尔值]', example: 'wda.volumeUp();' },
+  { label: '[按键] 音量减 Volume DOWN', type: 'VOLUME_DOWN', desc: '单击设备音量－实体操作键', usage: '同上', params: '无传参
+▶ 返回值: [布尔值]', example: 'wda.volumeDown();' },
 
-// [v1738] 动态追加库
-actionLibrary.push(
-  { label: '[📥 下载到相册] Download Media', type: 'DOWNLOAD_ALBUM', desc: '阻塞式下载目标图片或视频至设备原生核心相册空间。', usage: '为短视频创作提供弹药库补给', params: 'url: 图片或视频文件的完整直链下载地址\n▶ 返回值: [布尔值] true(下载成功)/false', example: 'var success = wda.downloadToAlbum("https://example.com/video.mp4");\nif(success) {\n    wda.log("媒体文件已落盘");\n}' },
-  { label: '[🎁 盲盒素材] One-Time Media', type: 'DOWNLOAD_ONETIME', desc: '通过配控中心单次组序强制派发去重媒体（下载后远端及本地即毁尸灭迹，绝发车相撞）', usage: '自动化发布防内卷搬运同一素材', params: 'type: "video" 或 "image"\ngroup(可选): 发车分组代号\n▶ 返回值: [布尔值] true/false', example: 'var ok = wda.downloadOneTimeMedia("video", "矩阵组A");\nif(ok) {\n    wda.log("已盲摸到独享视频");\n}' },
-  { label: '[🔗 重连VPN] Reconnect Last VPN', type: 'RECONNECT_VPN', desc: '呼唤协议组件自动拨通关机前残片缓存的上一个高速隧道网络。', usage: '剧本开始执行的第一条必备动作', params: '无\n▶ 返回值: [布尔值] 成功重连(true) 或 无历史(false)', example: 'var ok = wda.connectProxy("");\nif(ok) wda.log("网络环境恢复");\nwda.sleep(3);' },
-  { label: '[📢 全局弹窗] Show Alert', type: 'SHOW_ALERT', desc: '让 iOS 通过主屏幕原生地弹出震颤惊悚警告，并锁定期等待人类活塞体进行点接驳后才恢复控制流！', usage: '用于中场休息核实物料环节', params: 'message: 弹窗上需展示的正文指令\n▶ 返回值: 无 (但会一直阻塞脚本至弹窗消失)', example: 'wda.showAlert("这是系统发出的高阶警报，看到请点赞并按OK继续流片！");' },
-  { label: '[🔍 文字检测] OCR 全局狂扫', type: 'OCR_SUITE', desc: '全新升级的超神经处理架构 OCR (支持极致提速)。它会扫除给定画幅内的【所有】文本。\n★如需找查特定文字，请改用下方的 [找字点击] 动作！此动作仅作收集用。', usage: '把整个屏幕的所有字捞取出来做数据整理挖掘分析', params: '★ wda.ocr(region?, languages?)\n\n[参数1: region] (可选) 减少开支划定：[x, y, 宽, 高]，如不限定则传 null\n[参数2: languages] (可选) 加速专攻矩阵：["zh-Hans","en-US","es-MX","th-TH"...等18种语言代号]\n\n▶ 返回值: [对象] { texts: [ {text: "查出的字", x: 10, y: 20, width: 50, height: 20, confidence: 0.9}, ... ] }', example: '// ━━━ 用法: 带语言限制的扫描 ━━━\n// 引擎跳过庞大中文库，仅以英文+西班牙文极速扫描下面这块区域\nvar res = wda.ocr([0, 700, 375, 112], ["es-MX", "en-US"]);\nif (res && res.texts && res.texts.length > 0) {\n    wda.log("扫到了第一段话是: " + res.texts[0].text);\n}' },
-  { label: '[🔍 找字点击] Find / Tap Text', type: 'FIND_TEXT', desc: '专门用来寻找屏幕上是否存在【指定文字】（利用核心比对引擎）。并且支持区域、语言引擎配置！', usage: '最直观的找文本！告别复杂取色', params: '★ wda.findText("带引号的你要找的文字")\n提示: 当且仅当完全匹配或引擎高置信度模糊贴合时命中！\n参数只接受你要找的一串文本！\n\n▶ 返回值: [对象] \n{\n  found: true/false,\n  result: { text: "实际字符", x, y, width, height }\n}', example: '// ━━━ 用法: 寻找指定【文字】 ━━━\n// 全局死磕寻找 "Confirm" 按钮\nvar btn = wda.findText("Confirm");\nif (btn && btn.found) {\n    wda.log("它在坐标 " + btn.result.x + ", " + btn.result.y);\n\n    // 注意！！！返回结果被封存在 result 实体里！\n    // 直接精准点下按钮中心偏一点点：\n    wda.tap(btn.result.x, btn.result.y);\n}' },
-  { label: '[🎯 找元素] wda.findElement', type: 'FIND_ELEMENT', desc: '通过 XCTest UI底层树链规避视觉侦察直接捕获系统内存的元素句柄位置。(支持防卡死深度剥离)', usage: '最高效纯后端的按纽截定，如无需物理操作纯拉取状态此法最准。', params: '★ wda.findElement(predicate, maxDepth?)\n  参数1: [字符串] 类似 "label CONTAINS \'Comments\'"\n  参数2: [数字] 搜索剥离深度\n\n▶ 返回值: [对象] {found: true, x, y, width, height, element_id}', example: 'var tab = wda.findElement("**/XCUIElementTypeTabBar/XCUIElementTypeButton[3]", 15);\nif(tab && tab.found) {\n    wda.tap(tab.x, tab.y);\n}' },
-  { label: '[🎯 找并点击] wda.tapElement', type: 'TAP_ELEMENT', desc: '搜到直接命令原生底层核突穿点击(非仿生物理单击，而是底层 click)，同样支持深度参数。', usage: '极速清空各种弹窗广告的最强防御性组件。', params: '★ wda.tapElement(predicate, maxDepth?)\n▶ 返回值: [布尔值] true / false', example: 'var ok = wda.tapElement("label == \'同意并继续\'", 60);\nif (ok) {\n    wda.log("直接秒解进入下一步");\n}' },
-  { label: '[🎯 获取元素数值] wda.getElementText', type: 'GET_ELEMENT_TEXT', desc: '深潜进应用内存数据池强制榨取隐藏未显的底层数据字符。(点赞量/阅读数黑科技核心)', usage: '非人工观察法自动化核算业绩数据。', params: '★ wda.getElementText(predicate, maxDepth?)\n▶ 返回值: [字符串] 成功榨出的内部字符\n\n★ wda.getElementAttribute(predicate, 属性名, maxDepth?)\n▶ 返回值: [字符串] 特殊变量值', example: 'var likes = wda.getElementText("name CONTAINS \'likes\'", 60);\nif (likes !== "") {\n    wda.log("此条内容带点赞： " + likes);\n}' },
-  { label: '[🧹 清理截图缓存] Clear Cache', type: 'CLEAR_SCREENSHOT_CACHE', desc: '彻底销毁上一轮截图内存流，避免内存暴发堆栈溢出OOM闪退（针对无限极速找图特备引擎扫除机制）', usage: '防应用系统闪退内存爆炸。', params: '无传参\n▶ 返回值: 无', example: 'wda.clearScreenshotCache();\nwda.log("显存管道已疏通！");' }
-);
+  // ====================== 离散随机仿生 ======================
+  { label: '[随机仿生] 随机点击 Tap', type: 'RANDOM_TAP', desc: '在选定方形区域内生成无偏向随机落点', usage: '防备机械位置被算法侦察', params: 'x1, x2: 横向边界区
+y1, y2: 纵向边界区
+▶ 返回值: [布尔值]', example: 'wda.tap(wda.randomInt(10, 50), wda.randomInt(20, 60));' },
+  { label: '[随机仿生] 随机长按 LPress', type: 'RANDOM_LPRESS', desc: '坐标及接触持联时长双极随机生成', usage: '规避高频率无差别的机器特征定调', params: 'x1~x2, y1~y2: 落点界限
+dMin~dMax: 时长浮动域(毫秒)
+▶ 返回值: [布尔值]', example: 'wda.longPress(wda.randomInt(10, 50), wda.randomInt(20, 60), wda.randomInt(800, 1500));' },
+  { label: '[随机仿生] 随机滑动 Swipe', type: 'RANDOM_SWIPE', desc: '四维起终标量流连耗时全矩阵弥散生成', usage: '无限刷视频防风控的最密防线动作', params: 'fromX12, Y12: 起
+toX12, Y12: 终
+durMinMax: 毫秒
+▶ 返回值: [布尔值]', example: 'wda.swipe(wda.randomInt(150, 160), wda.randomInt(400, 500),
+  wda.randomInt(150, 180), wda.randomInt(250, 300),
+  wda.randomInt(130, 350));' },
+  { label: '[随机仿生] 随机等待 Sleep', type: 'RANDOM_WAIT', desc: '动态生成正交间隙时间片', usage: '破坏极大概率的任务周期同律性', params: 'Min(s), Max(s): 浮点时长区间
+▶ 返回值: [布尔值]', example: 'wda.sleep(wda.random(2.0, 5.0));' },
+
+  // ====================== 系统与应用应用层 ======================
+  { label: '[应用] 启动应用 Launch', type: 'LAUNCH', desc: '底层唤起对应 BundleId 的目标应用包', usage: '开机后置位目标工作台', params: 'bundleId: 唯一应用代码
+▶ 返回值: [布尔值]', example: 'wda.launch("com.zhiliaoapp.musically");' },
+  { label: '[应用] 强制终止 Terminate', type: 'TERMINATE', desc: '摧毁目标程序的沙盒活跃进程', usage: '释放系统闲置缓存', params: 'bundleId: 唯一应用代码
+▶ 返回值: [布尔值]', example: 'wda.terminate("com.zhiliaoapp.musically");' },
+  { label: '[应用] 查杀后台 Kill All', type: 'TERMINATE_ALL', desc: 'Root进程无条件清除第三方全部后台应用', usage: '恢复满血空余可用内存池', params: '无传参
+▶ 返回值: [布尔值]', example: 'wda.terminateAll();' },
+  { label: '[应用] 抹除缓存 Wipe Data', type: 'WIPE_APP', desc: '重置清除应用的文稿缓存，并拔除 Keychain 高斯串遗留', usage: '彻底清理风控污染死穴', params: 'bundleId: 目标包名
+▶ 返回值: [布尔值]', example: 'wda.wipeApp("com.zhiliaoapp.musically");' },
+  { label: '[网络] 开启飞行模式 AirplaneON', type: 'AIRPLANE_ON', desc: '物理隔断蜂窝及射频网络硬件信号发射', usage: '断切本地移动网络进行重洗', params: '无传参
+▶ 返回值: [布尔值]', example: 'wda.airplaneOn();' },
+  { label: '[网络] 关闭飞行模式 AirplaneOFF', type: 'AIRPLANE_OFF', desc: '撤销物理隔断并重获系统连接', usage: '取得新公网 IP 地址分配', params: '无传参
+▶ 返回值: [布尔值]', example: 'wda.airplaneOff();
+wda.sleep(2.0); // 必须等待寻轨重连' },
+  { label: '[网络] 设置静态 IP', type: 'SET_IP', desc: '改写系统底层 IP / 网关 路由矩阵表项', usage: '注入防污染节点池进行绑定', params: 'ip: IP
+subnet: 子网掩码
+gateway: 网关
+dns: 解析器
+▶ 返回值: [布尔值]', example: 'wda.setStaticIP("192.168.1.100", "255.255.255.0", "192.168.1.1", "8.8.8.8");' },
+  { label: '[网络] 连接 Wi-Fi 热点', type: 'SET_WIFI', desc: '控制基带强切无线局域网路由通道', usage: '转移至专设专用网络', params: 'ssid: 基站名
+password: 防线密钥
+▶ 返回值: [布尔值]', example: 'wda.setWifi("Studio_5G", "p@ssword123");' },
+
+  // ====================== 文本寻址 & OCR (新一代原生引擎) ======================
+  { label: '[获取] OCR 全画幅矩阵提取', type: 'OCR_SUITE', desc: '全新一代神经 OCR，提取画面内所有文本特征坐标。（可定语系过滤极大攀升解析速率）', usage: '收集散列排布的大量文案进行计算分析', params: '★ wda.ocr(region?, languages?)
+region: 扫描限定窗 [x,y,w,h]
+languages: 库定向量 ["zh-Hans", "en-US"]
+▶ 返回值: {texts:[{text, x, y, width, height, confidence}, ...]}', example: 'var rawInfo = wda.ocr(null, ["en-US"]);
+if(rawInfo && rawInfo.texts) {
+    wda.log("发现文本块总量: " + rawInfo.texts.length);
+}' },
+  { label: '[检索] 极速寻找精准文本坐标', type: 'FIND_TEXT', desc: '寻找包含特异中英文字符的落地点对象及宽幅规格', usage: '通过眼见所识内容解决定位难的问题', params: '★ wda.findText(text)
+text: 拟寻内容段（支持部分包含匹配及忽略大小写特征）
+▶ 返回值: {found: true, result: {text, x, y, width, height}}', example: 'var t = wda.findText("同意并继续");
+if (t.found) wda.tap(t.result.x, t.result.y);' },
+  { label: '[检索] 一键寻文字并直接点击', type: 'TAP_TEXT', desc: '全自动一体化动作：找字 -> 查范围中点 -> 落指，带防越界机制', usage: '操作步骤最干缩化之必备神器', params: '★ wda.tapText(text)
+text: 可见目标的文案
+▶ 返回值: [布尔值]', example: 'if (wda.tapText("Confirm")) {
+    wda.log("完成该弹框确认流程");
+}' },
+  { label: '[底层] 通过节点特征寻获 UI 元素', type: 'FIND_ELEMENT', desc: '深入 XCTest DOM 解析抓取节点坐标。支持规避死锁的深度剪枝机制参数设定', usage: '获取暗桩型（隐式包含或隐藏属性）布局锚点坐标', params: '★ wda.findElement(predicate, maxDepth?)
+predicate: NSPredicate筛选
+maxDepth: 递归截断阈值，通常60，加速可低至10
+▶ 返回值: {found: true, x, y, width, height, element_id}', example: 'var el = wda.findElement("label CONTAINS \'Privacy\'", 30);
+if (el.found) { wda.tap(el.x, el.y); }' },
+  { label: '[底层] 一体化寻找并硬核点击节点', type: 'TAP_ELEMENT', desc: '找到并从系统内核进行越狱级物理底层截获式点击', usage: '消灭防点击或带点击掩码层的流氓弹窗', params: '★ wda.tapElement(predicate, maxDepth?)
+predicate: 目标节点特征标识串
+▶ 返回值: [布尔值]', example: 'var isTapped = wda.tapElement("type == \'XCUIElementTypeButton\' AND name == \'Skip\'", 20);
+if(isTapped) wda.log("已绕过拦截点");' },
+  { label: '[底层] 剥离 UI 文本态势/隐藏属性', type: 'GET_ELEMENT_TEXT', desc: '强行萃离未被视觉渲染或是包含在结构内里的不可见文本载荷', usage: '统计阅读量评论量和隐式UID防抓取机制', params: '★ wda.getElementText(predicate, maxDepth?)
+▶ 返回值: [长字符串]
+★ wda.getElementAttribute(predicate, attributeName, maxDepth?)
+▶ 返回值: [原值变长序列]', example: 'var fans = wda.getElementText("name CONTAINS \'followers\'", 60);
+var enableStatus = wda.getElementAttribute("label == \'Sync\'", "enabled", 20);
+wda.log("粉丝: " + fans + " 同步态: " + enableStatus);' },
+
+  // ====================== 图像获取与比对处理 ======================
+  { label: '[图像] 全局快拍显存封锁 Screenshot', type: 'SCREENSHOT', desc: '直接拉下屏幕底层绘图管道无压损图像流，压于内存缓存', usage: '留作判别与归档依据', params: '无传参
+▶ 返回值: {base64: "..."}', example: 'var s = wda.screenshot();
+wda.log("截取的数据大小：" + s.base64.length);' },
+  { label: '[图像] 清理残压垃圾 Clear Cache', type: 'CLEAR_SCREENSHOT_CACHE', desc: '立刻释放图像内存块，阻止视频长播宏因为垃圾累加导致进程崩溃 OOM', usage: '高频找图动作组之后的保命机制', params: '无传参
+▶ 返回值: 无', example: 'wda.clearScreenshotCache();
+wda.log("显存管道已清空疏通");' },
+  { label: '[图像] 图形阵势分析 Find Image', type: 'FIND_IMAGE', desc: '采用核心视觉比对相似置信度计算特定切片的位置', usage: '突破不可名状或非标控件的限制定位', params: '★ wda.findImage(templateBase64, threshold?, region?)
+templateBase64: 物料特征
+threshold: 对比度 (即相似容差，通常为0.8)
+▶ 返回值: {found: true, x, y, width, height, confidence}', example: 'var res = wda.findImage("iVBORw0KGgoAAA...", 0.85);
+if(res.found) wda.tap(res.x, res.y);' },
+  { label: '[图像] 找图自动点击 Find+Tap', type: 'FIND_IMAGE_TAP', desc: '找图并计算框心自动落指点击（封装接口）', usage: '对单图片按钮做快速匹配点按', params: '★ 与找图参数完全一致
+▶ 返回值: [布尔值] 是否成功', example: 'var ok = wda.findImageAndTap("...", 0.8, [100, 100, 200, 200]);
+if(ok) wda.log("完成点按");' },
+  { label: '[图像] 深挖点阵特征色 Get Color', type: 'GET_COLOR', desc: '单抽特定坐标处的 24 位全亮颜色十六进制值编码', usage: '精准识别按钮被点亮或者置灰', params: 'x, y: 探测位置
+▶ 返回值: {value: "#RRGGBB"}', example: 'var clr = wda.getColorAt(100, 200);
+if(clr && clr.value === "#FF0000") wda.log("发出了红光");' },
+  { label: '[图像] 复合色点阵检索 MultiColor', type: 'MULTICOLOR', desc: '防查水表的组合特殊阵点连线色调探测追踪网络', usage: '极其苛刻多变抗锯齿的反爬防虫页面', params: '★ wda.findMultiColor(colorsRuleStr, sim?, region?)
+colorsRuleStr: "主点Hex,差X|差Y|Hex..."
+▶ 返回值: {found: true, x, y}', example: 'var hit = wda.findMultiColor("0xFF00FF,-10|20|0x334455", 0.9, [0, 100, 200, 200]);' },
+
+  // ====================== 云端素材 / CDN 统配体系 ======================
+  { label: '[素材] 下载固态文件入相册', type: 'DOWNLOAD_ALBUM', desc: '从网络云端抢拉音视频文件下界置入手机系统层相册胶盘（重名将同名顶替覆盖，清理冗余）', usage: '自动发片与二创系统的核心填弹组', params: 'url: 远程超文本文件直链地址
+▶ 返回值: [布尔值] 写入状态', example: 'var ok = wda.downloadToAlbum("https://test.com/vid.mp4");
+if(ok) { wda.log("下载包收录入系统相册！"); }' },
+  { label: '[素材] 队列盲盒截取媒体', type: 'DOWNLOAD_ONETIME', desc: '向调度中心请求配装专用去重队列素材。拿到手后这笔物料会被中心立刻注销摧毁，确保矩阵手机之间永不撞车抄袭', usage: '全自动独立发布防止原创封禁', params: 'type: "video" 抑或是 "image"
+group: 指向专属调度文件夹(如"第一组")
+▶ 返回值: [布尔值]', example: 'if(wda.downloadOneTimeMedia("video", "Group_A")) {
+    wda.log("成功拿下一血唯一独享视频, 存储并代号为 [mov1.mp4]");
+}' },
+  { label: '[系统] 拖入底层系统 IPA 数据', type: 'DOWNLOAD_IPA', desc: '走机房专用高速光储网直接拽下未被签名的原始 App 安装总包存储到保留目录', usage: '配合注入安装达成底层改修与机房矩阵更替部署', params: 'url: 私网或云存储直连包址
+▶ 返回值: [布尔值]', example: 'var st = wda.downloadIPA("http://cdn.local/app.ipa");
+if(st) wda.log("二进制装甲片传输完结");' },
+  { label: '[系统] IPA 脱壳变装与越权注入', type: 'INSTALL_IPA', desc: '调动 TrollStore 内核服务对刚才下载的包执行强力伪装（包括设备信息模拟欺骗）及绕签名多开分身复制，且当即进行硬化安装', usage: '最最高危强大的应用大批量克隆分发武器库', params: 'config (配置字典包。必填 filename, 可选 clone_number, spoof_config假硬件特征字典)
+▶ 返回值: {installed: Boolean, output: "日志"}', example: 'wda.installIPA({
+  filename: "TikTok.ipa", 
+  clone_number: "5", 
+  spoof_config: { machineModel: "iPhone14,2" }
+});
+wda.log("完成了五号分身的挂载和底料欺诈修改");' },
+
+  // ====================== 业务中台交互协同 / 控制流 ======================
+  { label: '[业务] 云边接驳提取大评论库', type: 'RANDOM_COMMENT', desc: '中台词频协同系统根据配置分发的一条对应小语种长段回执', usage: '长评盖楼灌水体系', params: 'language: 标准地区代号（如 "en-US", "zh-CN"）
+▶ 返回值: [长文本字符串]', example: 'var scriptStr = wda.getRandomComment("zh-CN");
+wda.input(scriptStr);' },
+  { label: '[业务] 猎取机甲属配 TikTok ID', type: 'TK_MASTER_ACCOUNT', desc: '自动向数据库探知此台分身手机上配置认领的运营主号', usage: '防遗忘配置自动填充登录窗', params: '无传参
+▶ 返回值: [字串]', example: 'wda.input(wda.getMasterTkAccount());' },
+  { label: '[业务] 获取机属 TK 配置防丢密码', type: 'TK_MASTER_PASSWORD', desc: '与上方配套同步调取凭证密码', usage: '无人化授权填单', params: '无传参
+▶ 返回值: [字串]', example: 'wda.input(wda.getMasterTkPassword());' },
+  { label: '[业务] 获取机属 TK 配置邮箱', type: 'TK_MASTER_EMAIL', desc: '对应矩阵身份配比的运营解封及注册联系邮箱', usage: '验证关联用', params: '无传参
+▶ 返回值: [字串]', example: 'wda.input(wda.getMasterTkEmail());' },
+  { label: '[网络] 强制提取最新中台代理', type: 'RECONNECT_VPN', desc: '绕过前置动作配置要求，强行调用记录中的代理系统启动底层隧道。', usage: '剧本开始前的连网预检机制', params: '无传参
+▶ 返回值: [布尔值] 接驳成功状态', example: 'var linked = wda.connectProxy("");
+wda.sleep(3);
+wda.log("信道已强制对准：" + linked);' },
+  { label: '[业务] 中断预判报错阻击令', type: 'REPORT_ERROR', desc: '强制打断后续余下的JS引擎步骤，当着所有人的面爆出一串红色异常丢给中心监控后台', usage: '出现风控无法解时最理性的安全刹车防封禁', params: 'message: 问题剖因
+▶ 返回值: 将阻断一切引擎时钟（无返回）', example: 'if(!wda.tapText("Next")) {
+   wda.reportErrorAndAbort("卡在第二步找不着北，放弃接力!");
+}' },
+  { label: '[业务] 强制越权获取配置云镜像', type: 'SYNC_CONFIG', desc: '越权强制向中央大脑进行一次 RPC 透传获取最新全局配置，无视定时防抖机制', usage: '下发热更修补参数后的即刻自适应', params: '无
+▶ 返回值: [布尔值]', example: 'wda.syncConfig();' },
+  { label: '[业务] 主动汇报完美出局', type: 'REPORT_FINISHED', desc: '主动发送收工密令并解除排队，结束整个业务切面', usage: '飞行模式前保业务记录传出', params: '无传参
+▶ 返回值: 无', example: 'wda.reportFinished();
+wda.log("任务彻底顺利收工了，可以安心了！");' },
+  { label: '[系统] 接管拦截突发灾难弹窗', type: 'CHECK_ALERT', desc: '当机台突然冒出权限确认、版本升级等无厘头iOS窗口时截取它们', usage: '守防意外阻塞', params: 'getAlertText() -> 弹窗文
+getAlertButtons() -> 按钮阵
+clickAlertButton(label) -> 精准按压
+acceptAlert/dismissAlert -> 粗暴处置', example: 'var msg = wda.getAlertText();
+if(msg) {
+   if(wda.getAlertButtons().includes("好")) wda.clickAlertButton("好");
+   else wda.acceptAlert();
+}' },
+  { label: '[系统] 震慑型强提示驻断弹窗', type: 'SHOW_ALERT', desc: '把iOS主系统彻底剥出来并在屏幕最上层砸下一个通知框直到活人点击确认', usage: '高门槛调试核验卡点', params: 'message: 文案
+▶ 返回值: 无（锁死线程直到点击处理完全结束）', example: 'wda.showAlert("现在你需要手动把目标视频对准，搞定了再点OK我就往下走!");' },
+  { label: '[通用] 云边系统流式日志 Log', type: 'LOG', desc: '汇入日志缓冲管线推送至控制面', usage: '诊断开发必备神具', params: 'message: 信息
+▶ 返回值: 无', example: 'wda.log("执行顺利，这是个绝妙的时刻");' }
+];
 
 // [v1738] 追加动作：VPN 重连 + 全局弹窗
 // [v1763] 追加动作：OCR 相关能力
