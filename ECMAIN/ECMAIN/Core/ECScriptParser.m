@@ -1205,43 +1205,28 @@ static NSString *gActiveWDASessionId = nil;
 // 获取 UI 树 JSON
 // ⚠️ 关键发现（v1985）：accessibleSource 端点内部调用 Apple accessibilitySnapshot API
 // 该 API 会隐式触发截图（"Cannot take a screenshot within 8000 ms timeout"）
-// 这个 8000ms 截图超时是 iOS 系统级的，不受 customSnapshotTimeout 控制
 // 唯一安全的组合：source?format=json + includeHittableInPageSource=NO
+//
+// ⚠️ v1986 修复：performWDAActionWithResult 可能返回两种格式
+// 格式1：{"value": {树根...}} → 取 res[@"value"]
+// 格式2：{树根...}（已解包）  → res 本身就是树根（有 children 键）
+// 之前只处理了格式1，导致格式2误判为"扫描失败"
 - (NSDictionary *)_getSourceTreeJSON {
     [self ensureWDASessionId];
     if (!gActiveWDASessionId) return nil;
     
-    // 第一阶段：depth=15 快速扫描（覆盖所有按钮/文字，排除深层渲染）
-    NSString *settingsEndpoint = [NSString stringWithFormat:@"/session/%@/appium/settings", gActiveWDASessionId];
-    [self performWDAActionWithResult:@"fastSettings"
-                            endpoint:settingsEndpoint
-                                body:@{@"settings": @{
-                                    @"snapshotMaxDepth": @15,
-                                    @"customSnapshotTimeout": @6,
-                                    @"includeHittableInPageSource": @NO
-                                }}
-                              method:@"POST"];
-    
     NSString *sourceEndpoint = [NSString stringWithFormat:@"/session/%@/source?format=json", gActiveWDASessionId];
-    NSDictionary *res = [self performWDAActionWithResult:@"fastSource" endpoint:sourceEndpoint body:nil method:@"GET"];
+    NSDictionary *res = [self performWDAActionWithResult:@"getSource" endpoint:sourceEndpoint body:nil method:@"GET"];
+    
+    // 格式1：WDA 标准响应 {"value": {树根...}}
     if (res && res[@"value"] && [res[@"value"] isKindOfClass:[NSDictionary class]]) {
         return res[@"value"];
+    }
+    // 格式2：已解包，res 本身就是树根（有 children 或 type 键）
+    if (res && (res[@"children"] || res[@"type"])) {
+        return res;
     }
     
-    // 第二阶段：depth=5 极浅兜底
-    [self log:@"⚠️ depth=15 扫描失败，尝试 depth=5 兜底"];
-    [self performWDAActionWithResult:@"fallbackSettings"
-                            endpoint:settingsEndpoint
-                                body:@{@"settings": @{
-                                    @"snapshotMaxDepth": @5,
-                                    @"customSnapshotTimeout": @3,
-                                    @"includeHittableInPageSource": @NO
-                                }}
-                              method:@"POST"];
-    res = [self performWDAActionWithResult:@"fallbackSource" endpoint:sourceEndpoint body:nil method:@"GET"];
-    if (res && res[@"value"] && [res[@"value"] isKindOfClass:[NSDictionary class]]) {
-        return res[@"value"];
-    }
     return nil;
 }
 
