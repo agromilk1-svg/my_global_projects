@@ -1203,30 +1203,57 @@ static NSString *gActiveWDASessionId = nil;
 // ══════════════════════════════════════════════════════
 
 // 获取 UI 树 JSON
-// ⚠️ 关键发现（v1985）：accessibleSource 端点内部调用 Apple accessibilitySnapshot API
-// 该 API 会隐式触发截图（"Cannot take a screenshot within 8000 ms timeout"）
-// 唯一安全的组合：source?format=json + includeHittableInPageSource=NO
+// ⚠️ v1985 发现：isVisible 属性检查会触发截图（"Cannot take a screenshot within 8000ms"）
+// 深度越大元素越多 → 截图次数越多 → depth=19 总耗时远超超时阈值
+// depth=15 能覆盖大部分可交互元素，且 isVisible 检查总量可控
 //
-// ⚠️ v1986 修复：performWDAActionWithResult 可能返回两种格式
+// ⚠️ v1987 修复：performWDAActionWithResult 返回两种格式
 // 格式1：{"value": {树根...}} → 取 res[@"value"]
-// 格式2：{树根...}（已解包）  → res 本身就是树根（有 children 键）
-// 之前只处理了格式1，导致格式2误判为"扫描失败"
+// 格式2：{树根...}（已解包）  → res 本身就是树根
 - (NSDictionary *)_getSourceTreeJSON {
     [self ensureWDASessionId];
     if (!gActiveWDASessionId) return nil;
     
     NSString *sourceEndpoint = [NSString stringWithFormat:@"/session/%@/source?format=json", gActiveWDASessionId];
+    NSString *settingsEndpoint = [NSString stringWithFormat:@"/session/%@/appium/settings", gActiveWDASessionId];
+    
+    // 第一阶段：depth=15 快速扫描（限制 isVisible 截图检查数量）
+    [self performWDAActionWithResult:@"fastSettings"
+                            endpoint:settingsEndpoint
+                                body:@{@"settings": @{
+                                    @"snapshotMaxDepth": @15,
+                                    @"customSnapshotTimeout": @3,
+                                    @"includeHittableInPageSource": @NO
+                                }}
+                              method:@"POST"];
+    
     NSDictionary *res = [self performWDAActionWithResult:@"getSource" endpoint:sourceEndpoint body:nil method:@"GET"];
     
-    // 格式1：WDA 标准响应 {"value": {树根...}}
+    // 双格式解析
     if (res && res[@"value"] && [res[@"value"] isKindOfClass:[NSDictionary class]]) {
         return res[@"value"];
     }
-    // 格式2：已解包，res 本身就是树根（有 children 或 type 键）
     if (res && (res[@"children"] || res[@"type"])) {
         return res;
     }
     
+    // 第二阶段：depth=5 极浅兜底
+    [self log:@"⚠️ depth=15 扫描失败，尝试 depth=5 兜底"];
+    [self performWDAActionWithResult:@"fallbackSettings"
+                            endpoint:settingsEndpoint
+                                body:@{@"settings": @{
+                                    @"snapshotMaxDepth": @5,
+                                    @"customSnapshotTimeout": @3,
+                                    @"includeHittableInPageSource": @NO
+                                }}
+                              method:@"POST"];
+    res = [self performWDAActionWithResult:@"fallbackSource" endpoint:sourceEndpoint body:nil method:@"GET"];
+    if (res && res[@"value"] && [res[@"value"] isKindOfClass:[NSDictionary class]]) {
+        return res[@"value"];
+    }
+    if (res && (res[@"children"] || res[@"type"])) {
+        return res;
+    }
     return nil;
 }
 
