@@ -1059,36 +1059,12 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
             snap_t = min(25, max(3, int(custom_depth * 0.4)))
             http_t = snap_t + 5
             
-            # ═══ 安全深度上限 ═══
-            # ⚠️ iOS 系统级硬限制：Apple XCTAccessibilitySnapshot 内部对每个节点
-            # 检查 isVisible 时会隐式截图，硬编码超时 8000ms，不受任何 WDA 设置控制。
-            # 实测：TikTok 等复杂 App depth=16 可正常返回，depth≥20 必然触发截图雪崩。
-            # 安全天花板：depth=16
-            SAFE_DEPTH_CEILING = 16
-            safe_snap_t = min(8, max(3, int(SAFE_DEPTH_CEILING * 0.4)))
-            safe_http_t = safe_snap_t + 5
-            
-            if custom_depth <= SAFE_DEPTH_CEILING:
-                # 用户请求的深度在安全范围内，直接执行
-                attempts = [
-                    {"depth": custom_depth, "snap_timeout": snap_t, "http_timeout": float(http_t),
-                     "endpoint": "source?format=json", "label": f"安全扫描(depth={custom_depth})"},
-                    {"depth": 5, "snap_timeout": 3, "http_timeout": 8.0,
-                     "endpoint": "source?format=json", "label": "浅层兜底扫描"},
-                ]
-            else:
-                # 用户请求的深度超过安全天花板（如 25, 60）
-                # 策略：先用安全深度 16 快速扫一遍，再冒险尝试用户请求的深度
-                logger.warning(f"[WDA_SOURCE] ⚠️ 请求深度 {custom_depth} 超过安全天花板 {SAFE_DEPTH_CEILING}，"
-                               f"TikTok 等复杂 App 在 depth>{SAFE_DEPTH_CEILING} 时极易触发 iOS 8000ms 截图硬超时导致 WDA 假死")
-                attempts = [
-                    {"depth": SAFE_DEPTH_CEILING, "snap_timeout": safe_snap_t, "http_timeout": float(safe_http_t),
-                     "endpoint": "source?format=json", "label": f"安全预扫描(depth={SAFE_DEPTH_CEILING})"},
-                    {"depth": custom_depth, "snap_timeout": snap_t, "http_timeout": float(http_t),
-                     "endpoint": "source?format=json", "label": f"深度扫描(depth={custom_depth})⚠️风险"},
-                    {"depth": 5, "snap_timeout": 3, "http_timeout": 8.0,
-                     "endpoint": "source?format=json", "label": "浅层兜底扫描"},
-                ]
+            # 完全尊重用户指定的深度，不做任何隐式覆盖或降级
+            # 用户自行承担深度过大导致 WDA 超时的风险
+            attempts = [
+                {"depth": custom_depth, "snap_timeout": snap_t, "http_timeout": float(http_t),
+                 "endpoint": "source?format=json", "label": f"扫描(depth={custom_depth})"},
+            ]
             
             for attempt_idx, attempt_cfg in enumerate(attempts):
                 try_depth = attempt_cfg["depth"]

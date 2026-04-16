@@ -5141,8 +5141,7 @@ const handleImageUpload = (event: Event) => {
                   <div class="flex gap-2 items-center flex-wrap">
                     <div class="flex items-center gap-1 bg-gray-800 border border-gray-600 rounded px-2">
                         <span class="text-[11px] text-gray-300 whitespace-nowrap">极限深度:</span>
-                        <input type="number" v-model.number="uiTreeMaxDepth" :class="['w-12 bg-transparent text-xs text-center border-none focus:outline-none focus:ring-0 p-1', uiTreeMaxDepth > 16 ? 'text-red-400' : 'text-amber-400']" title="安全天花板: 16 层。TikTok等复杂App在depth>16时, iOS系统会触发8000ms截图硬超时导致WDA假死。简单App(设置/桌面)可适当增大。">
-                        <span v-if="uiTreeMaxDepth > 16" class="text-[9px] text-red-400 whitespace-nowrap">⚠️危险</span>
+                        <input type="number" v-model.number="uiTreeMaxDepth" class="w-12 bg-transparent text-amber-400 text-xs text-center border-none focus:outline-none focus:ring-0 p-1" title="自定义最大扫描层级。层级越浅扫描越快，可以自行调整层级（即使太大会导致超时也由用户接管）。">
                     </div>
                     <button @click="fetchUITree" class="flex-1 py-2 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white text-xs font-bold rounded shadow-lg border border-amber-500 transition-all active:scale-[0.98] flex justify-center items-center gap-1.5 tracking-wider" :disabled="isUITreeFetching" title="获取真实UI层级。已加载Appium防卡死设置。">
                       <span v-if="!isUITreeFetching">📡 扫描真实控件拓扑图</span>

@@ -1217,16 +1217,15 @@ static NSString *gActiveWDASessionId = nil;
     NSString *sourceEndpoint = [NSString stringWithFormat:@"/session/%@/source?format=json", gActiveWDASessionId];
     NSString *settingsEndpoint = [NSString stringWithFormat:@"/session/%@/appium/settings", gActiveWDASessionId];
     
-    // 用户若未显式指定（导致传入默认值 60，可能导致严重超时）则转录为较安全的预扫描深度 16 (TikTok安全上限)
-    // 若用户显式传入了 0（无限层）或其他特殊层级，则完全尊重用户的参数
-    int safeDepth = (requestedDepth == 60) ? 16 : requestedDepth;
+    // 完全尊重用户指定的深度，不做任何隐式覆盖
+    // 动态超时：深度越大允许的时间越长，最小 3s，最大 30s
+    int snapTimeout = MAX(3, MIN(30, (int)(requestedDepth * 0.5)));
     
-    // 第一阶段：尊重用户深度（或转为 safeDepth 兜底）
     [self performWDAActionWithResult:@"fastSettings"
                             endpoint:settingsEndpoint
                                 body:@{@"settings": @{
-                                    @"snapshotMaxDepth": @(safeDepth),
-                                    @"customSnapshotTimeout": @3,
+                                    @"snapshotMaxDepth": @(requestedDepth),
+                                    @"customSnapshotTimeout": @(snapTimeout),
                                     @"includeHittableInPageSource": @NO
                                 }}
                               method:@"POST"];
@@ -1241,23 +1240,7 @@ static NSString *gActiveWDASessionId = nil;
         return res;
     }
     
-    // 第二阶段：depth=5 极浅兜底（仅当首次扫描失败时使用）
-    [self log:[NSString stringWithFormat:@"⚠️ depth=%d 扫描失败，尝试 depth=5 兜底", safeDepth]];
-    [self performWDAActionWithResult:@"fallbackSettings"
-                            endpoint:settingsEndpoint
-                                body:@{@"settings": @{
-                                    @"snapshotMaxDepth": @5,
-                                    @"customSnapshotTimeout": @3,
-                                    @"includeHittableInPageSource": @NO
-                                }}
-                              method:@"POST"];
-    res = [self performWDAActionWithResult:@"fallbackSource" endpoint:sourceEndpoint body:nil method:@"GET"];
-    if (res && res[@"value"] && [res[@"value"] isKindOfClass:[NSDictionary class]]) {
-        return res[@"value"];
-    }
-    if (res && (res[@"children"] || res[@"type"])) {
-        return res;
-    }
+    [self log:[NSString stringWithFormat:@"⚠️ depth=%d 扫描失败（可能超时或 WDA 无响应）", requestedDepth]];
     return nil;
 }
 
