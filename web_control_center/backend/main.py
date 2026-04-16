@@ -1066,17 +1066,31 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
             # 唯一安全的组合：source?format=json + includeHittableInPageSource=NO
             fast_snap_t = min(8, max(3, int(15 * 0.4)))
             fast_http_t = fast_snap_t + 5
-            attempts = [
-                # 第1阶段：source + depth=15（快速，不触发截图）
-                {"depth": 15, "snap_timeout": fast_snap_t, "http_timeout": float(fast_http_t),
-                 "endpoint": "source?format=json", "label": "快速扫描(depth=15)"},
-                # 第2阶段：source + 用户请求深度
-                {"depth": custom_depth, "snap_timeout": snap_t, "http_timeout": float(http_t),
-                 "endpoint": "source?format=json", "label": "完整扫描"},
-                # 第3阶段：source + depth=5 兜底
-                {"depth": 5, "snap_timeout": 3, "http_timeout": 8.0,
-                 "endpoint": "source?format=json", "label": "浅层兜底扫描"},
-            ]
+            
+            if custom_depth == 60:
+                attempts = [
+                    # 第1阶段：默认深搜时，先用15保护性抢刷
+                    {"depth": 15, "snap_timeout": fast_snap_t, "http_timeout": float(fast_http_t),
+                     "endpoint": "source?format=json", "label": "快速扫描(depth=15)"},
+                    # 第2阶段：如果15不足以捕获，再用60完整扫描
+                    {"depth": custom_depth, "snap_timeout": snap_t, "http_timeout": float(http_t),
+                     "endpoint": "source?format=json", "label": "完整扫描(depth=60)"},
+                    # 第3阶段：5层兜底
+                    {"depth": 5, "snap_timeout": 3, "http_timeout": 8.0,
+                     "endpoint": "source?format=json", "label": "浅层兜底扫描"},
+                ]
+            else:
+                attempts = [
+                    # 第1阶段：用户明确指定了特别深度，必须无条件优先遵从！
+                    {"depth": custom_depth, "snap_timeout": snap_t, "http_timeout": float(http_t),
+                     "endpoint": "source?format=json", "label": f"专定扫描(depth={custom_depth})"},
+                    # 第2阶段：如果挂了再尝试15
+                    {"depth": 15, "snap_timeout": fast_snap_t, "http_timeout": float(fast_http_t),
+                     "endpoint": "source?format=json", "label": "兜底扫描(depth=15)"},
+                    # 第3阶段：5层兜底
+                    {"depth": 5, "snap_timeout": 3, "http_timeout": 8.0,
+                     "endpoint": "source?format=json", "label": "极浅兜底扫描"},
+                ]
             
             for attempt_idx, attempt_cfg in enumerate(attempts):
                 try_depth = attempt_cfg["depth"]
