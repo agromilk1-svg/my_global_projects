@@ -601,6 +601,193 @@ const isUITreeFetching = ref(false);
 const uiTreeMaxDepth = ref(16);
 const uiTreeData = ref("");
 
+const nativeQueryStr = ref("name == 'top_tabs_recomend'");
+const nativeQueryRes = ref("");
+const isNativeQueryFetching = ref(false);
+
+const highlightedNativeNode = ref<any>(null);
+
+const runNativeQuery = async () => {
+  if (!nativeQueryStr.value) return;
+  if (!selectedDevice.value) {
+    log('❌ [直查] 未锁定目标设备', 'error');
+    return;
+  }
+  isNativeQueryFetching.value = true;
+  nativeQueryRes.value = "";
+  try {
+    const escapedStr = nativeQueryStr.value.replace(/"/g, '\\"');
+    const script = `wda.findElementDirect("${escapedStr}");`;
+    
+    log(`📡 [原生直查] 执行指令: ${script}`);
+    const ip = selectedDevice.value; // TODO: get device ip from array
+    const ecUrl = ecmainUrl.value; 
+
+    const triggerRedraw = () => {
+       if (canvasRef.value) {
+           const evt = new MouseEvent('mousemove', { clientX: -999, clientY: -999 });
+           handleMouseMove(evt as any);
+       }
+    };
+
+    const reqRes = await authFetch(`${apiBase}/action_proxy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            udid: selectedDevice.value,
+            ecmain_url: ecmainUrl.value,
+            action_type: 'SCRIPT',
+            connection_mode: connectionMode.value,
+            script_code: script
+        })
+    });
+    
+    let res;
+    try {
+        res = await reqRes.json();
+    } catch(e) {
+         throw new Error('解析JSON失败');
+    }
+    
+    if (res.status === 'ok' && res.detail) {
+         let output = res.detail;
+         if (output.return_value !== undefined) {
+             nativeQueryRes.value = JSON.stringify(output.return_value, null, 2);
+             
+             let retVal = output.return_value;
+             if (retVal && retVal.found && retVal.Rect) {
+                  highlightedNativeNode.value = {
+                      x: retVal.Rect.x,
+                      y: retVal.Rect.y,
+                      w: retVal.Rect.width,
+                      h: retVal.Rect.height
+                  };
+                  setTimeout(triggerRedraw, 50);
+                  
+                  // 3 秒后擦除红框
+                  setTimeout(() => {
+                      if (highlightedNativeNode.value) {
+                          highlightedNativeNode.value = null;
+                          triggerRedraw();
+                      }
+                  }, 3000);
+             } else {
+                 highlightedNativeNode.value = null;
+                 triggerRedraw();
+             }
+         } else {
+             nativeQueryRes.value = JSON.stringify(retVal, null, 2);
+             highlightedNativeNode.value = null;
+             triggerRedraw();
+         }
+    } else if (res.status === 'success' && res.detail) {
+        nativeQueryRes.value = JSON.stringify(res.detail, null, 2);
+    } else {
+        nativeQueryRes.value = JSON.stringify(res, null, 2);
+    }
+    log(`✓ [原生直查] 查询响应完成`);
+  } catch (error) {
+    nativeQueryRes.value = `Error: ${String(error)}`;
+    log(`❌ [原生直查] 异常: ${error}`);
+  } finally {
+    isNativeQueryFetching.value = false;
+  }
+};
+
+// ==========================
+// 🎯 原生直查悬停探测 (Native Probe)
+// ==========================
+const isNativeProbeMode = ref(false);
+const isNativeProbeDebouncing = ref(false);
+let nativeProbeTimeout: number | undefined = undefined;
+
+const runNativeProbeAt = async (x: number, y: number) => {
+  if (!selectedDevice.value) return;
+  try {
+    const script = `wda.getElementAtPointDirect(${x.toFixed(2)}, ${y.toFixed(2)});`;
+    const reqRes = await authFetch(`${apiBase}/action_proxy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            udid: selectedDevice.value,
+            ecmain_url: ecmainUrl.value,
+            action_type: 'SCRIPT',
+            connection_mode: connectionMode.value,
+            script_code: script
+        })
+    });
+    
+    let res;
+    try { res = await reqRes.json(); } catch(e){ console.error('[Probe] JSON parse fail', e); return; }
+    
+    console.log('[Probe] 📡 完整响应:', JSON.stringify(res).substring(0, 500));
+    console.log('[Probe] res.status =', res.status, '| res.return_value =', res.return_value, '| res.detail =', res.detail);
+    
+    // 后端 action_proxy 对 SCRIPT 类型直接透传 ECMAIN 返回: {"status":"ok","return_value":{...},"logs":[...]}
+    let retRaw = res.return_value || (res.detail && res.detail.return_value);
+    console.log('[Probe] retRaw =', retRaw);
+    
+    if (res.status === 'ok' && retRaw !== undefined) {
+       if (typeof retRaw === 'string') {
+           try { retRaw = JSON.parse(retRaw); } catch(e){}
+       }
+       let retVal = retRaw;
+       console.log('[Probe] retVal =', retVal, '| found =', retVal?.found);
+
+       if (retVal && retVal.found) {
+           // 自动填写特征条件
+           let pred = '';
+           if (retVal.name && retVal.name !== '' && retVal.name !== 'null') {
+              pred = `name == '${retVal.name.replace(/'/g, "\\'")}'`;
+           } else if (retVal.label && retVal.label !== '' && retVal.label !== 'null') {
+              pred = `label == '${retVal.label.replace(/'/g, "\\'")}'`;
+           } else if (retVal.type && retVal.type !== 'null') {
+              pred = `type == '${retVal.type}'`;
+           }
+           
+           console.log('[Probe] ✅ 元素找到! pred =', pred);
+           
+           if (pred) {
+               nativeQueryStr.value = pred;
+           }
+           
+           const rectObj = retVal.Rect || {};
+           highlightedNativeNode.value = {
+                x: Number(rectObj.x ?? retVal.x ?? 0),
+                y: Number(rectObj.y ?? retVal.y ?? 0),
+                w: Number(rectObj.width ?? retVal.width ?? 0),
+                h: Number(rectObj.height ?? retVal.height ?? 0),
+                name: retVal.Name || retVal.name || '',
+                label: retVal.Label || retVal.label || '',
+                value: retVal.Value || retVal.value || '',
+                type: retVal.type || '',
+                depth: retVal.depth
+           };
+           console.log('[Probe] highlightedNativeNode =', JSON.stringify(highlightedNativeNode.value));
+           nativeQueryRes.value = JSON.stringify(retVal, null, 2);
+           
+           if (canvasRef.value) {
+               const evt = new MouseEvent('mousemove', { clientX: -999, clientY: -999 });
+               handleMouseMove(evt as any);
+           }
+       } else {
+           console.log('[Probe] ❌ 元素未找到或 found=false');
+           highlightedNativeNode.value = null;
+           if (canvasRef.value) {
+               const evt = new MouseEvent('mousemove', { clientX: -999, clientY: -999 });
+               handleMouseMove(evt as any);
+           }
+       }
+    } else {
+       console.log('[Probe] ⚠️ 条件不满足: status=', res.status, 'retRaw=', retRaw);
+    }
+  } catch (e) {
+     console.warn("[Probe Error]", e);
+  } finally {
+     nativeProbeTimeout = undefined;
+  }
+};
+
 const parseUITree = (treeData: any) => {
     try {
         let nodes: any[] = [];
@@ -3210,202 +3397,91 @@ const addAllVpnNodesToScript = () => {
 };
 
 const actionLibrary = [
-  // ====================== 基础触摸与按键 ======================
-  { label: '[基础] 点击 Tap', type: 'TAP', desc: '模拟触碰屏幕指定的绝对物理坐标点', usage: '点按普通按钮、图标或链接', params: 'x: 横向绝对坐标
-y: 纵向绝对坐标
-▶ 返回值: [布尔值] 是否成功', example: 'var r = wda.tap(100, 200);
-if(r) wda.log("点击成功");' },
-  { label: '[基础] 双击 Double Tap', type: 'DOUBLE_TAP', desc: '在指定点进行极速两次连续点击', usage: '点赞、放大画面', params: 'x: 横坐标
-y: 纵坐标
-▶ 返回值: [布尔值]', example: 'var ok = wda.doubleTap(100, 200);' },
-  { label: '[基础] 长按 Long Press', type: 'LONG_PRESS', desc: '在目标坐标持续按下一定时间', usage: '唤出长按菜单功能', params: 'x, y: 落点的绝对坐标
-duration: 按压时长(毫秒)
-▶ 返回值: [布尔值]', example: 'wda.longPress(100, 200, 1000);' },
-  { label: '[基础] 滑动 Swipe', type: 'SWIPE', desc: '模拟手指从起点平滑划拉至终点', usage: '翻阅商品、滑动屏幕页面', params: 'fromX, fromY: 起点坐标
-toX, toY: 终点坐标
-duration: 滑动所耗时长(毫秒)
-▶ 返回值: [布尔值]', example: 'wda.swipe(200, 800, 200, 200, 500);' },
-  { label: '[基础] 延时阻塞 Sleep', type: 'SLEEP', desc: '阻塞当前宏脚本时钟以等待操作响应', usage: '等待复杂动画加载', params: 'seconds: 等待秒数(支持小数)
-▶ 返回值: [布尔值] 中断保护状态', example: 'wda.sleep(1.5);' },
-  { label: '[基础] 输入文本 Input', type: 'INPUT', desc: '利用底层通道为焦点元素输入字符串', usage: '自动检索、表单键入', params: 'text: 欲键入的内容
-▶ 返回值: [布尔值]', example: 'wda.input("Hello World");' },
-  { label: '[按键] 主屏幕 Home', type: 'HOME', desc: '调用设备的 Home 键将应用退隐至后台', usage: '强行退回系统桌面', params: '无传参
-▶ 返回值: [布尔值]', example: 'wda.home();' },
-  { label: '[按键] 锁屏 Lock', type: 'LOCK', desc: '直接锁定设备物理屏幕（触发锁屏动作）', usage: '运行毕后主动休眠减小能耗及屏蔽检测', params: '无传参
-▶ 返回值: [布尔值]', example: 'wda.lock();' },
-  { label: '[按键] 音量加 Volume UP', type: 'VOLUME_UP', desc: '单击设备音量＋实体操作键', usage: '激活媒体或掩人耳目的行为特征', params: '无传参
-▶ 返回值: [布尔值]', example: 'wda.volumeUp();' },
-  { label: '[按键] 音量减 Volume DOWN', type: 'VOLUME_DOWN', desc: '单击设备音量－实体操作键', usage: '同上', params: '无传参
-▶ 返回值: [布尔值]', example: 'wda.volumeDown();' },
+  // ═══════════ 触摸操作 ═══════════
+  { label: '👆 点击', type: 'TAP', desc: '点击屏幕上指定的坐标', usage: '点击按钮、图标', params: '输入参数:\n  x: 横坐标 (数字，必填)\n  y: 纵坐标 (数字，必填)\n\n返回值: 布尔值\n  true = 点击成功\n  false = 点击失败', example: '// 点击坐标 (100, 200)\nvar ok = wda.tap(100, 200);\nif(ok) {\n  wda.log("点击成功");\n} else {\n  wda.log("点击失败");\n}' },
+  { label: '👆👆 双击', type: 'DOUBLE_TAP', desc: '快速连续点击两次', usage: '点赞、放大画面', params: '输入参数:\n  x: 横坐标 (数字，必填)\n  y: 纵坐标 (数字，必填)\n\n返回值: 布尔值\n  true = 成功', example: '// 双击坐标 (100, 200)\nwda.doubleTap(100, 200);' },
+  { label: '👇 长按', type: 'LONG_PRESS', desc: '按住屏幕指定位置一段时间', usage: '触发长按菜单', params: '输入参数:\n  x: 横坐标 (数字，必填)\n  y: 纵坐标 (数字，必填)\n  duration: 按住多久 (数字，必填)\n    单位: 毫秒\n    例如 1000 = 1秒\n\n返回值: 布尔值\n  true = 成功', example: '// 在 (100,200) 长按 1 秒\nwda.longPress(100, 200, 1000);\n\n// 长按 2.5 秒\nwda.longPress(200, 300, 2500);' },
+  { label: '👋 滑动', type: 'SWIPE', desc: '从一个点滑动到另一个点', usage: '翻页、刷视频', params: '输入参数:\n  fromX: 起点横坐标 (数字，必填)\n  fromY: 起点纵坐标 (数字，必填)\n  toX: 终点横坐标 (数字，必填)\n  toY: 终点纵坐标 (数字，必填)\n  duration: 滑动耗时 (数字，必填)\n    单位: 毫秒\n    例如 500 = 0.5秒\n    值越小滑动越快\n\n返回值: 布尔值\n  true = 成功', example: '// 从 (200,800) 向上滑到 (200,200)，耗时0.5秒\nwda.swipe(200, 800, 200, 200, 500);\n\n// 从左往右滑\nwda.swipe(50, 400, 350, 400, 300);' },
+  { label: '⏳ 等待', type: 'SLEEP', desc: '暂停脚本执行一段时间', usage: '等待页面加载', params: '输入参数:\n  seconds: 等待秒数 (数字，必填)\n    支持小数，例如 1.5 = 等1.5秒\n\n返回值: 布尔值', example: '// 等待 1.5 秒\nwda.sleep(1.5);\n\n// 等待 3 秒\nwda.sleep(3);' },
+  { label: '⌨️ 输入文字', type: 'INPUT', desc: '在当前输入框中打字', usage: '填写表单、搜索', params: '输入参数:\n  text: 要输入的文字 (字符串，必填)\n    支持中英文及特殊字符\n\n返回值: 布尔值\n  true = 成功', example: '// 输入英文\nwda.input("Hello World");\n\n// 输入中文\nwda.input("你好世界");' },
 
-  // ====================== 离散随机仿生 ======================
-  { label: '[随机仿生] 随机点击 Tap', type: 'RANDOM_TAP', desc: '在选定方形区域内生成无偏向随机落点', usage: '防备机械位置被算法侦察', params: 'x1, x2: 横向边界区
-y1, y2: 纵向边界区
-▶ 返回值: [布尔值]', example: 'wda.tap(wda.randomInt(10, 50), wda.randomInt(20, 60));' },
-  { label: '[随机仿生] 随机长按 LPress', type: 'RANDOM_LPRESS', desc: '坐标及接触持联时长双极随机生成', usage: '规避高频率无差别的机器特征定调', params: 'x1~x2, y1~y2: 落点界限
-dMin~dMax: 时长浮动域(毫秒)
-▶ 返回值: [布尔值]', example: 'wda.longPress(wda.randomInt(10, 50), wda.randomInt(20, 60), wda.randomInt(800, 1500));' },
-  { label: '[随机仿生] 随机滑动 Swipe', type: 'RANDOM_SWIPE', desc: '四维起终标量流连耗时全矩阵弥散生成', usage: '无限刷视频防风控的最密防线动作', params: 'fromX12, Y12: 起
-toX12, Y12: 终
-durMinMax: 毫秒
-▶ 返回值: [布尔值]', example: 'wda.swipe(wda.randomInt(150, 160), wda.randomInt(400, 500),
-  wda.randomInt(150, 180), wda.randomInt(250, 300),
-  wda.randomInt(130, 350));' },
-  { label: '[随机仿生] 随机等待 Sleep', type: 'RANDOM_WAIT', desc: '动态生成正交间隙时间片', usage: '破坏极大概率的任务周期同律性', params: 'Min(s), Max(s): 浮点时长区间
-▶ 返回值: [布尔值]', example: 'wda.sleep(wda.random(2.0, 5.0));' },
+  // ═══════════ 随机操作 ═══════════
+  { label: '🎲 随机点击', type: 'RANDOM_TAP', desc: '在一个矩形区域内随机选一个点点击', usage: '模拟真人点击', params: '实现方式: 用 wda.randomInt(min, max) 生成随机坐标\n\n辅助方法:\n  wda.randomInt(min, max)\n    min: 最小值 (整数)\n    max: 最大值 (整数)\n    返回: min~max 之间的随机整数\n\n  wda.random(min, max)\n    min: 最小值 (小数)\n    max: 最大值 (小数)\n    返回: min~max 之间的随机小数', example: '// 在 (80~120, 180~220) 范围内随机点击\nvar x = wda.randomInt(80, 120);\nvar y = wda.randomInt(180, 220);\nwda.tap(x, y);' },
+  { label: '🎲 随机长按', type: 'RANDOM_LPRESS', desc: '在随机坐标长按随机时长', usage: '模拟真人长按', params: '实现方式: 见"随机范围点击"的辅助方法说明', example: '// 随机坐标 + 随机按住 0.8~1.5 秒\nwda.longPress(\n  wda.randomInt(80, 120),\n  wda.randomInt(180, 220),\n  wda.randomInt(800, 1500)\n);' },
+  { label: '🎲 随机滑动', type: 'RANDOM_SWIPE', desc: '起点、终点、耗时全部随机', usage: '模拟真人滑动', params: '实现方式: 见"随机范围点击"的辅助方法说明', example: '// 全部随机的向上滑动\nwda.swipe(\n  wda.randomInt(150, 200), wda.randomInt(600, 700),\n  wda.randomInt(150, 200), wda.randomInt(200, 300),\n  wda.randomInt(200, 500)\n);' },
+  { label: '🎲 随机等待', type: 'RANDOM_WAIT', desc: '随机暂停一段时间', usage: '让间隔更自然', params: '实现方式: 用 wda.random(min, max) 生成随机秒数', example: '// 随机等待 2~5 秒\nwda.sleep(wda.random(2.0, 5.0));' },
 
-  // ====================== 系统与应用应用层 ======================
-  { label: '[应用] 启动应用 Launch', type: 'LAUNCH', desc: '底层唤起对应 BundleId 的目标应用包', usage: '开机后置位目标工作台', params: 'bundleId: 唯一应用代码
-▶ 返回值: [布尔值]', example: 'wda.launch("com.zhiliaoapp.musically");' },
-  { label: '[应用] 强制终止 Terminate', type: 'TERMINATE', desc: '摧毁目标程序的沙盒活跃进程', usage: '释放系统闲置缓存', params: 'bundleId: 唯一应用代码
-▶ 返回值: [布尔值]', example: 'wda.terminate("com.zhiliaoapp.musically");' },
-  { label: '[应用] 查杀后台 Kill All', type: 'TERMINATE_ALL', desc: 'Root进程无条件清除第三方全部后台应用', usage: '恢复满血空余可用内存池', params: '无传参
-▶ 返回值: [布尔值]', example: 'wda.terminateAll();' },
-  { label: '[应用] 抹除缓存 Wipe Data', type: 'WIPE_APP', desc: '重置清除应用的文稿缓存，并拔除 Keychain 高斯串遗留', usage: '彻底清理风控污染死穴', params: 'bundleId: 目标包名
-▶ 返回值: [布尔值]', example: 'wda.wipeApp("com.zhiliaoapp.musically");' },
-  { label: '[网络] 开启飞行模式 AirplaneON', type: 'AIRPLANE_ON', desc: '物理隔断蜂窝及射频网络硬件信号发射', usage: '断切本地移动网络进行重洗', params: '无传参
-▶ 返回值: [布尔值]', example: 'wda.airplaneOn();' },
-  { label: '[网络] 关闭飞行模式 AirplaneOFF', type: 'AIRPLANE_OFF', desc: '撤销物理隔断并重获系统连接', usage: '取得新公网 IP 地址分配', params: '无传参
-▶ 返回值: [布尔值]', example: 'wda.airplaneOff();
-wda.sleep(2.0); // 必须等待寻轨重连' },
-  { label: '[网络] 设置静态 IP', type: 'SET_IP', desc: '改写系统底层 IP / 网关 路由矩阵表项', usage: '注入防污染节点池进行绑定', params: 'ip: IP
-subnet: 子网掩码
-gateway: 网关
-dns: 解析器
-▶ 返回值: [布尔值]', example: 'wda.setStaticIP("192.168.1.100", "255.255.255.0", "192.168.1.1", "8.8.8.8");' },
-  { label: '[网络] 连接 Wi-Fi 热点', type: 'SET_WIFI', desc: '控制基带强切无线局域网路由通道', usage: '转移至专设专用网络', params: 'ssid: 基站名
-password: 防线密钥
-▶ 返回值: [布尔值]', example: 'wda.setWifi("Studio_5G", "p@ssword123");' },
+  // ═══════════ 设备控制 ═══════════
+  { label: '🏠 返回桌面', type: 'HOME', desc: '按下 Home 键回到桌面', usage: '退出当前应用', params: '输入参数: 无\n返回值: 布尔值', example: 'wda.home();' },
+  { label: '🔒 锁屏', type: 'LOCK', desc: '锁定设备屏幕', usage: '任务结束后息屏省电', params: '输入参数: 无\n返回值: 布尔值', example: 'wda.lock();' },
+  { label: '🔊 音量加', type: 'VOLUME_UP', desc: '按一下音量+键', usage: '调大音量', params: '输入参数: 无\n返回值: 布尔值', example: 'wda.volumeUp();' },
+  { label: '🔉 音量减', type: 'VOLUME_DOWN', desc: '按一下音量-键', usage: '调小音量', params: '输入参数: 无\n返回值: 布尔值', example: 'wda.volumeDown();' },
 
-  // ====================== 文本寻址 & OCR (新一代原生引擎) ======================
-  { label: '[获取] OCR 全画幅矩阵提取', type: 'OCR_SUITE', desc: '全新一代神经 OCR，提取画面内所有文本特征坐标。（可定语系过滤极大攀升解析速率）', usage: '收集散列排布的大量文案进行计算分析', params: '★ wda.ocr(region?, languages?)
-region: 扫描限定窗 [x,y,w,h]
-languages: 库定向量 ["zh-Hans", "en-US"]
-▶ 返回值: {texts:[{text, x, y, width, height, confidence}, ...]}', example: 'var rawInfo = wda.ocr(null, ["en-US"]);
-if(rawInfo && rawInfo.texts) {
-    wda.log("发现文本块总量: " + rawInfo.texts.length);
-}' },
-  { label: '[检索] 极速寻找精准文本坐标', type: 'FIND_TEXT', desc: '寻找包含特异中英文字符的落地点对象及宽幅规格', usage: '通过眼见所识内容解决定位难的问题', params: '★ wda.findText(text)
-text: 拟寻内容段（支持部分包含匹配及忽略大小写特征）
-▶ 返回值: {found: true, result: {text, x, y, width, height}}', example: 'var t = wda.findText("同意并继续");
-if (t.found) wda.tap(t.result.x, t.result.y);' },
-  { label: '[检索] 一键寻文字并直接点击', type: 'TAP_TEXT', desc: '全自动一体化动作：找字 -> 查范围中点 -> 落指，带防越界机制', usage: '操作步骤最干缩化之必备神器', params: '★ wda.tapText(text)
-text: 可见目标的文案
-▶ 返回值: [布尔值]', example: 'if (wda.tapText("Confirm")) {
-    wda.log("完成该弹框确认流程");
-}' },
-  { label: '[底层] 通过节点特征寻获 UI 元素', type: 'FIND_ELEMENT', desc: '深入 XCTest DOM 解析抓取节点坐标。支持规避死锁的深度剪枝机制参数设定', usage: '获取暗桩型（隐式包含或隐藏属性）布局锚点坐标', params: '★ wda.findElement(predicate, maxDepth?)
-predicate: NSPredicate筛选
-maxDepth: 递归截断阈值，通常60，加速可低至10
-▶ 返回值: {found: true, x, y, width, height, element_id}', example: 'var el = wda.findElement("label CONTAINS \'Privacy\'", 30);
-if (el.found) { wda.tap(el.x, el.y); }' },
-  { label: '[底层] 一体化寻找并硬核点击节点', type: 'TAP_ELEMENT', desc: '找到并从系统内核进行越狱级物理底层截获式点击', usage: '消灭防点击或带点击掩码层的流氓弹窗', params: '★ wda.tapElement(predicate, maxDepth?)
-predicate: 目标节点特征标识串
-▶ 返回值: [布尔值]', example: 'var isTapped = wda.tapElement("type == \'XCUIElementTypeButton\' AND name == \'Skip\'", 20);
-if(isTapped) wda.log("已绕过拦截点");' },
-  { label: '[底层] 剥离 UI 文本态势/隐藏属性', type: 'GET_ELEMENT_TEXT', desc: '强行萃离未被视觉渲染或是包含在结构内里的不可见文本载荷', usage: '统计阅读量评论量和隐式UID防抓取机制', params: '★ wda.getElementText(predicate, maxDepth?)
-▶ 返回值: [长字符串]
-★ wda.getElementAttribute(predicate, attributeName, maxDepth?)
-▶ 返回值: [原值变长序列]', example: 'var fans = wda.getElementText("name CONTAINS \'followers\'", 60);
-var enableStatus = wda.getElementAttribute("label == \'Sync\'", "enabled", 20);
-wda.log("粉丝: " + fans + " 同步态: " + enableStatus);' },
+  // ═══════════ 应用管理 ═══════════
+  { label: '🚀 打开应用', type: 'LAUNCH', desc: '启动指定的应用', usage: '打开目标 App', params: '输入参数:\n  bundleId: 应用的包名 (字符串，必填)\n\n常见包名:\n  TikTok: com.zhiliaoapp.musically\n  抖音: com.ss.iphone.ugc.Aweme\n  设置: com.apple.Preferences\n  Safari: com.apple.mobilesafari\n  相册: com.apple.mobileslideshow\n\n返回值: 布尔值\n  true = 启动成功', example: '// 打开 TikTok\nwda.launch("com.zhiliaoapp.musically");\n\n// 打开系统设置\nwda.launch("com.apple.Preferences");' },
+  { label: '❌ 关闭应用', type: 'TERMINATE', desc: '强制关闭指定的应用', usage: '关闭后台App', params: '输入参数:\n  bundleId: 应用的包名 (字符串，必填)\n\n返回值: 布尔值\n  true = 关闭成功', example: 'wda.terminate("com.zhiliaoapp.musically");' },
+  { label: '🧹 关闭所有应用', type: 'TERMINATE_ALL', desc: '关闭所有第三方后台应用', usage: '释放内存', params: '输入参数: 无\n返回值: 布尔值', example: 'wda.terminateAll();' },
+  { label: '🗑️ 清除应用数据', type: 'WIPE_APP', desc: '删除应用的缓存、文档和登录凭证', usage: '重置App到全新状态', params: '输入参数:\n  bundleId: 应用的包名 (字符串，必填)\n\n注意: 此操作不可恢复！\n\n返回值: 布尔值\n  true = 清除成功', example: 'wda.wipeApp("com.zhiliaoapp.musically");' },
 
-  // ====================== 图像获取与比对处理 ======================
-  { label: '[图像] 全局快拍显存封锁 Screenshot', type: 'SCREENSHOT', desc: '直接拉下屏幕底层绘图管道无压损图像流，压于内存缓存', usage: '留作判别与归档依据', params: '无传参
-▶ 返回值: {base64: "..."}', example: 'var s = wda.screenshot();
-wda.log("截取的数据大小：" + s.base64.length);' },
-  { label: '[图像] 清理残压垃圾 Clear Cache', type: 'CLEAR_SCREENSHOT_CACHE', desc: '立刻释放图像内存块，阻止视频长播宏因为垃圾累加导致进程崩溃 OOM', usage: '高频找图动作组之后的保命机制', params: '无传参
-▶ 返回值: 无', example: 'wda.clearScreenshotCache();
-wda.log("显存管道已清空疏通");' },
-  { label: '[图像] 图形阵势分析 Find Image', type: 'FIND_IMAGE', desc: '采用核心视觉比对相似置信度计算特定切片的位置', usage: '突破不可名状或非标控件的限制定位', params: '★ wda.findImage(templateBase64, threshold?, region?)
-templateBase64: 物料特征
-threshold: 对比度 (即相似容差，通常为0.8)
-▶ 返回值: {found: true, x, y, width, height, confidence}', example: 'var res = wda.findImage("iVBORw0KGgoAAA...", 0.85);
-if(res.found) wda.tap(res.x, res.y);' },
-  { label: '[图像] 找图自动点击 Find+Tap', type: 'FIND_IMAGE_TAP', desc: '找图并计算框心自动落指点击（封装接口）', usage: '对单图片按钮做快速匹配点按', params: '★ 与找图参数完全一致
-▶ 返回值: [布尔值] 是否成功', example: 'var ok = wda.findImageAndTap("...", 0.8, [100, 100, 200, 200]);
-if(ok) wda.log("完成点按");' },
-  { label: '[图像] 深挖点阵特征色 Get Color', type: 'GET_COLOR', desc: '单抽特定坐标处的 24 位全亮颜色十六进制值编码', usage: '精准识别按钮被点亮或者置灰', params: 'x, y: 探测位置
-▶ 返回值: {value: "#RRGGBB"}', example: 'var clr = wda.getColorAt(100, 200);
-if(clr && clr.value === "#FF0000") wda.log("发出了红光");' },
-  { label: '[图像] 复合色点阵检索 MultiColor', type: 'MULTICOLOR', desc: '防查水表的组合特殊阵点连线色调探测追踪网络', usage: '极其苛刻多变抗锯齿的反爬防虫页面', params: '★ wda.findMultiColor(colorsRuleStr, sim?, region?)
-colorsRuleStr: "主点Hex,差X|差Y|Hex..."
-▶ 返回值: {found: true, x, y}', example: 'var hit = wda.findMultiColor("0xFF00FF,-10|20|0x334455", 0.9, [0, 100, 200, 200]);' },
+  // ═══════════ 网络管理 ═══════════
+  { label: '✈️ 开飞行模式', type: 'AIRPLANE_ON', desc: '打开飞行模式断网', usage: '断网刷IP第一步', params: '输入参数: 无\n返回值: 布尔值', example: '// 开飞行→等2秒→关飞行 = 换IP\nwda.airplaneOn();\nwda.sleep(2);\nwda.airplaneOff();\nwda.sleep(3); // 等网络恢复' },
+  { label: '📶 关飞行模式', type: 'AIRPLANE_OFF', desc: '关闭飞行模式重新联网', usage: '断网刷IP第二步', params: '输入参数: 无\n返回值: 布尔值', example: 'wda.airplaneOff();\nwda.sleep(3); // 等网络恢复' },
+  { label: '🌐 设置静态IP', type: 'SET_IP', desc: '设置设备的IP地址和网关', usage: '连接特定代理', params: '输入参数:\n  ip: IP地址 (字符串，必填)\n  subnet: 子网掩码 (字符串，必填)\n  gateway: 网关地址 (字符串，必填)\n  dns: DNS服务器 (字符串，必填)\n\n返回值: 布尔值', example: 'wda.setStaticIP(\n  "192.168.1.100",\n  "255.255.255.0",\n  "192.168.1.1",\n  "8.8.8.8"\n);' },
+  { label: '📡 连接WiFi', type: 'SET_WIFI', desc: '自动连接指定的WiFi', usage: '切换网络环境', params: '输入参数:\n  ssid: WiFi名称 (字符串，必填)\n  password: WiFi密码 (字符串，必填)\n    密码至少8位\n    若WiFi无密码，传空字符串 ""\n\n返回值: 布尔值', example: 'wda.setWifi("Studio_5G", "password123");' },
+  { label: '🔗 连接代理', type: 'RECONNECT_VPN', desc: '连接代理节点', usage: '脚本开头确保网络环境', params: '输入参数:\n  keyword: 节点关键词 (字符串，必填)\n    传 "" 空字符串: 自动连接上次用过的节点\n    传具体文字: 按名称/IP/备注匹配节点\n\n返回值: 布尔值\n  true = 连接成功', example: '// 自动连接上次用的节点\nwda.connectProxy("");\nwda.sleep(3);\n\n// 按名称连接指定节点\nwda.connectProxy("美国节点01");' },
 
-  // ====================== 云端素材 / CDN 统配体系 ======================
-  { label: '[素材] 下载固态文件入相册', type: 'DOWNLOAD_ALBUM', desc: '从网络云端抢拉音视频文件下界置入手机系统层相册胶盘（重名将同名顶替覆盖，清理冗余）', usage: '自动发片与二创系统的核心填弹组', params: 'url: 远程超文本文件直链地址
-▶ 返回值: [布尔值] 写入状态', example: 'var ok = wda.downloadToAlbum("https://test.com/vid.mp4");
-if(ok) { wda.log("下载包收录入系统相册！"); }' },
-  { label: '[素材] 队列盲盒截取媒体', type: 'DOWNLOAD_ONETIME', desc: '向调度中心请求配装专用去重队列素材。拿到手后这笔物料会被中心立刻注销摧毁，确保矩阵手机之间永不撞车抄袭', usage: '全自动独立发布防止原创封禁', params: 'type: "video" 抑或是 "image"
-group: 指向专属调度文件夹(如"第一组")
-▶ 返回值: [布尔值]', example: 'if(wda.downloadOneTimeMedia("video", "Group_A")) {
-    wda.log("成功拿下一血唯一独享视频, 存储并代号为 [mov1.mp4]");
-}' },
-  { label: '[系统] 拖入底层系统 IPA 数据', type: 'DOWNLOAD_IPA', desc: '走机房专用高速光储网直接拽下未被签名的原始 App 安装总包存储到保留目录', usage: '配合注入安装达成底层改修与机房矩阵更替部署', params: 'url: 私网或云存储直连包址
-▶ 返回值: [布尔值]', example: 'var st = wda.downloadIPA("http://cdn.local/app.ipa");
-if(st) wda.log("二进制装甲片传输完结");' },
-  { label: '[系统] IPA 脱壳变装与越权注入', type: 'INSTALL_IPA', desc: '调动 TrollStore 内核服务对刚才下载的包执行强力伪装（包括设备信息模拟欺骗）及绕签名多开分身复制，且当即进行硬化安装', usage: '最最高危强大的应用大批量克隆分发武器库', params: 'config (配置字典包。必填 filename, 可选 clone_number, spoof_config假硬件特征字典)
-▶ 返回值: {installed: Boolean, output: "日志"}', example: 'wda.installIPA({
-  filename: "TikTok.ipa", 
-  clone_number: "5", 
-  spoof_config: { machineModel: "iPhone14,2" }
-});
-wda.log("完成了五号分身的挂载和底料欺诈修改");' },
+  // ═══════════ 文字识别 ═══════════
+  { label: '🔍 全屏文字识别 OCR', type: 'OCR_SUITE', desc: '识别屏幕上所有文字及其坐标位置', usage: '批量读取页面文字', params: '调用方式: wda.ocr(region?, languages?)\n\n输入参数 (全部可选):\n  region: 限定识别范围 (数组，可选)\n    格式: [x, y, 宽, 高]\n    不传则识别全屏\n  languages: 指定识别语言 (字符串数组，可选)\n    指定语言可大幅提升速度和准确率\n    参数顺序不固定，系统自动识别\n\n支持的语言代码:\n  en-US    英语\n  zh-Hans  简体中文\n  zh-Hant  繁体中文\n  ja-JP    日语\n  ko-KR    韩语\n  fr-FR    法语\n  de-DE    德语\n  es-ES    西班牙语\n  pt-BR    葡萄牙语(巴西)\n  it-IT    意大利语\n  ru-RU    俄语\n  ar-SA    阿拉伯语\n  th-TH    泰语\n  vi-VN    越南语\n  tr-TR    土耳其语\n\n返回值: 对象\n  .texts: 数组，每项包含:\n    .text: 识别到的文字内容\n    .x: 文字左上角横坐标\n    .y: 文字左上角纵坐标\n    .width: 文字区域宽度\n    .height: 文字区域高度\n    .confidence: 置信度 (0~1)', example: '// 1. 全屏识别所有文字\nvar r = wda.ocr();\nwda.log("共识别到 " + r.texts.length + " 段文字");\nfor(var i = 0; i < r.texts.length; i++) {\n  wda.log(r.texts[i].text);\n}\n\n// 2. 只识别屏幕上半部分的英文\nvar r2 = wda.ocr([0, 0, 375, 400], ["en-US"]);\n\n// 3. 只指定语言(全屏)\nvar r3 = wda.ocr(["zh-Hans", "en-US"]);\n\n// 4. 只指定区域\nvar r4 = wda.ocr([100, 200, 200, 100]);' },
+  { label: '🔎 查找指定文字', type: 'FIND_TEXT', desc: '在屏幕上找到指定文字的位置', usage: '不知道坐标时通过文字定位', params: '调用方式: wda.findText(text, region?, languages?)\n\n输入参数:\n  text: 要查找的文字 (字符串，必填)\n    支持部分匹配，不区分大小写\n  region: 限定搜索范围 (数组，可选)\n    格式: [x, y, 宽, 高]\n  languages: 指定识别语言 (字符串数组，可选)\n\n支持的语言代码:\n  en-US    英语\n  zh-Hans  简体中文\n  zh-Hant  繁体中文\n  ja-JP    日语\n  ko-KR    韩语\n  fr-FR    法语\n  de-DE    德语\n  es-ES    西班牙语\n  pt-BR    葡萄牙语(巴西)\n  it-IT    意大利语\n  ru-RU    俄语\n  ar-SA    阿拉伯语\n  th-TH    泰语\n  vi-VN    越南语\n  tr-TR    土耳其语\n\n返回值: 对象\n  .found: 是否找到 (布尔值)\n  .text: 匹配结果的文字内容\n  .x, .y: 文字坐标\n  .width, .height: 文字区域大小\n  .result: 原始结果对象 (包含上述所有字段，兼容旧写法)', example: '// 1. 基本用法：全屏查找\nvar t = wda.findText("同意");\nif(t.found) {\n  wda.tap(t.x, t.y);\n  wda.log("找到文字: " + t.text);\n}\n\n// 2. 限定范围 + 指定语言\nvar t2 = wda.findText("Next", [0, 400, 375, 400], ["en-US"]);\nif(t2.found) wda.tap(t2.x, t2.y);' },
+  { label: '🖱️ 找到文字并点击', type: 'TAP_TEXT', desc: '找到屏幕上的指定文字并自动点击它', usage: '最方便的文字按钮点击', params: '调用方式: wda.tapText(text, region?, languages?)\n\n输入参数:\n  text: 要找并点击的文字 (字符串，必填)\n  region: 限定搜索范围 (数组，可选)\n  languages: 指定语言 (数组，可选)\n\n支持的语言代码:\n  en-US    英语\n  zh-Hans  简体中文\n  zh-Hant  繁体中文\n  ja-JP    日语\n  ko-KR    韩语\n  fr-FR    法语\n  de-DE    德语\n  es-ES    西班牙语\n  pt-BR    葡萄牙语(巴西)\n  it-IT    意大利语\n  ru-RU    俄语\n  ar-SA    阿拉伯语\n  th-TH    泰语\n  vi-VN    越南语\n  tr-TR    土耳其语\n\n返回值: 布尔值\n  true = 找到并点击成功\n  false = 没找到该文字', example: '// 点击"同意并继续"按钮\nif(wda.tapText("同意并继续")) {\n  wda.log("点击成功");\n} else {\n  wda.log("没找到这个文字");\n}\n\n// 2. 带范围和语言点击\nwda.tapText("Confirm", [0, 500, 375, 300], ["en-US"]);' },
 
-  // ====================== 业务中台交互协同 / 控制流 ======================
-  { label: '[业务] 云边接驳提取大评论库', type: 'RANDOM_COMMENT', desc: '中台词频协同系统根据配置分发的一条对应小语种长段回执', usage: '长评盖楼灌水体系', params: 'language: 标准地区代号（如 "en-US", "zh-CN"）
-▶ 返回值: [长文本字符串]', example: 'var scriptStr = wda.getRandomComment("zh-CN");
-wda.input(scriptStr);' },
-  { label: '[业务] 猎取机甲属配 TikTok ID', type: 'TK_MASTER_ACCOUNT', desc: '自动向数据库探知此台分身手机上配置认领的运营主号', usage: '防遗忘配置自动填充登录窗', params: '无传参
-▶ 返回值: [字串]', example: 'wda.input(wda.getMasterTkAccount());' },
-  { label: '[业务] 获取机属 TK 配置防丢密码', type: 'TK_MASTER_PASSWORD', desc: '与上方配套同步调取凭证密码', usage: '无人化授权填单', params: '无传参
-▶ 返回值: [字串]', example: 'wda.input(wda.getMasterTkPassword());' },
-  { label: '[业务] 获取机属 TK 配置邮箱', type: 'TK_MASTER_EMAIL', desc: '对应矩阵身份配比的运营解封及注册联系邮箱', usage: '验证关联用', params: '无传参
-▶ 返回值: [字串]', example: 'wda.input(wda.getMasterTkEmail());' },
-  { label: '[网络] 强制提取最新中台代理', type: 'RECONNECT_VPN', desc: '绕过前置动作配置要求，强行调用记录中的代理系统启动底层隧道。', usage: '剧本开始前的连网预检机制', params: '无传参
-▶ 返回值: [布尔值] 接驳成功状态', example: 'var linked = wda.connectProxy("");
-wda.sleep(3);
-wda.log("信道已强制对准：" + linked);' },
-  { label: '[业务] 中断预判报错阻击令', type: 'REPORT_ERROR', desc: '强制打断后续余下的JS引擎步骤，当着所有人的面爆出一串红色异常丢给中心监控后台', usage: '出现风控无法解时最理性的安全刹车防封禁', params: 'message: 问题剖因
-▶ 返回值: 将阻断一切引擎时钟（无返回）', example: 'if(!wda.tapText("Next")) {
-   wda.reportErrorAndAbort("卡在第二步找不着北，放弃接力!");
-}' },
-  { label: '[业务] 强制越权获取配置云镜像', type: 'SYNC_CONFIG', desc: '越权强制向中央大脑进行一次 RPC 透传获取最新全局配置，无视定时防抖机制', usage: '下发热更修补参数后的即刻自适应', params: '无
-▶ 返回值: [布尔值]', example: 'wda.syncConfig();' },
-  { label: '[业务] 主动汇报完美出局', type: 'REPORT_FINISHED', desc: '主动发送收工密令并解除排队，结束整个业务切面', usage: '飞行模式前保业务记录传出', params: '无传参
-▶ 返回值: 无', example: 'wda.reportFinished();
-wda.log("任务彻底顺利收工了，可以安心了！");' },
-  { label: '[系统] 接管拦截突发灾难弹窗', type: 'CHECK_ALERT', desc: '当机台突然冒出权限确认、版本升级等无厘头iOS窗口时截取它们', usage: '守防意外阻塞', params: 'getAlertText() -> 弹窗文
-getAlertButtons() -> 按钮阵
-clickAlertButton(label) -> 精准按压
-acceptAlert/dismissAlert -> 粗暴处置', example: 'var msg = wda.getAlertText();
-if(msg) {
-   if(wda.getAlertButtons().includes("好")) wda.clickAlertButton("好");
-   else wda.acceptAlert();
-}' },
-  { label: '[系统] 震慑型强提示驻断弹窗', type: 'SHOW_ALERT', desc: '把iOS主系统彻底剥出来并在屏幕最上层砸下一个通知框直到活人点击确认', usage: '高门槛调试核验卡点', params: 'message: 文案
-▶ 返回值: 无（锁死线程直到点击处理完全结束）', example: 'wda.showAlert("现在你需要手动把目标视频对准，搞定了再点OK我就往下走!");' },
-  { label: '[通用] 云边系统流式日志 Log', type: 'LOG', desc: '汇入日志缓冲管线推送至控制面', usage: '诊断开发必备神具', params: 'message: 信息
-▶ 返回值: 无', example: 'wda.log("执行顺利，这是个绝妙的时刻");' }
+  // ═══════════ 原生直查（针对卡死优化） ═══════════
+  { label: '🎯 原生直查节点', type: 'FIND_ELEMENT_DIRECT', desc: '不获取全量UI树，使用原生XCUIElementQuery直接查找目标并返回坐标（深层防卡死）', usage: '适用于TikTok这种非常深、容易造成WDA内存溢出的应用', params: '调用方式: wda.findElementDirect(predicate)\n\n输入参数:\n  predicate: 匹配条件 (字符串，必填)\n    写法同"查找页面元素"\n\n返回值: 对象\n  .found: 是否找到 (布尔值)\n  .x, .y: 元素位置\n  .width, .height: 元素大小\n  .name, .label, .value: 属性', example: "var el = wda.findElementDirect(\"name == 'top_tabs_recomend'\");\nif(el.found) {\n  wda.tap(el.x + el.width/2.0, el.y + el.height/2.0);\n}" },
+  { label: '🖱️ 原生查并点击', type: 'TAP_ELEMENT_DIRECT', desc: '原生查找后直接触发点击位置', usage: '一步极速点击', params: '调用方式: wda.tapElementDirect(predicate)\n返回值: 对象\n  .tapped: 是否成功点击 (布尔值)', example: "var res = wda.tapElementDirect(\"name == 'top_tabs_recomend'\");\nif (res.tapped) wda.log('点击成功');" },
+  { label: '📍 坐标直查元素', type: 'GET_ELEMENT_AT_POINT_DIRECT', desc: '根据屏幕坐标瞬间抓取该点的控件信息（等同于免扫雷达）', usage: '点对点的极速信息探测，永不卡死', params: '调用方式: wda.getElementAtPointDirect(x, y)\n\n输入参数:\n  x: 屏幕横坐标 (数字)\n  y: 屏幕纵坐标 (数字)\n\n返回值: 对象\n  .found: 是否找到 (布尔值)\n  .Name: 控件内部名\n  .Label: 显示文案\n  .Value: 取值 (按钮通常返回 null)\n  .type: 控件类型 (如 XCUIElementTypeButton)\n  .depth: 层级\n  .Rect: {x,y,width,height} 尺寸属性', example: "var el = wda.getElementAtPointDirect(100, 200);\nif (el.found) {\n  wda.log('选中控件: ' + el.type);\n  wda.log('名字: ' + el.Name);\n  wda.log('文案: ' + el.Label);\n}" },
+
+  // ═══════════ 页面元素 ═══════════
+  { label: '🧩 查找页面元素', type: 'FIND_ELEMENT', desc: '通过属性条件查找应用界面中的按钮、文字等元素', usage: '查找没有可见文字的隐藏元素', params: '调用方式: wda.findElement(predicate, maxDepth?)\n\n输入参数:\n  predicate: 匹配条件 (字符串，必填)\n    支持的属性:\n      name   - 元素标识名称\n      label  - 显示文字\n      value  - 值\n      type   - 类型（Button/StaticText等）\n      enabled - 是否可用\n      visible - 是否可见\n    支持的运算符:\n      ==         精确匹配\n      !=         不等于\n      CONTAINS   包含\n      BEGINSWITH 开头匹配\n      ENDSWITH   结尾匹配\n      LIKE       通配符匹配(*和?)\n    支持 AND / OR 组合多个条件\n\n  maxDepth: 最大搜索层级 (数字，可选)\n    默认60，数字越小搜索越快\n    建议: 简单页面用15~30，复杂页面用60\n\n返回值: 对象\n  .found: 是否找到 (布尔值)\n  .x, .y: 元素中心点坐标\n  .width, .height: 元素大小\n  .name: 元素名称\n  .label: 显示文字\n  .value: 值', example: "// 1. 查找包含'Privacy'的元素\nvar el = wda.findElement(\"label CONTAINS 'Privacy'\", 30);\nif(el.found) {\n  wda.tap(el.x, el.y);\n  wda.log(\"元素文字: \" + el.label);\n}\n\n// 2. 查找特定类型的按钮\nvar btn = wda.findElement(\"type == 'Button' AND label == 'Done'\");\n\n// 3. 用通配符匹配\nvar el2 = wda.findElement(\"name LIKE '*follow*'\", 20);" },
+  { label: '🎯 查找元素并点击', type: 'TAP_ELEMENT', desc: '找到符合条件的元素并自动点击它', usage: '一步到位点击隐藏按钮', params: '调用方式: wda.tapElement(predicate, maxDepth?)\n\n输入参数:\n  predicate: 匹配条件 (字符串，必填)\n    写法同"查找页面元素"\n  maxDepth: 最大搜索层级 (数字，可选，默认60)\n\n返回值: 对象\n  .tapped: 是否成功点击 (布尔值)\n  .x, .y: 实际点击的坐标\n  .name, .label, .value: 元素属性', example: "// 点击'Skip'按钮\nvar r = wda.tapElement(\"label == 'Skip'\", 20);\nif(r.tapped) wda.log(\"成功跳过\");\n\n// 点击包含'同意'的按钮\nwda.tapElement(\"label CONTAINS '同意'\");" },
+  { label: '📖 读取元素文字', type: 'GET_ELEMENT_TEXT', desc: '找到元素并读取它内部的文字内容', usage: '读取粉丝数、点赞数等', params: '调用方式: wda.getElementText(predicate, maxDepth?)\n\n输入参数:\n  predicate: 匹配条件 (字符串，必填)\n  maxDepth: 最大搜索层级 (数字，可选，默认60)\n\n返回值: 对象\n  .found: 是否找到 (布尔值)\n  .text: 元素的文字内容\n    优先顺序: label > value > name\n  .name, .label, .value: 各属性原值\n  .x, .y, .width, .height: 位置', example: "// 读取粉丝数\nvar r = wda.getElementText(\"name CONTAINS 'followers'\", 60);\nif(r.found) {\n  wda.log(\"粉丝数: \" + r.text);\n}" },
+  { label: '🏷️ 读取元素属性', type: 'GET_ELEMENT_ATTR', desc: '找到元素并读取它的指定属性值', usage: '判断开关状态、按钮是否可用', params: '调用方式:\n  wda.getElementAttribute(predicate, attributeName, maxDepth?)\n\n输入参数:\n  predicate: 匹配条件 (字符串，必填)\n  attributeName: 要读取的属性名 (字符串，必填)\n    可选属性: name, label, value, type, enabled, visible\n  maxDepth: 最大搜索层级 (数字，可选，默认60)\n\n返回值: 对象\n  .found: 是否找到 (布尔值)\n  .result: 属性的值', example: "// 读取开关是否可点击\nvar r = wda.getElementAttribute(\"label == 'Sync'\", \"enabled\", 20);\nwda.log(\"是否可用: \" + r.result);\n\n// 读取元素类型\nvar r2 = wda.getElementAttribute(\"name == 'tab_home'\", \"type\");\nwda.log(\"类型: \" + r2.result);" },
+
+  // ═══════════ 图像操作 ═══════════
+  { label: '📸 截取屏幕', type: 'SCREENSHOT', desc: '截图并获取图片数据', usage: '保存或发送截图', params: '调用方式: wda.screenshot()\n\n输入参数: 无\n\n返回值: 对象\n  .base64: 图片的 Base64 编码字符串\n    可用于发送给服务器或保存', example: 'var s = wda.screenshot();\nwda.log("截图大小: " + s.base64.length + " 字符");' },
+  { label: '🧹 清除截图缓存', type: 'CLEAR_SCREENSHOT_CACHE', desc: '清理多次找图产生的图片内存缓存', usage: '长时间找图后释放内存', params: '调用方式: wda.clearScreenshotCache()\n\n输入参数: 无\n返回值: 无\n\n说明: 找图时系统会缓存2秒内的截图\n多次连续找图共用同一张截图以提升速度\n调用此方法可手动释放这些缓存', example: '// 找图完毕后清理缓存\nwda.findImage("...", 0.8);\nwda.findImage("...", 0.8);\nwda.clearScreenshotCache(); // 释放内存' },
+  { label: '🖼️ 查找图片', type: 'FIND_IMAGE', desc: '在屏幕上查找与给定模板图片相同的位置', usage: '查找复杂图形按钮', params: '调用方式: wda.findImage(templateBase64, threshold?, region?)\n\n输入参数:\n  templateBase64: 参考图片 (字符串，必填)\n    图片的 Base64 编码\n    支持 data:image/png;base64,... 前缀格式\n  threshold: 相似度阈值 (数字，可选)\n    范围 0~1，默认 0.8\n    0.8 = 80%相似即匹配\n    越高越严格，建议 0.7~0.9\n  region: 限定搜索范围 (数组，可选)\n    格式: [x, y, 宽, 高]\n    不传则全屏搜索\n    指定范围可大幅提升速度\n\n返回值: 对象\n  .found: 是否找到 (布尔值)\n  .x, .y: 匹配位置的中心坐标\n  .width, .height: 匹配区域大小\n  .confidence: 实际相似度', example: '// 1. 全屏找图\nvar r = wda.findImage("iVBORw0KGgo...", 0.85);\nif(r.found) {\n  wda.tap(r.x, r.y);\n  wda.log("置信度: " + r.confidence);\n}\n\n// 2. 限定范围找图(更快)\nvar r2 = wda.findImage("iVBOR...", 0.8, [0, 100, 200, 300]);\nif(r2.found) wda.tap(r2.x, r2.y);\n\n// 3. 找完图记得清缓存\nwda.clearScreenshotCache();' },
+  { label: '🎨 取坐标颜色', type: 'GET_COLOR', desc: '获取屏幕上某个坐标点的颜色值', usage: '判断按钮颜色状态', params: '调用方式: wda.getColorAt(x, y)\n\n输入参数:\n  x: 横坐标 (数字，必填)\n  y: 纵坐标 (数字，必填)\n\n返回值: 字符串\n  格式: "#RRGGBB"\n  例如:\n    "#FF0000" = 红色\n    "#00FF00" = 绿色\n    "#0000FF" = 蓝色\n    "#FFFFFF" = 白色\n    "#000000" = 黑色', example: '// 检查坐标处的颜色\nvar color = wda.getColorAt(100, 200);\nwda.log("颜色值: " + color);\n\n// 判断是否为红色\nif(color === "#FF0000") {\n  wda.log("是红色!");\n}' },
+  { label: '🌈 多点找色', type: 'MULTICOLOR', desc: '按照颜色规则在屏幕上查找符合条件的位置', usage: '通过多个颜色点组合定位', params: '调用方式: wda.findMultiColor(colorsRuleStr, sim?, region?)\n\n输入参数:\n  colorsRuleStr: 颜色规则 (字符串，必填)\n    格式: "起点X,起点Y,主颜色|偏移X,偏移Y,副颜色|..."\n    例如: "100,200,0xFF0000|10,0,0x00FF00|0,10,0x0000FF"\n    含义: 在(100,200)找红色\n          且右边10像素处是绿色\n          且下面10像素处是蓝色\n  sim: 相似度 (数字，可选)\n    范围 0~1，默认 0.9\n  region: 限定搜索范围 (数组，可选)\n    格式: [x, y, 宽, 高]\n    不传则全屏搜索\n\n返回值: 对象\n  .found: 是否找到 (布尔值)\n  .x, .y: 主颜色点的坐标', example: '// 全屏多点找色\nvar r = wda.findMultiColor(\n  "100,200,0xFF0000|10,0,0x00FF00",\n  0.9\n);\nif(r.found) wda.tap(r.x, r.y);\n\n// 限定范围找色(更快)\nvar r2 = wda.findMultiColor(\n  "0,0,0xFF0000|20,0,0x00FF00",\n  0.85,\n  [50, 100, 300, 500]\n);' },
+
+  // ═══════════ 素材与安装 ═══════════
+  { label: '📥 下载到相册', type: 'DOWNLOAD_ALBUM', desc: '下载网络上的图片/视频保存到手机相册', usage: '获取要发布的素材', params: '调用方式: wda.downloadToAlbum(url)\n\n输入参数:\n  url: 文件的直接下载链接 (字符串，必填)\n    支持 mp4/mov/m4v 视频格式\n    支持 jpg/png 等图片格式\n    同名文件会自动覆盖旧版\n\n返回值: 布尔值\n  true = 成功保存到相册', example: '// 下载视频\nvar ok = wda.downloadToAlbum("https://example.com/video.mp4");\nif(ok) wda.log("视频下载成功");\n\n// 下载图片\nwda.downloadToAlbum("https://example.com/photo.jpg");' },
+  { label: '🎁 领取独立素材', type: 'DOWNLOAD_ONETIME', desc: '从控制台领取一个独占素材，领取后该素材从服务器删除', usage: '多台手机各拿不同的素材发布', params: '调用方式: wda.downloadOneTimeMedia(type, group?)\n\n输入参数:\n  type: 素材类型 (字符串，必填)\n    "video" = 视频 (保存为 mov1.mp4)\n    "image" = 图片 (保存为 t1.jpg)\n  group: 素材分组名 (字符串，可选)\n    不传则从默认组获取\n\n返回值: 布尔值\n  true = 成功拿到素材\n  false = 库存已空或下载失败', example: '// 从"分组A"领取视频\nif(wda.downloadOneTimeMedia("video", "分组A")) {\n  wda.log("成功拿到一个唯一视频");\n} else {\n  wda.log("没有可用素材了!");\n}\n\n// 从默认组领取图片\nwda.downloadOneTimeMedia("image");' },
+  { label: '📦 下载IPA', type: 'DOWNLOAD_IPA', desc: '下载一个iOS应用安装包到设备', usage: '远程分发应用', params: '调用方式: wda.downloadIPA(url)\n\n输入参数:\n  url: IPA文件的下载地址 (字符串，必填)\n\n返回值: 布尔值\n  true = 下载成功', example: 'wda.downloadIPA("http://xxx.com/app.ipa");' },
+  { label: '⚙️ 安装应用', type: 'INSTALL_IPA', desc: '安装已下载的IPA文件，支持多开和伪装', usage: '批量装机', params: '调用方式: wda.installIPA(config)\n\n输入参数:\n  config: 配置对象 (必填)，可包含:\n    filename: IPA文件名 (字符串，必填)\n      支持模糊匹配\n    clone_number: 分身编号 (字符串，可选)\n      "1","2","3"等\n      不同编号自动生成不同包名\n      "0"或不传 = 不分身\n    custom_bundle_id: 自定义包名 (字符串，可选)\n      优先级高于 clone_number\n    custom_display_name: 自定义桌面名称 (字符串，可选)\n    spoof_config: 伪装参数 (对象，可选)\n      可设置: machineModel, deviceModel,\n      systemVersion, carrierName, countryCode 等\n\n返回值: 对象\n  .installed: 是否成功 (布尔值)\n  .output: 安装日志 (字符串)', example: '// 基本安装\nvar r = wda.installIPA({filename: "TikTok.ipa"});\n\n// 多开分身安装\nvar r2 = wda.installIPA({\n  filename: "TikTok.ipa",\n  clone_number: "2",\n  spoof_config: {\n    machineModel: "iPhone14,2",\n    countryCode: "US"\n  }\n});\nwda.log("安装结果: " + r2.installed);' },
+
+  // ═══════════ 业务数据 ═══════════
+  { label: '💬 随机获取评论', type: 'RANDOM_COMMENT', desc: '从服务器随机获取一条指定语言的评论', usage: '自动评论互动', params: '调用方式: wda.getRandomComment(language)\n\n输入参数:\n  language: 语言代号 (字符串，必填)\n\n支持的语言代号:\n  en-US   英语(美国)\n  en-GB   英语(英国)\n  zh-CN   中文\n  es-MX   西班牙语(墨西哥)\n  es-ES   西班牙语(西班牙)\n  pt-BR   葡萄牙语(巴西)\n  de-DE   德语\n  fr-FR   法语\n  ja-JP   日语\n  ko-KR   韩语\n  en-SG   英语(新加坡)\n  ar-SA   阿拉伯语\n  it-IT   意大利语\n  ru-RU   俄语\n\n返回值: 字符串\n  评论内容，如果库存为空则返回空字符串', example: '// 获取英文评论并输入\nvar text = wda.getRandomComment("en-US");\nif(text && text.length > 0) {\n  wda.input(text);\n  wda.log("已输入评论: " + text);\n} else {\n  wda.log("没有获取到评论");\n}' },
+  { label: '🏷️ 随机获取标签', type: 'RANDOM_TAG', desc: '从服务器获取一个随机标签', usage: '自动添加话题标签', params: '调用方式: wda.getRandomTag()\n\n输入参数: 无\n  自动使用设备配置的国家和分组\n\n返回值: 字符串\n  标签内容', example: 'var tag = wda.getRandomTag();\nif(tag) wda.input(tag);' },
+  { label: '📝 随机获取简介', type: 'RANDOM_BIO', desc: '从服务器获取一段随机个人简介', usage: '自动填写个人资料', params: '调用方式: wda.getRandomBio()\n\n输入参数: 无\n  自动使用设备配置的国家和分组\n\n返回值: 字符串\n  简介内容', example: 'var bio = wda.getRandomBio();\nif(bio) wda.input(bio);' },
+  { label: '👤 获取 Tiktok 主账号名', type: 'TK_MASTER_ACCOUNT', desc: '获取这台设备预设的主账号名', usage: '自动登录', params: '调用方式: wda.getMasterTkAccount()\n\n输入参数: 无\n返回值: 字符串，账号名', example: '// 获取账号并输入\nvar account = wda.getMasterTkAccount();\nwda.input(account);' },
+  { label: '🔑 获取 Tiktok 主密码', type: 'TK_MASTER_PASSWORD', desc: '获取这台设备预设的登录密码', usage: '自动填写密码', params: '调用方式: wda.getMasterTkPassword()\n\n输入参数: 无\n返回值: 字符串，密码', example: 'wda.input(wda.getMasterTkPassword());' },
+  { label: '📧 获取 Tiktok 绑定邮箱', type: 'TK_MASTER_EMAIL', desc: '获取这台设备预设的绑定邮箱', usage: '邮箱验证', params: '调用方式: wda.getMasterTkEmail()\n\n输入参数: 无\n返回值: 字符串，邮箱', example: 'wda.input(wda.getMasterTkEmail());' },
+
+  // ═══════════ 流程控制 ═══════════
+  { label: '🛑 报错并停止', type: 'REPORT_ERROR', desc: '主动报告错误并立即终止脚本执行', usage: '遇到无法继续的情况时中断', params: '调用方式: wda.reportErrorAndAbort(message)\n\n输入参数:\n  message: 错误原因说明 (字符串，必填)\n\n返回值: 无\n  脚本会立即停止执行\n  错误信息会发送到控制中心', example: '// 找不到关键按钮时停止\nif(!wda.tapText("下一步")) {\n  wda.reportErrorAndAbort("找不到下一步按钮!");\n  // 这行不会执行\n}' },
+  { label: '🔄 重新拉取设置', type: 'SYNC_CONFIG', desc: '让设备立刻向服务器获取最新设置', usage: '设置修改后立即生效', params: '调用方式: wda.syncConfig()\n\n输入参数: 无\n返回值: 布尔值', example: 'wda.syncConfig();\nwda.log("设置已更新");' },
+  { label: '✅ 汇报任务完成', type: 'REPORT_FINISHED', desc: '通知服务器任务已完成', usage: '脚本结尾调用', params: '调用方式: wda.reportFinished()\n\n输入参数: 无\n返回值: 无', example: 'wda.reportFinished();\nwda.log("任务完成");' },
+  { label: '🚨 处理系统弹窗', type: 'CHECK_ALERT', desc: '读取和处理手机弹出的系统提示框', usage: '消除意外弹窗', params: '包含多个相关方法:\n\n1. wda.getAlertText()\n  功能: 获取弹窗上的文字\n  输入: 无\n  返回: 字符串 (有弹窗) 或 null (无弹窗)\n\n2. wda.getAlertButtons()\n  功能: 获取弹窗上的所有按钮文字\n  输入: 无\n  返回: 字符串数组 (如["取消","确认"])\n         或 null (无弹窗)\n\n3. wda.clickAlertButton(label)\n  功能: 点击弹窗上的指定按钮\n  输入: label - 按钮文字 (字符串)\n  返回: 布尔值\n\n4. wda.acceptAlert()\n  功能: 点击弹窗的确认/接受按钮\n  输入: 无\n  返回: 布尔值\n\n5. wda.dismissAlert()\n  功能: 点击弹窗的取消/拒绝按钮\n  输入: 无\n  返回: 布尔值', example: '// 检查是否有弹窗\nvar msg = wda.getAlertText();\nif(msg) {\n  wda.log("弹窗内容: " + msg);\n\n  // 获取所有按钮\n  var btns = wda.getAlertButtons();\n  wda.log("可用按钮: " + btns);\n\n  // 优先点"好"，否则点确认\n  if(btns && btns.indexOf("好") >= 0) {\n    wda.clickAlertButton("好");\n  } else {\n    wda.acceptAlert();\n  }\n} else {\n  wda.log("当前没有弹窗");\n}' },
+  { label: '💬 弹出提示框', type: 'SHOW_ALERT', desc: '在设备屏幕弹出一个提示框，脚本暂停直到人工点击确认', usage: '需要人工确认的步骤', params: '调用方式: wda.showAlert(message)\n\n输入参数:\n  message: 提示框显示的内容 (字符串，必填)\n\n返回值: 布尔值\n\n注意: 调用后脚本会暂停！\n直到有人在手机上点击"OK"后才会继续执行', example: '// 暂停等待人工确认\nwda.showAlert("请手动操作完成后点OK继续");\nwda.log("用户已确认，继续执行");' },
+  { label: '📋 打印日志', type: 'LOG', desc: '在控制中心显示一条日志信息', usage: '调试脚本查看执行进度', params: '调用方式: wda.log(message)\n\n输入参数:\n  message: 日志内容 (字符串，必填)\n\n返回值: 无\n\n日志会显示在:\n  1. 控制中心网页的日志面板\n  2. 手机本地的日志文件中', example: 'wda.log("第1步: 打开应用");\nwda.launch("com.zhiliaoapp.musically");\nwda.log("第2步: 等待加载");\nwda.sleep(3);\nwda.log("第3步: 开始操作");' },
 ];
-
-// [v1738] 追加动作：VPN 重连 + 全局弹窗
-// [v1763] 追加动作：OCR 相关能力
-actionLibrary.push(
-  { label: '[📥 下载到相册] Download Media', type: 'DOWNLOAD_ALBUM', desc: '阻塞式下载目标图片或视频至设备相册，如果遇到原始文件名相同的记录，将自动删除覆盖去重。', usage: '获取或刷新素材到设备系统相册', params: 'url: 图片或视频文件的完整直链下载地址', example: 'var success = wda.downloadToAlbum("https://example.com/video.mp4");\nif(success) {\n    wda.log("✅ 媒体文件覆盖下载并导入相册成功");\n} else {\n    wda.log("❌ 导入失败，请检查网络或相册安全权限弹窗");\n}' },
-  { label: '[🎁 盲盒素材] One-Time Media', type: 'DOWNLOAD_ONETIME', desc: '按序锁定提取控制台指定分组的一次性素材！下载并自动设为 mov1(视频) / t1(图片)。主控提取即毁尸灭迹，绝不冲突！', usage: '用于从服务器排队提取一次性资源供自动发布系统使用', params: 'type: 媒体类型 "video" 或 "image", group(可选): 分组名(如不传则全区按序乱扫)', example: 'var ok = wda.downloadOneTimeMedia("video", "分组A"); // 带分组提取\nif(ok) {\n    wda.log("✅ 盲盒素材已拉取，它现在一定叫 mov1.mp4 或 t1.jpg");\n} else {\n    wda.log("❌ 提取失败（是不是这个分组的弹药被掏空啦？）");\n}' },
-  { label: '[🔗 重连VPN] Reconnect Last VPN', type: 'RECONNECT_VPN', desc: '自动连接上次使用过的 VPN 节点。如果设备上没有上次的连接记录则返回 false，不做任何操作', usage: '脚本开始前自动恢复 VPN 网络环境，无需手动指定节点', params: '无需传参（自动读取上次连接记录）', example: '// 自动重连上次的 VPN 节点\nvar ok = wda.connectProxy(\"\");\nif(ok) {\n    wda.log(\"VPN 重连成功（已恢复上次节点）\");\n} else {\n    wda.log(\"没有上次VPN连接记录，跳过\");\n}\nwda.sleep(3); // 等待隧道建立' },
-  { label: '[📢 全局弹窗] Show Alert', type: 'SHOW_ALERT', desc: '在 iOS 设备上弹出一个系统级 Alert 弹窗（标题 ECMAIN），包含自定义消息和一个 OK 按钮。脚本会暂停执行直到用户点击 OK（最长等待60秒后自动关闭）', usage: '脚本执行到关键节点时暂停提醒用户确认、调试时检查中间状态', params: 'message: 弹窗显示的消息文字', example: '// 在 iOS 设备上弹出提示\nwda.showAlert(\"脚本已执行完毕！请检查结果。\");\n\n// 也可以用于调试暂停\nwda.showAlert(\"即将开始下一轮操作，点击OK继续\");\nwda.log(\"用户已确认，继续执行...\");' },
-  { label: '[🔍 文字检测] OCR 找字扫描 (极致提速)', type: 'OCR_SUITE', desc: '除了用 [x,y,w,h] 限制扫描范围，现已革命性支持【语系定点加载】。默认全语种（18国通吃），按需限定单语系可极大幅度提升识别速度并降低内存开销。', usage: '文字按钮点击、页面动态状态获取', params: '★ wda.ocr(region?, languages?)\n返回值: {texts: [{text, x, y, width, height, confidence}, ...]}\n\n【参数1: region】（可选，大幅提速）\n数组形式：[x起点, y起点, 框宽, 框高]\n全屏扫描请忽略或传 null。\n\n【参数2: languages】（可选，极限提速）\n数组形式：需检测的国家代号。不传则加载全球18种语言库。\n若你的脚本只需识别特定系统，强烈建议指明！', example: '// ══════════════════════════════════════\n// 🔍 OCR 文字检测 (全新极速进阶版)\n// ══════════════════════════════════════\n\n// ━━━ 用法1: 极速定向 (限定区域 + 限定语言) ━━━\n// 做东南亚市场，只扫泰语和英语，引擎彻底抛弃庞大的中文库！\n// 速度从原来约 800ms 飙升至 80ms 毫秒级！\nvar fast = wda.ocr([0, 700, 375, 112], ["th-TH", "en-US"]);\nif (fast && fast.texts) {\n    wda.log("底部秒抓取文本: " + fast.texts[0].text);\n}\n\n// ━━━ 用法2: 全局兜底 (全屏扫描 + 全语系默认) ━━━\n// 随手一用，全网全能通吃中日韩欧美18国文字\nvar res = wda.ocr();\nif (res && res.texts) {\n    wda.log(res.texts[0].text);\n}\n\n// ━━━ 用法3: 全图定向 (全屏扫描 + 限定语种) ━━━\n// 如果只需英西双语，第一位传 null 穿透区域限制\nvar onlyLatin = wda.ocr(null, ["es-MX", "en-US"]);' },
-  { label: '[🎯 找元素] wda.findElement', type: 'FIND_ELEMENT', desc: '通过原生的 XCTest 谓词或 class chain 极速搜索元素，找到后返回坐标尺寸。\n[最新] 现已支持动态指定搜索深度(针对TikTok推荐传入60，针对桌面/设置应用推荐传入10以提速)', usage: '只需要获取元素位置或者判断元素是否存在，后续想决定用随机概率坐标点击时使用', params: '★ wda.findElement(predicate, maxDepth?)\n  参数1: [字符串] NSPredicate 或 class chain\n  参数2: [数字] (可选) 指定最大扫描深度，默认60\n  返回: [对象] {found: true/false, x, y, width, height, element_id}\n\n═══ 谓词语法参考 (predicate) ═══\n精确标签:    label == "关注"\n模糊匹配:    label CONTAINS[c] "Profil"\n组合条件:    type == "XCUIElementTypeButton" AND name == "a11y_vo_profile"', example: '// ══════════════════════════════════════\n// 🎯 找元素 动态深度用法\n// ══════════════════════════════════════\n\n// ━━━ 用法1: 极速浅层查找 (深度 15) ━━━\n// 比如要找桌面底部的 TabBar，非常浅，设为 15 能将耗时降至毫秒级！\nvar tab = wda.findElement("**/XCUIElementTypeTabBar/XCUIElementTypeButton[3]", 15);\nif(tab && tab.found) wda.tap(tab.x, tab.y);\n\n// ━━━ 用法2: 深度视频流查找 (深度 60) ━━━\n// 在 TikTok 里找包含评论数量的文本，层级极深\nvar el = wda.findElement("name CONTAINS \\"comments\\"", 60);\nif (el.found) {\n    wda.tap(el.x, el.y);\n}' },
-  { label: '[🎯 找并点击] wda.tapElement', type: 'TAP_ELEMENT', desc: '结合了【查】与【点】的一体化接口。搜到直接触发底层点击 click，同样支持局部指定搜索深度。', usage: '高频操作中最精简的一步到位动作', params: '★ wda.tapElement(predicate, maxDepth?)\n  参数1: [字符串] NSPredicate 或 class chain\n  参数2: [数字] (可选) 指定最大扫描深度，默认60\n  返回: [布尔值] true / false', example: '// ══════════════════════════════════════\n// 🎯 结合深度的 tapElement 用法\n// ══════════════════════════════════════\n\n// 极高速查找并点击深层评论按钮\nvar ok = wda.tapElement("label == \\"评论\\"", 60);\nif (ok) {\n    wda.log("✅ 点击成功");\n}\n\n// 短深度高频循环重试 (如不断监测应用刚启动时的广告跳过按钮)\nfor(var i=0; i<5; i++) {\n    // 广告弹窗一般在十几层以内，用15层能极大提升轮询速度！\n    if (wda.tapElement("label CONTAINS[c] \\"跳过\\"", 15)) {\n       wda.log("✅ 成功跳过广告！");\n       break;\n    }\n    wda.sleep(1.0);\n}' },
-  { label: '[🎯 获取元素数值] wda.getElementText', type: 'GET_ELEMENT_TEXT', desc: '智能提取元素的内部文字，支持动态扫描深度。', usage: '获取点赞数、评论数、粉丝量。', params: '★ wda.getElementText(predicate, maxDepth?)\n  参数: 匹配条件, (可选)深度优先\n  返回: [字符串] 文字\n\n★ wda.getElementAttribute(predicate, 属性名, maxDepth?)\n  参数: 匹配条件, 你想读取的明确属性(比如 "value"), (可选)深度\n  返回: [字符串] 真实的属性值', example: '// 提取非常里层的点赞数量（指定深度 60）\nvar likes = wda.getElementText("name CONTAINS \\"likes\\"", 60);\nif (likes !== "") {\n    wda.log("抓取到点赞数了：" + likes);\n}\n\n// 提取特定开关状态值（该控件位于浅层，可用深度 10 加速）\nvar attrVal = wda.getElementAttribute("type == \\"XCUIElementTypeSwitch\\"", "value", 10);\nwda.log("开关处于：" + attrVal);' },
-  { label: '[🧹 清理截图缓存] Clear Cache', type: 'CLEAR_SCREENSHOT_CACHE', desc: '手动清理 findImage 找图产生的截图缓存 Base64 数据', usage: '在脚本不再需要连续找图时，主动调用此动作可释放大量内存，防止视频流场景下 WDA 崩溃。底层已有 1s 自动淘汰机制，此处为强力人工补充', params: '无参数', example: 'wda.clearScreenshotCache();\nwda.log("🧹 内存已减压");' }
-);
-
 const handleActionClick = (act: any) => {
   selectedActionDoc.value = act;
-  const snippet = `// [样例参考]: ${act.label}\n${act.example || '// 当前参数暂无示例宏代码'}`;
+  let paramsInfo = '';
+  if (act.params) {
+    paramsInfo = act.params.split('\n').map((line: string) => `// ${line}`).join('\n') + '\n';
+  }
+  const snippet = `// 【动作】: ${act.label}\n// 【说明】: ${act.desc}\n// 【输入输出】\n${paramsInfo}${act.example || '// 暂无示例代码'}`;
   if (generatedJs.value && generatedJs.value.trim() !== '') {
     generatedJs.value += '\n\n' + snippet;
   } else {
@@ -3427,7 +3503,11 @@ const addActionToQueue = async (act: any) => {
       if(!lang) return;
       snippet = `// [💬 抽取本地语料 - ${lang}]\nvar txt = wda.getRandomComment("${lang}");\nif(txt && txt.length > 0) {\n    wda.input(txt);\n} else {\n    wda.log("【发评警告】未抽到对应语种词条(已尝试实时同步但依然失败)，跳过打字！");\n}`;
   } else {
-      snippet = `// [加入序列]: ${newAct.label}\n// 内部参数: ${JSON.stringify(newAct)}`;
+      let paramsInfo = '';
+      if (newAct.params) {
+          paramsInfo = newAct.params.split('\n').map((line: any) => `// ${line}`).join('\n') + '\n';
+      }
+      snippet = `// [加入自动队列]: ${newAct.label}\n// 【说明】: ${newAct.desc}\n// 【输入输出】\n${paramsInfo}// 内部系统参数: ${JSON.stringify(newAct)}`;
   }
 
   actionQueue.value.push(newAct);
@@ -3637,6 +3717,21 @@ const handleMouseMove = (e: MouseEvent) => {
       return;
   }
 
+  // === 原生悬停探针防抖触发 ===
+  if (isNativeProbeMode.value && coord && !isDrawing.value && !isLassoMode.value) {
+      if (nativeProbeTimeout) clearTimeout(nativeProbeTimeout);
+      isNativeProbeDebouncing.value = true;
+      nativeProbeTimeout = window.setTimeout(async () => {
+          isNativeProbeDebouncing.value = false;
+          const nw = imageRef.value?.naturalWidth || imageRef.value?.clientWidth || 1;
+          const _devSize = deviceSizeMap.value[selectedDevice.value];
+          const pixToLogic = _devSize ? (nw / _devSize.width) : (config.value?.scale || 2);
+          const logicX = coord.x / pixToLogic;
+          const logicY = coord.y / pixToLogic;
+          await runNativeProbeAt(logicX, logicY);
+      }, 500);
+  }
+  
   const ctx = canvasRef.value.getContext('2d');
   if(!ctx) return;
 
@@ -3713,6 +3808,48 @@ const handleMouseMove = (e: MouseEvent) => {
           window.__inspDbgTs2 = Date.now();
           console.log(`[Inspector-SKIP] isInspectorMode=${isInspectorMode.value} nodeCount=${parsedUITreeNodes.value.length} coordExists=${!!coord} mousePos=(${mx},${my})`);
       }
+  }
+
+  // === 原生直查节点高亮探测绘制 ===
+  if (highlightedNativeNode.value && !isDrawing.value && !isLassoMode.value) {
+      const hn = highlightedNativeNode.value;
+      const nw = imageRef.value?.naturalWidth || imageRef.value?.clientWidth || 1;
+      const _devSize = deviceSizeMap.value[selectedDevice.value];
+      const pixToLogic = _devSize ? (nw / _devSize.width) : (config.value?.scale || 2);
+      
+      const rectC = canvasRef.value.getBoundingClientRect();
+      const cw = rectC.width;
+      const ch = rectC.height;
+      const nh = imageRef.value?.naturalHeight || 1;
+      
+      const imageAspect = nw / nh;
+      const containerAspect = cw / ch;
+      let renderW, renderH;
+      if (imageAspect > containerAspect) {
+          renderW = cw; renderH = cw / imageAspect;
+      } else {
+          renderH = ch; renderW = ch * imageAspect;
+      }
+      const realScale = nw / renderW;
+      const offsetX = (cw - renderW) / 2;
+      const offsetY = (ch - renderH) / 2;
+      
+      const drawX = (hn.x * pixToLogic) / realScale + offsetX;
+      const drawY = (hn.y * pixToLogic) / realScale + offsetY;
+      const drawW = (hn.w * pixToLogic) / realScale;
+      const drawH = (hn.h * pixToLogic) / realScale;
+      
+      ctx.fillStyle = 'rgba(244, 63, 94, 0.4)'; // 玫瑰红遮罩
+      ctx.fillRect(drawX, drawY, drawW, drawH);
+      ctx.strokeStyle = '#f43f5e';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(drawX, drawY, drawW, drawH);
+  } else if (isNativeProbeDebouncing.value || nativeProbeTimeout) {
+      // Draw a highly visible pulsing crosshair or fetching text at the logic coordinates roughly
+      // Actually just draw text in the top left corner that it's probing
+      ctx.fillStyle = '#f43f5e';
+      ctx.font = 'bold 14px monospace';
+      ctx.fillText('🚀 XCTest 核心探针探测中...', 10, 30);
   }
 
   if(!isDrawing.value) return;
@@ -3846,6 +3983,70 @@ const endDraw = async (e: MouseEvent) => {
           return;
       }
       // 分支 3: 点击/长按 → 直接下发逻辑 Points
+      // [原生探针] 点击时自动生成脚本代码到代码框
+      if (isNativeProbeMode.value && highlightedNativeNode.value) {
+          const node = highlightedNativeNode.value;
+          const cx = Math.round(Number(node.x) + Number(node.w) / 2);
+          const cy = Math.round(Number(node.y) + Number(node.h) / 2);
+          const padX = Math.max(2, Math.round(Number(node.w) * 0.2));
+          const padY = Math.max(2, Math.round(Number(node.h) * 0.2));
+          const rndMinX = Number(node.x) + padX;
+          const rndMaxX = Number(node.x) + Number(node.w) - padX;
+          const rndMinY = Number(node.y) + padY;
+          const rndMaxY = Number(node.y) + Number(node.h) - padY;
+          const shortType = (node.type || 'Unknown').replace('XCUIElementType', '');
+          const desc = node.name || node.label || node.value || shortType;
+          
+          log(`🎯 [原生探针·点击] Type=${shortType}, Name="${node.name || ''}", Label="${node.label || ''}", Rect=(${node.x},${node.y},${node.w}×${node.h}), 中心=(${cx},${cy})`);
+          
+          let predicateStr = '';
+          if (node.name && node.name !== '' && node.name !== 'null') {
+              predicateStr = `name == \\"${node.name}\\"`;
+          } else if (node.label && node.label !== '' && node.label !== 'null') {
+              predicateStr = `label == \\"${node.label}\\"`;
+          }
+          
+          const lines: string[] = [];
+          const depthInfo = node.depth !== undefined ? `| 层级: ${node.depth}` : '';
+          const exactDepth = node.depth !== undefined ? node.depth : 50;
+          lines.push(`// ━━━ [原生探针] 节点: ${desc} ━━━`);
+          lines.push(`// 类型: ${shortType} ${depthInfo} | 坐标: (${node.x}, ${node.y}) | 尺寸: ${node.w}×${node.h}`);
+          if (node.name) lines.push(`// name: "${node.name}"`);
+          if (node.label && node.label !== node.name) lines.push(`// label: "${node.label}"`);
+          if (node.value && node.value !== 'true' && node.value !== 'false') lines.push(`// value: "${node.value}"`);
+          lines.push(``);
+          lines.push(`// ▸ 方式1: 精确坐标盲按`);
+          lines.push(`wda.tap(${cx}, ${cy});`);
+          lines.push(``);
+          lines.push(`// ▸ 方式2: 随机坐标盲按（模拟真人）`);
+          lines.push(`// wda.tap(wda.randomInt(${rndMinX}, ${rndMaxX}), wda.randomInt(${rndMinY}, ${rndMaxY}));`);
+          
+          if (predicateStr) {
+              const simplePred = `'${predicateStr.replace(/\\\\"/g, "'")}'`;
+              lines.push(``);
+              lines.push(`// ▸ 方式3: findElementDirect 直查元素（无需UI树，极速）`);
+              lines.push(`var el = wda.findElementDirect(${simplePred}, ${exactDepth});`);
+              lines.push(`if (el && el.found) {`);
+              lines.push(`    wda.log("✅ 找到 ${desc}，坐标: (" + el.x + ", " + el.y + ")");`);
+              lines.push(`    wda.tap(el.x + el.width/2, el.y + el.height/2);`);
+              lines.push(`} else {`);
+              lines.push(`    wda.log("⚠️ 未找到 ${desc}，降级坐标点击");`);
+              lines.push(`    wda.tap(${cx}, ${cy});`);
+              lines.push(`}`);
+              lines.push(``);
+              lines.push(`// ▸ 方式4: tapElementDirect 一键查找并点击（最简极速）`);
+              lines.push(`// var tapRes = wda.tapElementDirect(${simplePred}, ${exactDepth});`);
+              lines.push(`// if (tapRes && tapRes.tapped) wda.log("✅ 成功点击 ${desc}");`);
+          } else {
+              lines.push(``);
+              lines.push(`// ⚠️ 该元素没有 name 或 label，只能使用坐标点击`);
+          }
+          
+          const snippet = lines.join('\n');
+          generatedJs.value += (generatedJs.value ? '\n\n' : '') + snippet;
+          activeRightTab.value = 'code';
+          return;
+      }
       // 在审查模式下拦截动作并输出代码
       if (isInspectorMode.value && hoveredUINode.value) {
           const node = hoveredUINode.value;
@@ -3861,8 +4062,8 @@ const endDraw = async (e: MouseEvent) => {
           const shortType = node.type.replace('XCUIElementType', '');
           const desc = node.name || node.label || node.value || shortType;
           const nodeDepth = node.depth ?? 60;
-          // 推荐深度：节点实际深度 + 5 的安全余量，最小 10，最大 60
-          const suggestedDepth = Math.min(60, Math.max(10, nodeDepth + 5));
+          // 推荐深度：直接使用节点实际所在的精确深度，不再增加安全余量
+          const suggestedDepth = nodeDepth;
           log(`🔍 [节点捕获] Type=${shortType}, Name="${node.name || ''}", Label="${node.label || ''}", Depth=${nodeDepth}, Rect=(${node.x},${node.y},${node.w}×${node.h}), 中心=(${cx},${cy})`);
           
           // 构建谓词字符串
@@ -4718,22 +4919,7 @@ const handleImageUpload = (event: Event) => {
             
             <canvas ref="canvasRef" @mousedown="startDraw" @mousemove="handleMouseMove" @mouseup="endDraw" @mouseleave="endDraw" @dblclick="handleDoubleClickLasso" class="cursor-pointer absolute" style="z-index: 20;"></canvas>
 
-            <!-- 悬浮的节点检查器面罩信息框 -->
-            <div v-if="isInspectorMode && hoveredUINode" class="absolute top-2 left-2 z-[200] max-w-[280px] bg-gray-950/95 border border-sky-500/80 shadow-2xl rounded p-2.5 pointer-events-none backdrop-blur-md">
-               <div class="text-[10px] text-sky-400 font-bold break-all mb-1.5 uppercase tracking-wider border-b border-sky-900/50 pb-1 flex justify-between items-center">
-                 <span>{{ hoveredUINode.type.replace('XCUIElementType', '') }}</span>
-                 <span class="text-amber-400 normal-case tracking-normal">Depth: {{ hoveredUINode.depth ?? '?' }}</span>
-               </div>
-               <div class="flex flex-col gap-1 text-[9px] text-gray-300 font-mono">
-                   <div v-if="hoveredUINode.name"><span class="text-gray-500">Name:</span> <span class="text-sky-200 break-all">{{ hoveredUINode.name }}</span></div>
-                   <div v-if="hoveredUINode.label"><span class="text-gray-500">Label:</span> <span class="text-emerald-200 break-all">{{ hoveredUINode.label }}</span></div>
-                   <div v-if="hoveredUINode.value"><span class="text-gray-500">Value:</span> <span class="text-amber-200 break-all">{{ hoveredUINode.value }}</span></div>
-                   <div><span class="text-gray-500">Rect:</span> <span class="text-purple-300">X:{{ hoveredUINode.x }} Y:{{ hoveredUINode.y }} <span class="text-gray-500 mx-1">|</span> W:{{ hoveredUINode.w }} H:{{ hoveredUINode.h }}</span></div>
-               </div>
-               <div class="text-[8.5px] text-amber-500 mt-2 font-bold flex items-center gap-1 bg-amber-900/20 px-1.5 py-1 rounded">
-                 <span class="animate-pulse">🖱️</span> 点击左键自动填坑坐标到代码框
-               </div>
-            </div>
+
         </div>
 
         <!-- 底侧分离坐标观测器 -->
@@ -4896,6 +5082,9 @@ const handleImageUpload = (event: Event) => {
               </div>
               <div @click="activeRightTab = 'uitree'" :class="['px-4 py-3 cursor-pointer transition-colors border-b-2 whitespace-nowrap', activeRightTab === 'uitree' ? 'text-amber-400 border-amber-500 bg-gray-800' : 'text-gray-500 border-transparent hover:text-gray-300']">
                 <span class="mr-1">🌲</span> UI 树
+              </div>
+              <div @click="activeRightTab = 'nativeQuery'" :class="['px-4 py-3 cursor-pointer transition-colors border-b-2 whitespace-nowrap', activeRightTab === 'nativeQuery' ? 'text-rose-400 border-rose-500 bg-gray-800' : 'text-gray-500 border-transparent hover:text-gray-300']">
+                <span class="mr-1">🎯</span> 原生直查
               </div>
             </div>
             
@@ -5296,11 +5485,77 @@ const handleImageUpload = (event: Event) => {
                     </button>
                   </div>
 
-                  <div class="flex-1 relative bg-gray-950 border border-gray-700 rounded p-2 overflow-auto custom-scrollbar min-h-[400px]">
+                  <div class="flex-1 relative bg-gray-950 border border-gray-700 rounded p-2 overflow-auto custom-scrollbar flex flex-col gap-2 min-h-[400px]">
+                     <!-- 悬停实时雷达信息展示区 -->
+                     <div v-if="isInspectorMode && hoveredUINode" class="bg-gray-900 border border-sky-500/50 shadow-lg rounded p-3 mb-2 shrink-0">
+                         <div class="text-[11px] text-sky-400 font-bold break-all mb-2 uppercase tracking-wider border-b border-sky-900/50 pb-1 flex justify-between items-center">
+                           <span>{{ hoveredUINode.type.replace('XCUIElementType', '') }}</span>
+                           <span class="text-amber-400 normal-case tracking-normal pl-2">Depth: {{ hoveredUINode.depth ?? '?' }}</span>
+                         </div>
+                         <div class="flex flex-col gap-1 text-[10px] text-gray-300 font-mono">
+                             <div><span class="text-gray-500">Name:</span> <span class="text-sky-200 break-all select-text pointer-events-auto font-bold" :class="{'text-gray-600': !hoveredUINode.name}">{{ hoveredUINode.name || 'null' }}</span></div>
+                             <div><span class="text-gray-500">Label:</span> <span class="text-emerald-200 break-all select-text pointer-events-auto font-bold" :class="{'text-gray-600': !hoveredUINode.label}">{{ hoveredUINode.label || 'null' }}</span></div>
+                             <div><span class="text-gray-500">Value:</span> <span class="text-amber-200 break-all select-text pointer-events-auto" :class="{'text-gray-600': !hoveredUINode.value}">{{ hoveredUINode.value || 'null' }}</span></div>
+                             <div><span class="text-gray-500">Rect:</span> <span class="text-purple-300">X:{{ hoveredUINode.x }} Y:{{ hoveredUINode.y }} <span class="text-gray-500 mx-1">|</span> W:{{ hoveredUINode.w }} H:{{ hoveredUINode.h }}</span></div>
+                         </div>
+                         <div class="text-[9px] text-amber-500 mt-2 font-bold flex items-center gap-1 bg-amber-900/20 px-1.5 py-1 rounded">
+                           <span class="animate-pulse">🖱️</span> 点击左键自动填坑坐标到代码框
+                         </div>
+                     </div>
                      <div v-if="!uiTreeData && !isUITreeFetching" class="absolute inset-0 flex items-center justify-center text-gray-600 text-[10px] uppercase">
                        点击上方按钮请求 WDA 发送真实 UI 树数据...
                      </div>
-                     <pre v-else class="text-[10px] font-mono text-emerald-400 break-all whitespace-pre-wrap leading-tight select-text cursor-text">{{ uiTreeData }}</pre>
+                     <pre v-if="uiTreeData" class="flex-1 text-[10px] font-mono text-emerald-400 break-all whitespace-pre-wrap leading-tight select-text cursor-text">{{ uiTreeData }}</pre>
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            <!-- Native Query Tab Content -->
+            <div v-show="activeRightTab === 'nativeQuery'" class="flex flex-col flex-1 min-h-0 p-3 bg-gray-900/50 overflow-y-auto custom-scrollbar gap-3">
+              <div class="flex flex-col bg-gray-800/80 border border-gray-700 shadow-md rounded-lg overflow-hidden shrink-0 flex-1">
+                <div class="bg-gray-700/60 px-3 py-2 text-[10px] font-bold tracking-widest text-rose-400 border-b border-gray-700">
+                  🎯 XCUIElementQuery 底层免序列化原生极速直查 (防卡死机制)
+                </div>
+                <div class="p-3 flex flex-col gap-3 h-full">
+                  <div class="flex gap-2 items-center flex-wrap">
+                    <div class="flex-1 flex items-center gap-1 bg-gray-800 border border-gray-600 rounded px-2">
+                        <span class="text-[11px] text-gray-400 whitespace-nowrap">查询断言 (Predicate):</span>
+                        <input type="text" v-model="nativeQueryStr" @keyup.enter="runNativeQuery" placeholder="例如: name == 'button_name'" class="w-full bg-transparent text-rose-400 font-mono text-xs focus:outline-none focus:ring-0 p-1.5" title="原生 Predicate 查询字符串">
+                    </div>
+                    <button @click="runNativeQuery" class="py-2 px-4 bg-gradient-to-r from-rose-600 to-pink-600 hover:from-rose-500 hover:to-pink-500 text-white text-xs font-bold rounded shadow-lg border border-rose-500 transition-all active:scale-[0.98] flex justify-center items-center gap-1.5 tracking-wider" :disabled="isNativeQueryFetching" title="发送查询请求">
+                      <span v-if="!isNativeQueryFetching">🚀 直查坐标</span>
+                      <span v-else class="animate-pulse">查询中...</span>
+                    </button>
+                    <!-- 原生悬停开关 -->
+                    <label class="flex items-center gap-2 cursor-pointer bg-fuchsia-900/40 hover:bg-fuchsia-800/60 border border-fuchsia-700/50 px-3 py-2 rounded transition-colors shadow" title="悬停在左侧画布上，自动向手机底层发送坐标点探针查询元素属性。无需请求全量UI树！">
+                      <input type="checkbox" v-model="isNativeProbeMode" class="accent-fuchsia-500 w-3.5 h-3.5" />
+                      <span class="text-[11px] font-bold tracking-wide text-fuchsia-300">🔍 开启原生悬停雷达</span>
+                    </label>
+                    <button @click="copyText(nativeQueryRes)" v-if="nativeQueryRes" class="py-2 px-3 bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs font-bold rounded shadow border border-gray-600 transition-all active:scale-[0.98]">
+                      📄 复制
+                    </button>
+                  </div>
+
+                  <div class="flex-1 relative bg-gray-950 border border-gray-700 rounded p-2 overflow-auto custom-scrollbar flex flex-col gap-2 min-h-[400px]">
+                     <!-- 悬停实时雷达信息展示区 -->
+                     <div v-if="isNativeProbeMode && highlightedNativeNode" class="bg-gray-900 border border-rose-500/50 shadow-lg rounded p-3 shrink-0">
+                         <div class="text-[11px] text-rose-400 font-bold break-all mb-2 uppercase tracking-wider border-b border-rose-900/50 pb-1 flex justify-between items-center">
+                           <span>🎯 原生雷达探测到: {{ (highlightedNativeNode.type || 'Unknown').replace('XCUIElementType', '') }}</span>
+                           <span class="text-amber-400 normal-case tracking-normal pl-2">Depth: {{ highlightedNativeNode.depth ? highlightedNativeNode.depth : '未知(免扫挂载)' }}</span>
+                         </div>
+                         <div class="flex flex-col gap-1 text-[10px] text-gray-300 font-mono">
+                             <div><span class="text-gray-500">Name:</span> <span class="text-sky-200 break-all select-text pointer-events-auto" :class="{'text-gray-600': !highlightedNativeNode.name}">{{ highlightedNativeNode.name || 'null' }}</span></div>
+                             <div><span class="text-gray-500">Label:</span> <span class="text-emerald-200 break-all select-text pointer-events-auto" :class="{'text-gray-600': !highlightedNativeNode.label}">{{ highlightedNativeNode.label || 'null' }}</span></div>
+                             <div><span class="text-gray-500">Value:</span> <span class="text-amber-200 break-all select-text pointer-events-auto" :class="{'text-gray-600': !highlightedNativeNode.value}">{{ highlightedNativeNode.value || 'null' }}</span></div>
+                             <div><span class="text-gray-500">Rect:</span> <span class="text-purple-300">X:{{ highlightedNativeNode.x }} Y:{{ highlightedNativeNode.y }} <span class="text-gray-500 mx-1">|</span> W:{{ highlightedNativeNode.w }} H:{{ highlightedNativeNode.h }}</span></div>
+                         </div>
+                     </div>
+                     <div v-if="!nativeQueryRes && !isNativeQueryFetching && (!isNativeProbeMode || !highlightedNativeNode)" class="absolute inset-0 flex flex-col gap-2 items-center justify-center text-gray-600 text-[10px] uppercase">
+                       <span>👉 输入 Predicate String 后，点击"直查坐标"按钮</span>
+                       <span>将利用原生 WDA 接口极速返回坐标值，无需请求整个树。</span>
+                     </div>
+                     <pre v-if="nativeQueryRes" class="flex-1 text-[10px] font-mono text-rose-300 break-all whitespace-pre-wrap leading-tight select-text cursor-text mt-2">{{ nativeQueryRes }}</pre>
                   </div>
                 </div>
               </div>

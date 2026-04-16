@@ -32,6 +32,14 @@
 #import "XCUIApplication+FBHelpers.h"
 #import "XCUIElement+FBFind.h"
 #import "XCUIElement+FBTyping.h"
+#import "FBActiveAppDetectionPoint.h"
+#import "FBXCAXClientProxy.h"
+#import "FBXCAccessibilityElement.h"
+#import "FBXCElementSnapshot.h"
+#import "FBXCElementSnapshotWrapper.h"
+#import "FBElementTypeTransformer.h"
+#import "XCUIElement+FBWebDriverAttributes.h"
+#import "XCTestManager_ManagerInterface-Protocol.h"
 
 // ECMAIN 在线状态标志
 static BOOL _isEcmainOnline = YES;
@@ -178,6 +186,9 @@ static NSCache *_templateImageCache = nil;
     [[FBRoute POST:@"/wda/node/findByType"].withoutSession
         respondWithTarget:self
                    action:@selector(handleNodeFindByType:)],
+    [[FBRoute POST:@"/wda/elementAtPoint"].withoutSession
+        respondWithTarget:self
+                   action:@selector(handleGetElementAtPoint:)],
     [[FBRoute GET:@"/wda/node/all"].withoutSession
         respondWithTarget:self
                    action:@selector(handleNodeGetAll:)],
@@ -234,6 +245,74 @@ static NSCache *_templateImageCache = nil;
       @"saveToAlbum", @"appInfo"
     ]
   });
+}
+
+#pragma mark - Element At Point
+
++ (id<FBResponsePayload>)handleGetElementAtPoint:(FBRouteRequest *)request {
+  NSNumber *xNum = request.arguments[@"x"];
+  NSNumber *yNum = request.arguments[@"y"];
+
+  if (!xNum || !yNum) {
+    return FBResponseWithStatus([FBCommandStatus invalidArgumentErrorWithMessage:@"x and y are required" traceback:nil]);
+  }
+
+  // WDA internals use logic coordinates.
+  CGPoint pt = CGPointMake(xNum.doubleValue, yNum.doubleValue);
+  
+  __block id<FBXCAccessibilityElement> axElement = nil;
+  __block NSError *proxyError = nil;
+  id<XCTestManager_ManagerInterface> proxy = [FBXCTestDaemonsProxy testRunnerProxy];
+  dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+  [proxy _XCT_requestElementAtPoint:pt
+                              reply:^(id element, NSError *error) {
+                                if (nil == error) {
+                                  axElement = element;
+                                } else {
+                                  proxyError = error;
+                                }
+                                dispatch_semaphore_signal(sem);
+                              }];
+                              
+  // Wait up to 5 seconds
+  dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)));
+  
+  if (!axElement) {
+    if (proxyError) {
+        [FBLogger logFmt:@"Cannot request screen point at %@: %@", NSStringFromCGPoint(pt), proxyError];
+    }
+    return FBResponseWithObject(@{@"found": @NO, @"error": proxyError ? proxyError.localizedDescription : @"Timeout or element not found"});
+  }
+  
+  id<FBXCElementSnapshot> snapshot = [[FBXCAXClientProxy sharedClient] snapshotForElement:axElement
+                                                                           attributes:nil
+                                                                              inDepth:NO
+                                                                                error:nil];
+  if (!snapshot) {
+    return FBResponseWithObject(@{@"found": @NO});
+  }
+  
+  FBXCElementSnapshotWrapper *wrappedSnapshot = [FBXCElementSnapshotWrapper ensureWrapped:snapshot];
+  
+  NSMutableDictionary *info = [NSMutableDictionary dictionary];
+  info[@"found"] = @YES;
+  info[@"depth"] = @(snapshot.depth);
+  info[@"type"] = [FBElementTypeTransformer shortStringWithElementType:snapshot.elementType];
+  
+  NSString *wdName = wrappedSnapshot.wdName;
+  NSString *wdLabel = wrappedSnapshot.wdLabel;
+  NSString *wdValue = wrappedSnapshot.wdValue;
+  
+  if (wdName && ![wdName isEqual:[NSNull null]] && [wdName isKindOfClass:[NSString class]]) info[@"name"] = wdName;
+  if (wdLabel && ![wdLabel isEqual:[NSNull null]] && [wdLabel isKindOfClass:[NSString class]]) info[@"label"] = wdLabel;
+  if (wdValue && ![wdValue isEqual:[NSNull null]] && [wdValue isKindOfClass:[NSString class]]) info[@"value"] = wdValue;
+  
+  info[@"x"] = @(snapshot.frame.origin.x);
+  info[@"y"] = @(snapshot.frame.origin.y);
+  info[@"width"] = @(snapshot.frame.size.width);
+  info[@"height"] = @(snapshot.frame.size.height);
+  
+  return FBResponseWithObject(info);
 }
 
 #pragma mark - Color Finding

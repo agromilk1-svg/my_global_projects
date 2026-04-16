@@ -1091,11 +1091,47 @@ static NSString *gActiveWDASessionId = nil;
 // --- Text / OCR ---
 
 - (NSDictionary *)findText:(NSString *)text {
-  NSDictionary *result =
+  NSMutableDictionary *body = [NSMutableDictionary dictionary];
+  body[@"text"] = text ?: @"";
+  
+  NSArray *args = [JSContext currentArguments];
+  for (int i = 1; i < args.count; i++) {
+      JSValue *arg = args[i];
+      if ([arg isArray]) {
+          NSArray *arr = [arg toArray];
+          if (arr.count > 0) {
+              // Number array -> region
+              if ([arr[0] isKindOfClass:[NSNumber class]]) {
+                  if (arr.count >= 4) {
+                      body[@"region"] = @{
+                          @"x": arr[0],
+                          @"y": arr[1],
+                          @"width": arr[2],
+                          @"height": arr[3]
+                      };
+                  }
+              } 
+              // String array -> languages
+              else if ([arr[0] isKindOfClass:[NSString class]]) {
+                  body[@"languages"] = arr;
+              }
+          }
+      }
+  }
+
+  NSDictionary *rawRes =
       [self performWDAActionWithResult:@"findText"
                               endpoint:@"/wda/findText"
-                                  body:@{@"text" : text ?: @""}];
-  return result ?: @{@"found" : @NO};
+                                  body:body];
+  if (!rawRes) return @{@"found" : @NO};
+  
+  NSMutableDictionary *finalRes = [rawRes mutableCopy];
+  NSDictionary *innerResult = rawRes[@"result"];
+  if (innerResult && [innerResult isKindOfClass:[NSDictionary class]]) {
+      // 将 result 内部的字段提取到最外层
+      [finalRes addEntriesFromDictionary:innerResult];
+  }
+  return finalRes;
 }
 
 - (void)applyWDADepth:(int)depth {
@@ -1444,9 +1480,6 @@ static NSString *gActiveWDASessionId = nil;
       customDepth = [args[1] toInt32];
   }
   
-  // v1982: 使用 /source + 本地搜索替代 /elements
-  // /source 走 fb_standardSnapshot，受 customSnapshotTimeout=3 控制
-  // /elements 走 XCUIElementQuery，有内部长超时，视频播放时会卡死
   [self applyWDADepth:customDepth];
   
   NSDictionary *tree = [self _getSourceTreeJSON:customDepth];
@@ -1459,6 +1492,160 @@ static NSString *gActiveWDASessionId = nil;
   }
   
   [self restoreWDADepth:customDepth];
+  return nullResult;
+}
+
+// ============================================================================
+// 原生底层直接搜索 (findElementDirect)
+// 不下载完整 UI 树（无视深度和卡死风险），直接向 WDA 发送 predicate，由底层原生引擎搜索并返回坐标。
+// 适用场景：深层页面（如 TikTok 视频页），规避获取全量 source 导致的内存和超时问题。
+// ============================================================================
+- (NSDictionary *)findElementDirect:(NSString *)predicate depth:(NSNumber *)depthNum {
+  NSDictionary *nullResult = @{@"found": @NO, @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null], @"Name": [NSNull null], @"Label": [NSNull null], @"Value": [NSNull null], @"Rect": [NSNull null]};
+  if (!predicate || predicate.length == 0) return nullResult;
+  
+  [self ensureWDASessionId];
+  if (!gActiveWDASessionId) return nullResult;
+  
+  // 支持自定义深度参数，默认为 50 以防极端深度的 UI 树
+  int customDepth = depthNum ? [depthNum intValue] : 50;
+  if (customDepth <= 0) customDepth = 50;
+  
+  // 应用优化设置
+  [self applyWDADepth:customDepth]; 
+  
+  NSDictionary *body = @{
+      @"using": @"predicate string",
+      @"value": predicate
+  };
+  
+  NSDictionary *res = [self performWDAActionWithResult:@"findElementDirect"
+                                              endpoint:@"/element"
+                                                  body:body
+                                                method:@"POST"];
+  
+  [self restoreWDADepth:customDepth];
+  
+  if (!res) return nullResult;
+  
+  // performWDAActionWithResult 会 flatten value 字典到顶层
+  // WDA /element 端点返回 {"ELEMENT": "xxx", "element-6066-...": "xxx"}
+  NSString *elementId = res[@"ELEMENT"] ?: res[@"element-6066-11e4-a52e-4f735466cecf"];
+  
+  // 兼容未 flatten 的情况
+  if (!elementId && res[@"value"] && [res[@"value"] isKindOfClass:[NSDictionary class]]) {
+      NSDictionary *val = res[@"value"];
+      elementId = val[@"ELEMENT"] ?: val[@"element-6066-11e4-a52e-4f735466cecf"];
+  }
+  
+  if (!elementId || elementId.length == 0) {
+      return nullResult;
+  }
+  
+  // 第二步：通过 element ID 获取 rect
+  NSString *rectEndpoint = [NSString stringWithFormat:@"/element/%@/rect", elementId];
+  NSDictionary *rectRes = [self performWDAActionWithResult:@"elementRect"
+                                                 endpoint:rectEndpoint
+                                                     body:nil
+                                                   method:@"GET"];
+  
+  // 第三步：通过 element ID 获取 attribute (name, label, value)
+  NSString *nameEndpoint = [NSString stringWithFormat:@"/element/%@/attribute/name", elementId];
+  NSDictionary *nameRes = [self performWDAActionWithResult:@"elementAttrName"
+                                                  endpoint:nameEndpoint
+                                                      body:nil
+                                                    method:@"GET"];
+  
+  NSString *labelEndpoint = [NSString stringWithFormat:@"/element/%@/attribute/label", elementId];
+  NSDictionary *labelRes = [self performWDAActionWithResult:@"elementAttrLabel"
+                                                   endpoint:labelEndpoint
+                                                       body:nil
+                                                     method:@"GET"];
+  
+  NSString *valueEndpoint = [NSString stringWithFormat:@"/element/%@/attribute/value", elementId];
+  NSDictionary *valueRes = [self performWDAActionWithResult:@"elementAttrValue"
+                                                   endpoint:valueEndpoint
+                                                       body:nil
+                                                     method:@"GET"];
+  
+  // 解析 rect (performWDAActionWithResult 已 flatten)
+  NSNumber *rx = rectRes[@"x"] ?: @0;
+  NSNumber *ry = rectRes[@"y"] ?: @0;
+  NSNumber *rw = rectRes[@"width"] ?: @0;
+  NSNumber *rh = rectRes[@"height"] ?: @0;
+  
+  // 解析 attribute（WDA 返回 {"value": "xxx"}, flatten 后可能在 value 或顶层）
+  NSString *nameVal = nil;
+  if (nameRes[@"value"] && ![nameRes[@"value"] isKindOfClass:[NSNull class]]) {
+      nameVal = [NSString stringWithFormat:@"%@", nameRes[@"value"]];
+  }
+  NSString *labelVal = nil;
+  if (labelRes[@"value"] && ![labelRes[@"value"] isKindOfClass:[NSNull class]]) {
+      labelVal = [NSString stringWithFormat:@"%@", labelRes[@"value"]];
+  }
+  NSString *valueVal = nil;
+  if (valueRes[@"value"] && ![valueRes[@"value"] isKindOfClass:[NSNull class]]) {
+      valueVal = [NSString stringWithFormat:@"%@", valueRes[@"value"]];
+  }
+  
+  NSDictionary *rect = @{@"x": rx, @"y": ry, @"width": rw, @"height": rh};
+  
+  return @{
+      @"found": @YES,
+      @"name": nameVal ?: [NSNull null],
+      @"label": labelVal ?: [NSNull null],
+      @"value": valueVal ?: [NSNull null],
+      @"x": rx, @"y": ry,
+      @"width": rw, @"height": rh,
+      @"Name": nameVal ?: [NSNull null],
+      @"Label": labelVal ?: [NSNull null],
+      @"Value": valueVal ?: [NSNull null],
+      @"Rect": rect
+  };
+}
+
+- (NSDictionary *)tapElementDirect:(NSString *)predicate depth:(NSNumber *)depthNum {
+  NSDictionary *nullResult = @{@"tapped": @NO, @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null], @"Name": [NSNull null], @"Label": [NSNull null], @"Value": [NSNull null], @"Rect": [NSNull null]};
+  NSDictionary *el = [self findElementDirect:predicate depth:depthNum];
+  if (el && [el[@"found"] boolValue]) {
+      if (el[@"x"] && ![el[@"x"] isKindOfClass:[NSNull class]]) {
+          double x = [el[@"x"] doubleValue] + [el[@"width"] doubleValue] / 2.0;
+          double y = [el[@"y"] doubleValue] + [el[@"height"] doubleValue] / 2.0;
+          BOOL tapped = [self tap:@(x) y:@(y)];
+          
+          NSMutableDictionary *mutRes = [el mutableCopy];
+          mutRes[@"tapped"] = @(tapped);
+          [mutRes removeObjectForKey:@"found"];
+          return [mutRes copy];
+      }
+  }
+  return nullResult;
+}
+
+- (NSDictionary *)getElementAtPointDirect:(double)x y:(double)y {
+  NSDictionary *nullResult = @{@"found": @NO, @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null], @"type": [NSNull null]};
+  
+  NSDictionary *body = @{@"x": @(x), @"y": @(y)};
+  
+  NSDictionary *res = [self performWDAActionWithResult:@"elementAtPoint"
+                                              endpoint:@"/wda/elementAtPoint"
+                                                  body:body
+                                                method:@"POST"];
+                                                
+  if (res && res[@"found"] && [res[@"found"] boolValue]) {
+      NSMutableDictionary *v = [res mutableCopy];
+      // 包装成兼容旧版本的格式 (Name, Label, Value 首字母大写及 Rect)
+      v[@"Name"] = v[@"name"] ?: [NSNull null];
+      v[@"Label"] = v[@"label"] ?: [NSNull null];
+      v[@"Value"] = v[@"value"] ?: [NSNull null];
+      v[@"Rect"] = @{
+          @"x": v[@"x"] ?: @0,
+          @"y": v[@"y"] ?: @0,
+          @"width": v[@"width"] ?: @0,
+          @"height": v[@"height"] ?: @0
+      };
+      return [v copy];
+  }
   return nullResult;
 }
 
@@ -1552,7 +1739,6 @@ static NSString *gActiveWDASessionId = nil;
           } else if ([attrLower isEqualToString:@"visible"]) {
               specificVal = node[@"visible"] ? [NSString stringWithFormat:@"%@", node[@"visible"]] : (id)[NSNull null];
           } else {
-              // 其他属性直接从节点字典中尝试获取
               specificVal = [self _safeString:node[attr]] ?: (id)[NSNull null];
           }
           
