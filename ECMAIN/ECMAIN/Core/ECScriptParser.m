@@ -1203,30 +1203,47 @@ static NSString *gActiveWDASessionId = nil;
 // ══════════════════════════════════════════════════════
 
 // 获取 UI 树 JSON（一次 HTTP 请求拿到全部元素属性）
-// 优先使用 /wda/accessibleSource：只返回 accessible=YES 的元素
-// 自动跳过视频渲染层（AVPlayerLayer、Metal 层等非 accessible 元素）
-// 失败时降级到标准 /source
+// 三阶段降级策略（v1984）：
+// 1) accessibleSource + depth=15（极速，跳过渲染层+限深度=最小树）
+// 2) accessibleSource + 当前用户深度（中速）
+// 3) 标准 source + 当前用户深度（慢但完整）
 - (NSDictionary *)_getSourceTreeJSON {
     [self ensureWDASessionId];
     if (!gActiveWDASessionId) return nil;
     
-    // 第一阶段：尝试 accessibleSource（更快，跳过视频渲染层）
+    // 第一阶段：depth=15 极速扫描（解决缓存视频导致全量扫描超时）
+    NSString *settingsEndpoint = [NSString stringWithFormat:@"/session/%@/appium/settings", gActiveWDASessionId];
+    [self performWDAActionWithResult:@"fastSettings"
+                            endpoint:settingsEndpoint
+                                body:@{@"settings": @{
+                                    @"snapshotMaxDepth": @15,
+                                    @"customSnapshotTimeout": @6
+                                }}
+                              method:@"POST"];
+    
     NSString *accessibleEndpoint = [NSString stringWithFormat:@"/session/%@/wda/accessibleSource", gActiveWDASessionId];
-    NSDictionary *res = [self performWDAActionWithResult:@"getAccessibleSource" endpoint:accessibleEndpoint body:nil method:@"GET"];
+    NSDictionary *res = [self performWDAActionWithResult:@"fastAccessibleSource" endpoint:accessibleEndpoint body:nil method:@"GET"];
     if (res && res[@"value"] && [res[@"value"] isKindOfClass:[NSDictionary class]]) {
         return res[@"value"];
     }
     
-    // 第二阶段：降级到标准 source
-    [self log:@"⚠️ accessibleSource 失败，降级到标准 source"];
+    // 第二阶段：恢复用户深度 + accessibleSource
+    [self log:@"⚠️ 极速扫描失败，尝试完整深度 accessibleSource"];
+    res = [self performWDAActionWithResult:@"getAccessibleSource" endpoint:accessibleEndpoint body:nil method:@"GET"];
+    if (res && res[@"value"] && [res[@"value"] isKindOfClass:[NSDictionary class]]) {
+        return res[@"value"];
+    }
+    
+    // 第三阶段：降级到标准 source
+    [self log:@"⚠️ accessibleSource 全部失败，降级到标准 source"];
     NSString *sourceEndpoint = [NSString stringWithFormat:@"/session/%@/source?format=json", gActiveWDASessionId];
     res = [self performWDAActionWithResult:@"getSourceTree" endpoint:sourceEndpoint body:nil method:@"GET"];
     if (res && res[@"value"] && [res[@"value"] isKindOfClass:[NSDictionary class]]) {
         return res[@"value"];
     }
     return res;
-
 }
+
 
 // 在 JSON 树中递归搜索匹配的元素节点
 // 支持的 predicate 格式：

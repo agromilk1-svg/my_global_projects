@@ -1059,16 +1059,24 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
             snap_t = min(25, max(3, int(custom_depth * 0.4)))
             http_t = snap_t + 5
             
-            # 三阶段尝试（v1983 优化: accessibleSource 提升为第一优先级）
+            # 四阶段尝试（v1984 优化：首先用浅层 accessibleSource 极速扫描）
+            # 核心问题：TikTok 缓存 5-10 个视频 cell，每个 cell 有 20+ accessible 元素
+            # 全量扫描需遍历 100-200+ 元素，即使暂停也可能超时
+            # 解决：先用 depth=15 + accessibleSource 拿最小可用树
+            fast_snap_t = min(8, max(3, int(15 * 0.4)))
+            fast_http_t = fast_snap_t + 5
             attempts = [
-                # 第1阶段：accessibleSource（只返回有 accessibility 标记的可交互元素）
-                # 自动跳过视频渲染层 + 缓存视频的全部子元素，速度最快
+                # 第1阶段：accessibleSource + 浅层深度 15（极速，3秒内完成）
+                # depth=15 足够覆盖所有按钮/文字，同时大幅减少缓存视频元素数量
+                {"depth": 15, "snap_timeout": fast_snap_t, "http_timeout": float(fast_http_t),
+                 "endpoint": "wda/accessibleSource", "label": "极速扫描(depth=15)"},
+                # 第2阶段：accessibleSource + 用户请求深度（如果需要更深的元素）
                 {"depth": custom_depth, "snap_timeout": snap_t, "http_timeout": float(http_t),
                  "endpoint": "wda/accessibleSource", "label": "可交互元素扫描"},
-                # 第2阶段：用户请求的完整深度（包含所有元素，较慢但更完整）
+                # 第3阶段：完整 source + 用户请求深度（最慢但最完整）
                 {"depth": custom_depth, "snap_timeout": snap_t, "http_timeout": float(http_t),
                  "endpoint": "source?format=json", "label": "完整扫描"},
-                # 第3阶段：最浅深度兜底
+                # 第4阶段：最浅深度兜底
                 {"depth": 5, "snap_timeout": 3, "http_timeout": 8.0,
                  "endpoint": "source?format=json", "label": "浅层兜底扫描"},
             ]
