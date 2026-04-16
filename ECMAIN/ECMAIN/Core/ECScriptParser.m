@@ -1361,6 +1361,16 @@ static NSString *gActiveWDASessionId = nil;
         actual = [self _safeString:node[@"value"]];
     } else if ([field isEqualToString:@"type"]) {
         actual = [self _safeString:node[@"type"]];
+        // 兼容 WDA compact 响应格式（"XCUIElementTypeButton" <-> "Button"）
+        if (actual) {
+            BOOL actualHasPrefix = [actual hasPrefix:@"XCUIElementType"];
+            BOOL expectedHasPrefix = [expected hasPrefix:@"XCUIElementType"];
+            if (!actualHasPrefix && expectedHasPrefix) {
+                expected = [expected substringFromIndex:@"XCUIElementType".length];
+            } else if (actualHasPrefix && !expectedHasPrefix) {
+                actual = [actual substringFromIndex:@"XCUIElementType".length];
+            }
+        }
     } else if ([field isEqualToString:@"enabled"]) {
         actual = node[@"enabled"] ? [NSString stringWithFormat:@"%@", node[@"enabled"]] : nil;
     } else if ([field isEqualToString:@"visible"]) {
