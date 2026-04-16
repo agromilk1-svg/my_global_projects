@@ -1202,46 +1202,47 @@ static NSString *gActiveWDASessionId = nil;
 // - 视频播放时 /source 能在 3s 内返回（已验证），/elements 会卡死
 // ══════════════════════════════════════════════════════
 
-// 获取 UI 树 JSON（一次 HTTP 请求拿到全部元素属性）
-// 三阶段降级策略（v1984）：
-// 1) accessibleSource + depth=15（极速，跳过渲染层+限深度=最小树）
-// 2) accessibleSource + 当前用户深度（中速）
-// 3) 标准 source + 当前用户深度（慢但完整）
+// 获取 UI 树 JSON
+// ⚠️ 关键发现（v1985）：accessibleSource 端点内部调用 Apple accessibilitySnapshot API
+// 该 API 会隐式触发截图（"Cannot take a screenshot within 8000 ms timeout"）
+// 这个 8000ms 截图超时是 iOS 系统级的，不受 customSnapshotTimeout 控制
+// 唯一安全的组合：source?format=json + includeHittableInPageSource=NO
 - (NSDictionary *)_getSourceTreeJSON {
     [self ensureWDASessionId];
     if (!gActiveWDASessionId) return nil;
     
-    // 第一阶段：depth=15 极速扫描（解决缓存视频导致全量扫描超时）
+    // 第一阶段：depth=15 快速扫描（覆盖所有按钮/文字，排除深层渲染）
     NSString *settingsEndpoint = [NSString stringWithFormat:@"/session/%@/appium/settings", gActiveWDASessionId];
     [self performWDAActionWithResult:@"fastSettings"
                             endpoint:settingsEndpoint
                                 body:@{@"settings": @{
                                     @"snapshotMaxDepth": @15,
-                                    @"customSnapshotTimeout": @6
+                                    @"customSnapshotTimeout": @6,
+                                    @"includeHittableInPageSource": @NO
                                 }}
                               method:@"POST"];
     
-    NSString *accessibleEndpoint = [NSString stringWithFormat:@"/session/%@/wda/accessibleSource", gActiveWDASessionId];
-    NSDictionary *res = [self performWDAActionWithResult:@"fastAccessibleSource" endpoint:accessibleEndpoint body:nil method:@"GET"];
-    if (res && res[@"value"] && [res[@"value"] isKindOfClass:[NSDictionary class]]) {
-        return res[@"value"];
-    }
-    
-    // 第二阶段：恢复用户深度 + accessibleSource
-    [self log:@"⚠️ 极速扫描失败，尝试完整深度 accessibleSource"];
-    res = [self performWDAActionWithResult:@"getAccessibleSource" endpoint:accessibleEndpoint body:nil method:@"GET"];
-    if (res && res[@"value"] && [res[@"value"] isKindOfClass:[NSDictionary class]]) {
-        return res[@"value"];
-    }
-    
-    // 第三阶段：降级到标准 source
-    [self log:@"⚠️ accessibleSource 全部失败，降级到标准 source"];
     NSString *sourceEndpoint = [NSString stringWithFormat:@"/session/%@/source?format=json", gActiveWDASessionId];
-    res = [self performWDAActionWithResult:@"getSourceTree" endpoint:sourceEndpoint body:nil method:@"GET"];
+    NSDictionary *res = [self performWDAActionWithResult:@"fastSource" endpoint:sourceEndpoint body:nil method:@"GET"];
     if (res && res[@"value"] && [res[@"value"] isKindOfClass:[NSDictionary class]]) {
         return res[@"value"];
     }
-    return res;
+    
+    // 第二阶段：depth=5 极浅兜底
+    [self log:@"⚠️ depth=15 扫描失败，尝试 depth=5 兜底"];
+    [self performWDAActionWithResult:@"fallbackSettings"
+                            endpoint:settingsEndpoint
+                                body:@{@"settings": @{
+                                    @"snapshotMaxDepth": @5,
+                                    @"customSnapshotTimeout": @3,
+                                    @"includeHittableInPageSource": @NO
+                                }}
+                              method:@"POST"];
+    res = [self performWDAActionWithResult:@"fallbackSource" endpoint:sourceEndpoint body:nil method:@"GET"];
+    if (res && res[@"value"] && [res[@"value"] isKindOfClass:[NSDictionary class]]) {
+        return res[@"value"];
+    }
+    return nil;
 }
 
 

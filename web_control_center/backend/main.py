@@ -1059,24 +1059,21 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
             snap_t = min(25, max(3, int(custom_depth * 0.4)))
             http_t = snap_t + 5
             
-            # 四阶段尝试（v1984 优化：首先用浅层 accessibleSource 极速扫描）
-            # 核心问题：TikTok 缓存 5-10 个视频 cell，每个 cell 有 20+ accessible 元素
-            # 全量扫描需遍历 100-200+ 元素，即使暂停也可能超时
-            # 解决：先用 depth=15 + accessibleSource 拿最小可用树
+            # 三阶段尝试（v1985 修复：彻底移除 accessibleSource）
+            # ⚠️ 关键发现：accessibleSource 内部调用 Apple accessibilitySnapshot API
+            # 该 API 隐式触发截图 → "Cannot take a screenshot within 8000 ms timeout"
+            # 8000ms 是 iOS 系统级硬编码超时，不受 customSnapshotTimeout 控制
+            # 唯一安全的组合：source?format=json + includeHittableInPageSource=NO
             fast_snap_t = min(8, max(3, int(15 * 0.4)))
             fast_http_t = fast_snap_t + 5
             attempts = [
-                # 第1阶段：accessibleSource + 浅层深度 15（极速，3秒内完成）
-                # depth=15 足够覆盖所有按钮/文字，同时大幅减少缓存视频元素数量
+                # 第1阶段：source + depth=15（快速，不触发截图）
                 {"depth": 15, "snap_timeout": fast_snap_t, "http_timeout": float(fast_http_t),
-                 "endpoint": "wda/accessibleSource", "label": "极速扫描(depth=15)"},
-                # 第2阶段：accessibleSource + 用户请求深度（如果需要更深的元素）
-                {"depth": custom_depth, "snap_timeout": snap_t, "http_timeout": float(http_t),
-                 "endpoint": "wda/accessibleSource", "label": "可交互元素扫描"},
-                # 第3阶段：完整 source + 用户请求深度（最慢但最完整）
+                 "endpoint": "source?format=json", "label": "快速扫描(depth=15)"},
+                # 第2阶段：source + 用户请求深度
                 {"depth": custom_depth, "snap_timeout": snap_t, "http_timeout": float(http_t),
                  "endpoint": "source?format=json", "label": "完整扫描"},
-                # 第4阶段：最浅深度兜底
+                # 第3阶段：source + depth=5 兜底
                 {"depth": 5, "snap_timeout": 3, "http_timeout": 8.0,
                  "endpoint": "source?format=json", "label": "浅层兜底扫描"},
             ]
