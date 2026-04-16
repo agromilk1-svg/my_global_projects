@@ -1210,18 +1210,22 @@ static NSString *gActiveWDASessionId = nil;
 // ⚠️ v1987 修复：performWDAActionWithResult 返回两种格式
 // 格式1：{"value": {树根...}} → 取 res[@"value"]
 // 格式2：{树根...}（已解包）  → res 本身就是树根
-- (NSDictionary *)_getSourceTreeJSON {
+- (NSDictionary *)_getSourceTreeJSON:(int)requestedDepth {
     [self ensureWDASessionId];
     if (!gActiveWDASessionId) return nil;
     
     NSString *sourceEndpoint = [NSString stringWithFormat:@"/session/%@/source?format=json", gActiveWDASessionId];
     NSString *settingsEndpoint = [NSString stringWithFormat:@"/session/%@/appium/settings", gActiveWDASessionId];
     
-    // 第一阶段：depth=15 快速扫描（限制 isVisible 截图检查数量）
+    // 用户若未显式指定（导致传入默认值 60，可能导致严重超时）则转录为较安全的预扫描深度 15
+    // 若用户显式传入了 0（无限层）或其他特殊层级，则完全尊重用户的参数
+    int safeDepth = (requestedDepth == 60) ? 15 : requestedDepth;
+    
+    // 第一阶段：尊重用户深度（或转为 safeDepth 兜底）
     [self performWDAActionWithResult:@"fastSettings"
                             endpoint:settingsEndpoint
                                 body:@{@"settings": @{
-                                    @"snapshotMaxDepth": @15,
+                                    @"snapshotMaxDepth": @(safeDepth),
                                     @"customSnapshotTimeout": @3,
                                     @"includeHittableInPageSource": @NO
                                 }}
@@ -1237,8 +1241,8 @@ static NSString *gActiveWDASessionId = nil;
         return res;
     }
     
-    // 第二阶段：depth=5 极浅兜底
-    [self log:@"⚠️ depth=15 扫描失败，尝试 depth=5 兜底"];
+    // 第二阶段：depth=5 极浅兜底（仅当首次扫描失败时使用）
+    [self log:[NSString stringWithFormat:@"⚠️ depth=%d 扫描失败，尝试 depth=5 兜底", safeDepth]];
     [self performWDAActionWithResult:@"fallbackSettings"
                             endpoint:settingsEndpoint
                                 body:@{@"settings": @{
@@ -1462,7 +1466,7 @@ static NSString *gActiveWDASessionId = nil;
   // /elements 走 XCUIElementQuery，有内部长超时，视频播放时会卡死
   [self applyWDADepth:customDepth];
   
-  NSDictionary *tree = [self _getSourceTreeJSON];
+  NSDictionary *tree = [self _getSourceTreeJSON:customDepth];
   if (tree) {
       NSDictionary *node = [self _searchNode:tree predicate:predicate];
       if (node) {
@@ -1487,7 +1491,7 @@ static NSString *gActiveWDASessionId = nil;
   
   [self applyWDADepth:customDepth];
   
-  NSDictionary *tree = [self _getSourceTreeJSON];
+  NSDictionary *tree = [self _getSourceTreeJSON:customDepth];
   if (tree) {
       NSDictionary *node = [self _searchNode:tree predicate:predicate];
       if (node) {
@@ -1542,7 +1546,7 @@ static NSString *gActiveWDASessionId = nil;
   [self applyWDADepth:customDepth];
   [self log:[NSString stringWithFormat:@"🔎 [getElementAttribute] 搜索元素: %@ (属性=%@, 深度=%d)", predicate, attr, customDepth]];
   
-  NSDictionary *tree = [self _getSourceTreeJSON];
+  NSDictionary *tree = [self _getSourceTreeJSON:customDepth];
   if (tree) {
       NSDictionary *node = [self _searchNode:tree predicate:predicate];
       if (node) {
@@ -1596,7 +1600,7 @@ static NSString *gActiveWDASessionId = nil;
   
   [self applyWDADepth:customDepth];
   
-  NSDictionary *tree = [self _getSourceTreeJSON];
+  NSDictionary *tree = [self _getSourceTreeJSON:customDepth];
   if (tree) {
       NSDictionary *node = [self _searchNode:tree predicate:predicate];
       if (node) {
