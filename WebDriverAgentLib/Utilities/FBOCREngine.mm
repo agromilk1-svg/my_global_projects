@@ -208,7 +208,7 @@ static const int REC_IMG_H = 48;
 
 #pragma mark - Vision API OCR (Fallback)
 
-- (NSArray<FBOCRTextResult *> *)recognizeTextWithVision:(UIImage *)image targetText:(nullable NSString *)targetText {
+- (NSArray<FBOCRTextResult *> *)recognizeTextWithVision:(UIImage *)image targetText:(nullable NSString *)targetText languages:(nullable NSArray<NSString *> *)customLanguages {
   if (!image)
     return @[];
 
@@ -294,11 +294,27 @@ static const int REC_IMG_H = 48;
         }
     }
     
-    // 核心优化：如果只需查找英文/拉美文（如 Para ti），绝不加载重达数以百兆计的中文/日文神经网络模型！
-    if (isAsianText) {
-        request.recognitionLanguages = @[ @"zh-Hans", @"zh-Hant", @"ja-JP", @"ko-KR", @"en-US" ];
+    // 核心优化：动态设置多语言
+    if (customLanguages && customLanguages.count > 0) {
+        // 如果外层有特意指定的语言数组，直接采用
+        request.recognitionLanguages = customLanguages;
     } else {
-        request.recognitionLanguages = @[ @"en-US", @"es-ES" ]; // 纯英文或西语
+        if (!targetText || targetText.length == 0) {
+            // [v2008更新] 全面开放式 OCR（即 wda.ocr() 全局截屏读取），预设加载全球最常用的大语种！
+            // 包括中、英、日、韩、西(含墨西哥等拉美区域)、葡、法、德、意、泰、马来、印尼、越、俄、阿拉伯等
+            request.recognitionLanguages = @[
+                @"zh-Hans", @"zh-Hant", @"ja-JP", @"ko-KR", 
+                @"en-US", @"es-ES", @"es-MX", @"pt-BR", @"pt-PT",
+                @"th-TH", @"ms-MY", @"id-ID", @"vi-VN", @"ru-RU", 
+                @"fr-FR", @"de-DE", @"it-IT", @"ar-SA"
+            ];
+        } else if (isAsianText) {
+            // 如果是查找指定包含中日韩的文字
+            request.recognitionLanguages = @[ @"zh-Hans", @"zh-Hant", @"ja-JP", @"ko-KR", @"en-US" ];
+        } else {
+             // 纯拉丁语系轻量查找，速度最快
+            request.recognitionLanguages = @[ @"en-US", @"es-ES", @"es-MX", @"pt-BR" ]; 
+        }
     }
     
     request.usesLanguageCorrection = NO; // 关闭语义修正，加快速度且避免错误联想
@@ -560,7 +576,7 @@ static std::vector<DetBox> filterBoxes(const ncnn::Mat &pred, float scaleX,
 
 #pragma mark - Public API
 
-- (NSArray<FBOCRTextResult *> *)recognizeText:(UIImage *)image {
+- (NSArray<FBOCRTextResult *> *)recognizeText:(UIImage *)image languages:(nullable NSArray<NSString *> *)languages {
   if (!image)
     return @[];
 
@@ -572,11 +588,12 @@ static std::vector<DetBox> filterBoxes(const ncnn::Mat &pred, float scaleX,
   }
 
   // Fallback to Vision API
-  return [self recognizeTextWithVision:image targetText:nil];
+  return [self recognizeTextWithVision:image targetText:nil languages:languages];
 }
 
 - (NSArray<FBOCRTextResult *> *)recognizeText:(UIImage *)image
-                                     inRegion:(CGRect)region {
+                                     inRegion:(CGRect)region
+                                    languages:(nullable NSArray<NSString *> *)languages {
   if (!image)
     return @[];
 
@@ -594,7 +611,7 @@ static std::vector<DetBox> filterBoxes(const ncnn::Mat &pred, float scaleX,
                                         orientation:image.imageOrientation];
   CGImageRelease(croppedRef);
 
-  NSArray *results = [self recognizeText:croppedImage];
+  NSArray *results = [self recognizeText:croppedImage languages:languages];
 
   NSMutableArray *adjustedResults = [NSMutableArray array];
   for (FBOCRTextResult *result in results) {
@@ -615,7 +632,7 @@ static std::vector<DetBox> filterBoxes(const ncnn::Mat &pred, float scaleX,
 
   // 1. 优先使用极速 Apple Native Vision 引擎（ANE 硬件加速，通常耗时 < 100ms）
   if (@available(iOS 13.0, *)) {
-    NSArray<FBOCRTextResult *> *visionResults = [self recognizeTextWithVision:image targetText:text];
+    NSArray<FBOCRTextResult *> *visionResults = [self recognizeTextWithVision:image targetText:text languages:nil];
     for (FBOCRTextResult *result in visionResults) {
       NSString *cleanResult = [[result.text stringByReplacingOccurrencesOfString:@" " withString:@""] lowercaseString];
       NSString *cleanTarget = [[text stringByReplacingOccurrencesOfString:@" " withString:@""] lowercaseString];

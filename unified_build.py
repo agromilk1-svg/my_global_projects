@@ -90,7 +90,7 @@ def build_wda():
     cmd = (
         f"xcodebuild -project WebDriverAgent.xcodeproj "
         f"-scheme WebDriverAgentRunner "
-        f"-destination 'generic/platform=iOS' "
+        f"-sdk iphoneos "
         f"-configuration Debug "
         f"-derivedDataPath {DERIVED_DATA_DIR} "
         f"CONFIGURATION_BUILD_DIR='{os.path.join(DERIVED_DATA_DIR, 'Build/Products/Debug-iphoneos')}' "
@@ -222,11 +222,10 @@ def build_ecmain():
     cmd = (
         f"xcodebuild -project ECMAIN/ECMAIN.xcodeproj "
         f"-scheme ECMAIN "
-        f"-destination 'generic/platform=iOS' "
+        f"-sdk iphoneos "
         f"-configuration Debug "
         f"CODE_SIGNING_ALLOWED=NO "
         f"-derivedDataPath {DERIVED_DATA_DIR} "
-        f"CONFIGURATION_BUILD_DIR='{os.path.join(DERIVED_DATA_DIR, 'Build/Products/Debug-iphoneos')}' "
         f"CONFIGURATION_BUILD_DIR='{os.path.join(DERIVED_DATA_DIR, 'Build/Products/Debug-iphoneos')}' "
         f"SYMROOT='{os.path.join(DERIVED_DATA_DIR, 'Build/Products')}' "
         f"OTHER_LDFLAGS='$(inherited) -larchive'"

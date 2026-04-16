@@ -374,11 +374,12 @@ static NSCache *_templateImageCache = nil;
   CGFloat endX = CGImageGetWidth(imageRef);
   CGFloat endY = CGImageGetHeight(imageRef);
 
+  CGFloat scale = [UIScreen mainScreen].scale;
   if (region) {
-    startX = [region[@"x"] floatValue];
-    startY = [region[@"y"] floatValue];
-    endX = startX + [region[@"width"] floatValue];
-    endY = startY + [region[@"height"] floatValue];
+    startX = [region[@"x"] floatValue] * scale;
+    startY = [region[@"y"] floatValue] * scale;
+    endX = startX + [region[@"width"] floatValue] * scale;
+    endY = startY + [region[@"height"] floatValue] * scale;
   }
 
   // [v1778.5] 计算多点找色的近似宽高度 bounding box
@@ -630,6 +631,7 @@ static NSCache *_templateImageCache = nil;
 
   NSArray<FBOCRTextResult *> *results;
   NSDictionary *regionDict = request.arguments[@"region"];
+  NSArray *languages = request.arguments[@"languages"];
   CGFloat scale = [UIScreen mainScreen].scale;
   if (regionDict) {
     CGRect region = CGRectMake([regionDict[@"x"] doubleValue] * scale,
@@ -637,9 +639,11 @@ static NSCache *_templateImageCache = nil;
                                [regionDict[@"width"] doubleValue] * scale,
                                [regionDict[@"height"] doubleValue] * scale);
     results = [[FBOCREngine sharedEngine] recognizeText:screenshot
-                                               inRegion:region];
+                                               inRegion:region
+                                              languages:languages];
   } else {
-    results = [[FBOCREngine sharedEngine] recognizeText:screenshot];
+    results = [[FBOCREngine sharedEngine] recognizeText:screenshot
+                                              languages:languages];
   }
 
   NSMutableArray *jsonResults = [NSMutableArray array];
@@ -911,9 +915,7 @@ static NSCache *_templateImageCache = nil;
 
   if (matchWait != 0) {
     NSLog(@"[ECWDA] ⚠️ matchImage 模板匹配超时(3s)");
-    return FBResponseWithObject(@{
-      @"value" : @{@"found" : @NO, @"error" : @"Template matching timed out (3s)"}
-    });
+    return FBResponseWithObject(@{@"found" : @NO, @"error" : @"Template matching timed out (3s)"});
   }
 
   if (result) {
@@ -930,7 +932,7 @@ static NSCache *_templateImageCache = nil;
       finalRes[@"width"] = @([result[@"width"] doubleValue] / scale);
       finalRes[@"height"] = @([result[@"height"] doubleValue] / scale);
     }
-    return FBResponseWithObject(@{@"value" : finalRes});
+    return FBResponseWithObject(finalRes);
   } else {
     return FBResponseWithStatus([FBCommandStatus
         unknownErrorWithMessage:@"Match image failed"

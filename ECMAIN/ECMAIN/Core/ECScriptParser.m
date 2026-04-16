@@ -1658,10 +1658,40 @@ static NSString *gActiveWDASessionId = nil;
 - (NSDictionary *)ocr {
   if ([self _checkInterrupt])
     return @{@"texts" : @[]};
+    
+  NSMutableDictionary *body = [NSMutableDictionary dictionary];
+  NSArray *args = [JSContext currentArguments];
+  for (JSValue *arg in args) {
+      if ([arg isArray]) {
+          NSArray *arr = [arg toArray];
+          if (arr.count > 0) {
+              if ([arr[0] isKindOfClass:[NSNumber class]]) {
+                  if (arr.count >= 4) {
+                      body[@"region"] = @{
+                          @"x": arr[0],
+                          @"y": arr[1],
+                          @"width": arr[2],
+                          @"height": arr[3]
+                      };
+                  }
+              } else if ([arr[0] isKindOfClass:[NSString class]]) {
+                  body[@"languages"] = arr;
+              }
+          }
+      }
+  }
+
   NSDictionary *result = [self performWDAActionWithResult:@"ocr"
                                                  endpoint:@"/wda/ocr"
-                                                     body:@{}];
-  return result ?: @{@"texts" : @[]};
+                                                     body:body];
+                                                     
+  // [v2002] 强大的向外结构统一与老脚本兼容
+  NSMutableDictionary *jsResult = [NSMutableDictionary dictionaryWithDictionary:(result ?: @{@"texts" : @[]})];
+  NSMutableDictionary *valDict = [NSMutableDictionary dictionaryWithDictionary:jsResult];
+  [valDict removeObjectForKey:@"value"];
+  jsResult[@"value"] = valDict;
+
+  return jsResult;
 }
 
 // --- Utils ---
@@ -1752,6 +1782,17 @@ static NSString *gActiveWDASessionId = nil;
 
 - (NSDictionary *)findImage:(NSString *)templateB64
                    threshold:(NSNumber *)threshold {
+  // 预处理可选的 region 参数
+  NSArray *args = [JSContext currentArguments];
+  CGRect cropRect = CGRectZero;
+  if (args.count > 2 && [args[2] isArray]) {
+      NSArray *regionArr = [args[2] toArray];
+      if (regionArr.count >= 4) {
+          cropRect = CGRectMake([regionArr[0] doubleValue], [regionArr[1] doubleValue],
+                                [regionArr[2] doubleValue], [regionArr[3] doubleValue]);
+      }
+  }
+
   // ── 截图缓存已提升为文件级静态变量 (sCachedScreenshotB64 / sCachedScreenshotTime / kScreenshotCacheTTL) ──
   // 2 秒内连续多次 findImage 共享同一截图，大幅减少 WDA 请求；超过 2 秒自动重新截图
 
@@ -1809,6 +1850,22 @@ static NSString *gActiveWDASessionId = nil;
     return @{@"found" : @NO};
   }
 
+  // === 局部找图：在发送给 WDA 进行高消耗计算前，在此（ECMAIN）进行本地裁剪 ===
+  if (!CGRectIsEmpty(cropRect)) {
+      NSData *imgData = [[NSData alloc] initWithBase64EncodedString:screenshotBase64 options:NSDataBase64DecodingIgnoreUnknownCharacters];
+      UIImage *fullImage = [UIImage imageWithData:imgData];
+      if (fullImage) {
+          CGFloat scale = [UIScreen mainScreen].scale;
+          CGRect scaledCrop = CGRectMake(cropRect.origin.x * scale, cropRect.origin.y * scale, cropRect.size.width * scale, cropRect.size.height * scale);
+          CGImageRef cgImage = CGImageCreateWithImageInRect(fullImage.CGImage, scaledCrop);
+          if (cgImage) {
+              UIImage *croppedImg = [UIImage imageWithCGImage:cgImage scale:fullImage.scale orientation:fullImage.imageOrientation];
+              screenshotBase64 = [UIImagePNGRepresentation(croppedImg) base64EncodedStringWithOptions:0];
+              CGImageRelease(cgImage);
+          }
+      }
+  }
+
   // === 第 2 步：将截图 + 模板发给 /wda/matchImage 做纯 CPU 匹配（无 IPC 风险）===
   __block NSDictionary *result = nil;
   dispatch_semaphore_t sema = dispatch_semaphore_create(0);
@@ -1845,6 +1902,20 @@ static NSString *gActiveWDASessionId = nil;
     
     // [v1942] 强制校验坐标，如果 x 与 y 都为 0，视为匹配失败
     if (found) {
+        // --- [v1998] 如果是局部裁剪找图，这里需要将它相对裁剪块的坐标映射回屏幕绝对坐标
+        if (!CGRectIsEmpty(cropRect)) {
+            if (finalData[@"x"] != nil) {
+                finalData[@"x"] = @([finalData[@"x"] doubleValue] + cropRect.origin.x);
+                finalData[@"y"] = @([finalData[@"y"] doubleValue] + cropRect.origin.y);
+            }
+            if ([finalData[@"rect"] isKindOfClass:[NSDictionary class]]) {
+                NSMutableDictionary *rectDict = [finalData[@"rect"] mutableCopy];
+                rectDict[@"x"] = @([rectDict[@"x"] doubleValue] + cropRect.origin.x);
+                rectDict[@"y"] = @([rectDict[@"y"] doubleValue] + cropRect.origin.y);
+                finalData[@"rect"] = rectDict;
+            }
+        }
+
         // [v1945修复] WDA 返回的 matchImage 可能直接平铺 x,y，也可能包裹在 rect 中
         NSDictionary *coordDict = [finalData[@"rect"] isKindOfClass:[NSDictionary class]] ? finalData[@"rect"] : finalData;
         if (coordDict[@"x"] && coordDict[@"y"]) {
@@ -1853,12 +1924,14 @@ static NSString *gActiveWDASessionId = nil;
             if (xVal == 0 && yVal == 0) {
                 found = NO;
                 finalData[@"found"] = @NO;
-                if ([jsResult[@"value"] isKindOfClass:[NSDictionary class]]) {
-                    jsResult[@"value"] = finalData;
-                } else {
-                    jsResult[@"found"] = @NO;
-                }
             }
+        }
+        
+        // 关键修复：将加上偏移量修改后的坐标数据同步写回源对象
+        if ([jsResult[@"value"] isKindOfClass:[NSDictionary class]]) {
+            jsResult[@"value"] = finalData;
+        } else {
+            [jsResult addEntriesFromDictionary:finalData];
         }
     }
 
@@ -1878,19 +1951,13 @@ static NSString *gActiveWDASessionId = nil;
   }
 
   // === 第 4 步：兼容老脚本对 res.value.found / res.value.x 的调用格式 ===
-  if (!jsResult[@"value"]) {
-      NSMutableDictionary *valDict = [NSMutableDictionary dictionary];
-      if (jsResult[@"rect"]) {
-          valDict[@"rect"] = jsResult[@"rect"];
-          // 展开 rect 以便支持 res.value.x 取值
-          if ([jsResult[@"rect"] isKindOfClass:[NSDictionary class]]) {
-              [valDict addEntriesFromDictionary:jsResult[@"rect"]];
-          }
-      }
-      valDict[@"found"] = jsResult[@"found"] ?: @NO;
-      valDict[@"confidence"] = jsResult[@"confidence"] ?: @0;
-      jsResult[@"value"] = valDict;
+  // [v2002] 终极防丢招式：全量倒灌进 value
+  NSMutableDictionary *valDict = [NSMutableDictionary dictionaryWithDictionary:jsResult];
+  [valDict removeObjectForKey:@"value"]; // 防套娃引用
+  if ([jsResult[@"rect"] isKindOfClass:[NSDictionary class]]) {
+      [valDict addEntriesFromDictionary:jsResult[@"rect"]];
   }
+  jsResult[@"value"] = valDict;
 
   // [v1955优化] 主动释放过期截图缓存，防止大量 Base64 数据长期驻留内存
   CFAbsoluteTime nowEnd = CFAbsoluteTimeGetCurrent();
@@ -2231,23 +2298,37 @@ static NSString *gActiveWDASessionId = nil;
     }
   }
 
+  NSMutableDictionary *body = [NSMutableDictionary dictionaryWithDictionary:@{
+    @"firstColor" : firstColor,
+    @"offsetColors" : offsets ?: @[], // [v1769] WDA 期望的键名是 offsetColors
+    @"similarity" : sim ?: @(0.9)
+  }];
+  
+  NSArray *args = [JSContext currentArguments];
+  if (args.count > 2 && [args[2] isArray]) {
+      NSArray *regionArr = [args[2] toArray];
+      if (regionArr.count >= 4) {
+          body[@"region"] = @{
+              @"x": regionArr[0],
+              @"y": regionArr[1],
+              @"width": regionArr[2],
+              @"height": regionArr[3]
+          };
+      }
+  }
+
   NSDictionary *result =
       [self performWDAActionWithResult:@"findMultiColor"
                               endpoint:@"/wda/findMultiColor"
-                                  body:@{
-                                    @"firstColor" : firstColor,
-                                    @"offsetColors" : offsets ?: @[], // [v1769] WDA 期望的键名是 offsetColors
-                                    @"similarity" : sim ?: @(0.9)
-                                  }];
+                                  body:body];
   
   // [v1770] 强制统一数据结构：使其返回值格式与 findImage 完全一致 (包含 value 嵌套封装)
-  NSMutableDictionary *jsResult = [NSMutableDictionary dictionary];
+  NSMutableDictionary *jsResult = [NSMutableDictionary dictionaryWithDictionary:(result ?: @{})];
   jsResult[@"found"] = result[@"found"] ?: @NO;
   
-  NSMutableDictionary *valDict = [NSMutableDictionary dictionaryWithDictionary:(result ?: @{})];
-  valDict[@"found"] = result[@"found"] ?: @NO;
-  valDict[@"width"] = result[@"width"] ?: @0;
-  valDict[@"height"] = result[@"height"] ?: @0;
+  // [v2002] 终极防丢招式：全量倒灌进 value
+  NSMutableDictionary *valDict = [NSMutableDictionary dictionaryWithDictionary:jsResult];
+  [valDict removeObjectForKey:@"value"];
   jsResult[@"value"] = valDict;
   
   return jsResult;
@@ -2445,9 +2526,12 @@ static NSString *gActiveWDASessionId = nil;
                 }
                 resultDict = [dictToReturn copy];
               }
-              // [v1738] 响应用户需求：不打印 screenshot 的结果（因其 Base64 数据量巨大），
-              // 但保留 matchImage 等其他关键动作的结果回显。
-              if (![name isEqualToString:@"screenshot"]) {
+              // [v1738] 响应用户需求：不打印 screenshot 的结果（因其 Base64 数据量巨大）
+              // [v2003] 屏蔽 matchImage、findMultiColor、ocr 的底层结构打印，以免因尚未累加偏移量误导终端开发者，外层具体实现会有专门打印。
+              if (![name isEqualToString:@"screenshot"] &&
+                  ![name isEqualToString:@"matchImage"] &&
+                  ![name isEqualToString:@"findMultiColor"] &&
+                  ![name isEqualToString:@"ocr"]) {
                 [self log:[NSString stringWithFormat:@"%@ 结果: %@", name, resultDict]];
               }
             } else {

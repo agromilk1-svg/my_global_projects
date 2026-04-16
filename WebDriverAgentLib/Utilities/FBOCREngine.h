@@ -37,16 +37,19 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, readonly) BOOL isModelLoaded;
 
 /// OCR 识别
-/// @param image 要识别的图片
+/// @param languages 指定的语言列表，若传 nil 则使用内置的全语系默认配置
 /// @return 识别结果数组
-- (NSArray<FBOCRTextResult *> *)recognizeText:(UIImage *)image;
+- (NSArray<FBOCRTextResult *> *)recognizeText:(UIImage *)image
+                                    languages:(nullable NSArray<NSString *> *)languages;
 
 /// OCR 识别指定区域
 /// @param image 要识别的图片
 /// @param region 识别区域
+/// @param languages 指定的语言列表，若传 nil 则使用内置的全语系默认配置
 /// @return 识别结果数组
 - (NSArray<FBOCRTextResult *> *)recognizeText:(UIImage *)image
-                                     inRegion:(CGRect)region;
+                                     inRegion:(CGRect)region
+                                    languages:(nullable NSArray<NSString *> *)languages;
 
 /// 查找指定文字
 /// @param text 要查找的文字
