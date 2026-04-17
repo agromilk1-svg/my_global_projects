@@ -3110,13 +3110,13 @@ static NSString *gActiveWDASessionId = nil;
   return picked;
 }
 
-#pragma mark - TikTok 主账号数据读取
+#pragma mark - 主账号数据读取
 
 // 从 NSUserDefaults (App Group) 中读取主账号数据（JSON 数组首元素）
 // 后端按 is_primary DESC, id ASC 排序，主账号排首位；若无主账号则默认取第一个
-- (NSDictionary *)_getMasterTkAccountDict {
+- (NSDictionary *)_getMasterAccountDict {
   NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
-  NSString *json = [defaults stringForKey:@"EC_TIKTOK_ACCOUNTS"] ?: @"[]";
+  NSString *json = [defaults stringForKey:@"EC_ACCOUNTS"] ?: @"[]";
   NSData *data = [json dataUsingEncoding:NSUTF8StringEncoding];
   NSArray *accounts = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
   if (![accounts isKindOfClass:[NSArray class]] || accounts.count == 0) {
@@ -3124,6 +3124,185 @@ static NSString *gActiveWDASessionId = nil;
   }
   // 首元素即为主账号（有 is_primary 标记的排最前），若无主账号则自动降级为第一个
   return accounts.firstObject;
+}
+
+- (NSArray *)getAccounts:(NSString *)appType {
+  __block NSArray *serverAccounts = nil;
+  NSString *serverUrl = [ECPersistentConfig stringForKey:@"EC_SERVER_URL"];
+  NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
+
+  // 1. 获取服务器账号列表
+  if (serverUrl && serverUrl.length > 0) {
+    NSString *udid = nil;
+    void *lib = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_LAZY);
+    if (lib) {
+      CFTypeRef (*_MGCopyAnswer)(CFStringRef) = dlsym(lib, "MGCopyAnswer");
+      if (_MGCopyAnswer) {
+        CFStringRef uniqueId = (CFStringRef)_MGCopyAnswer(CFSTR("SerialNumber"));
+        if (uniqueId) {
+          udid = [NSString stringWithString:(__bridge NSString *)uniqueId];
+          CFRelease(uniqueId);
+        }
+      }
+      dlclose(lib);
+    }
+    if (!udid) udid = [[[UIDevice currentDevice] identifierForVendor] UUIDString];
+
+    NSString *apiUrl = [NSString stringWithFormat:@"%@/api/devices/%@/accounts", serverUrl, udid];
+    NSURL *url = [NSURL URLWithString:apiUrl];
+    if (url) {
+      NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+      request.HTTPMethod = @"GET";
+      request.timeoutInterval = 10.0;
+      
+      dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+      [[NSURLSession.sharedSession dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (!error && data) {
+          NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+          if ([json isKindOfClass:[NSDictionary class]] && [json[@"status"] isEqualToString:@"ok"]) {
+             serverAccounts = json[@"data"];
+          }
+        }
+        dispatch_semaphore_signal(sema);
+      }] resume];
+      dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10 * NSEC_PER_SEC)));
+    }
+  }
+
+  // 2. 读取本地缓存进行合并
+  NSString *localJson = [defaults stringForKey:@"EC_ACCOUNTS"] ?: @"[]";
+  NSArray *localAccounts = [NSJSONSerialization JSONObjectWithData:[localJson dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+  if (![localAccounts isKindOfClass:[NSArray class]]) localAccounts = @[];
+
+  NSArray *finalAccounts = nil;
+  if (serverAccounts) {
+      // 合并逻辑：保留服务器的结构，但如果本地有对应的账号名，则保留本地的 关注/粉丝/点赞 数
+      NSMutableArray *merged = [NSMutableArray array];
+      for (NSDictionary *sAcc in serverAccounts) {
+          NSMutableDictionary *mAcc = [sAcc mutableCopy];
+          NSString *accName = sAcc[@"account"];
+          
+          // 在本地寻找同名账号
+          for (NSDictionary *lAcc in localAccounts) {
+              if ([lAcc[@"account"] isEqualToString:accName]) {
+                  // 覆盖统计信息与运行状态（不要被服务器的默认值覆盖）
+                  mAcc[@"following_count"] = lAcc[@"following_count"] ?: @0;
+                  mAcc[@"fans_count"] = lAcc[@"fans_count"] ?: @0;
+                  mAcc[@"likes_count"] = lAcc[@"likes_count"] ?: @0;
+                  mAcc[@"is_following"] = lAcc[@"is_following"] ?: @0;
+                  mAcc[@"is_farming"] = lAcc[@"is_farming"] ?: @0;
+                  break;
+              }
+          }
+          [merged addObject:mAcc];
+      }
+      finalAccounts = merged;
+      
+      // 更新全量缓存
+      NSData *cacheData = [NSJSONSerialization dataWithJSONObject:finalAccounts options:0 error:nil];
+      NSString *cacheString = [[NSString alloc] initWithData:cacheData encoding:NSUTF8StringEncoding];
+      [defaults setObject:cacheString forKey:@"EC_ACCOUNTS"];
+      [defaults synchronize];
+  } else {
+      // 网络失败，使用纯本地缓存
+      finalAccounts = localAccounts;
+  }
+
+  // 3. 过滤并返回
+  if (!appType || appType.length == 0 || [appType isEqualToString:@"all"]) {
+    return finalAccounts;
+  }
+  
+  NSMutableArray *filtered = [NSMutableArray array];
+  for (NSDictionary *acc in finalAccounts) {
+    NSString *type = acc[@"account_type"];
+    if ([type.uppercaseString isEqualToString:appType.uppercaseString]) {
+      [filtered addObject:acc];
+    }
+  }
+  return filtered;
+}
+
+- (BOOL)postAccounts {
+    NSString *serverUrl = [ECPersistentConfig stringForKey:@"EC_SERVER_URL"];
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
+    NSString *json = [defaults stringForKey:@"EC_ACCOUNTS"] ?: @"[]";
+    NSArray *accountsArr = [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+    
+    if (!serverUrl || serverUrl.length == 0 || ![accountsArr isKindOfClass:[NSArray class]] || accountsArr.count == 0) {
+        return NO;
+    }
+    
+    NSString *udid = nil;
+    void *lib = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_LAZY);
+    if (lib) {
+      CFTypeRef (*_MGCopyAnswer)(CFStringRef) = dlsym(lib, "MGCopyAnswer");
+      if (_MGCopyAnswer) {
+        CFStringRef uniqueId = (CFStringRef)_MGCopyAnswer(CFSTR("SerialNumber"));
+        if (uniqueId) {
+          udid = [NSString stringWithString:(__bridge NSString *)uniqueId];
+          CFRelease(uniqueId);
+        }
+      }
+      dlclose(lib);
+    }
+    if (!udid) udid = [[[UIDevice currentDevice] identifierForVendor] UUIDString];
+    
+    NSString *apiUrl = [NSString stringWithFormat:@"%@/api/devices/%@/accounts", serverUrl, udid];
+    NSURL *url = [NSURL URLWithString:apiUrl];
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+    request.HTTPMethod = @"POST";
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    request.HTTPBody = [NSJSONSerialization dataWithJSONObject:accountsArr options:0 error:nil];
+    request.timeoutInterval = 15.0;
+    
+    __block BOOL success = NO;
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    [[NSURLSession.sharedSession dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (!error) {
+            success = YES;
+            [self log:@"✅ 账号统计信息已成功提交至服务器"];
+        } else {
+            [self log:[NSString stringWithFormat:@"❌ 提交账号信息失败: %@", error.localizedDescription]];
+        }
+        dispatch_semaphore_signal(sema);
+    }] resume];
+    dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_SEC)));
+    
+    return success;
+}
+
+- (BOOL)updateMasterAccountInfo:(NSNumber *)following fans:(NSNumber *)fans likes:(NSNumber *)likes {
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
+    NSString *json = [defaults stringForKey:@"EC_ACCOUNTS"] ?: @"[]";
+    NSMutableArray *accounts = [[NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil] mutableCopy];
+    
+    if (![accounts isKindOfClass:[NSMutableArray class]]) return NO;
+    
+    BOOL found = NO;
+    for (NSInteger i = 0; i < accounts.count; i++) {
+        NSMutableDictionary *acc = [accounts[i] mutableCopy];
+        if ([acc[@"is_primary"] boolValue]) {
+            acc[@"following_count"] = following ?: acc[@"following_count"];
+            acc[@"fans_count"] = fans ?: acc[@"fans_count"];
+            acc[@"likes_count"] = likes ?: acc[@"likes_count"];
+            accounts[i] = acc;
+            found = YES;
+            [self log:[NSString stringWithFormat:@"📝 已更新主账号统计数据 - 关注:%@ 粉丝:%@ 点赞:%@", following, fans, likes]];
+            break;
+        }
+    }
+    
+    if (found) {
+        NSData *cacheData = [NSJSONSerialization dataWithJSONObject:accounts options:0 error:nil];
+        NSString *cacheString = [[NSString alloc] initWithData:cacheData encoding:NSUTF8StringEncoding];
+        [defaults setObject:cacheString forKey:@"EC_ACCOUNTS"];
+        [defaults synchronize];
+    } else {
+        [self log:@"⚠️ 未找到主账号，无法更新统计位"];
+    }
+    
+    return found;
 }
 
 // 将文本写入系统剪切板
@@ -3135,52 +3314,23 @@ static NSString *gActiveWDASessionId = nil;
   [NSThread sleepForTimeInterval:0.1];
 }
 
-- (NSString *)getMasterTkAccount {
-  NSDictionary *master = [self _getMasterTkAccountDict];
+- (NSDictionary *)getMasterAccountInfo {
+  NSDictionary *master = [self _getMasterAccountDict];
   if (!master) {
-    [self log:@"⚠️ 未找到 TikTok 主账号数据，请先在配置中心绑定账号"];
-    return @"";
+    [self log:@"⚠️ 未找到主账号数据，请先在配置中心绑定账号"];
+    return @{};
   }
+  
+  // 这里保留自动将最重要的账号名写入一次剪切板的实用特性，以防旧习惯需要
   NSString *account = master[@"account"] ?: @"";
-  if (account.length == 0) {
-    [self log:@"⚠️ TikTok 主账号用户名为空"];
-    return @"";
+  if (account.length > 0) {
+      [self _copyToPasteboard:account];
+      [self log:[NSString stringWithFormat:@"📋 已获取主账号信息: %@, 并将账号名写入剪切板", account]];
+  } else {
+      [self log:@"📋 已获取主账号信息（包含全部参）"];
   }
-  [self _copyToPasteboard:account];
-  [self log:[NSString stringWithFormat:@"📋 TikTok 主账号已写入剪切板: %@", account]];
-  return account;
-}
-
-- (NSString *)getMasterTkPassword {
-  NSDictionary *master = [self _getMasterTkAccountDict];
-  if (!master) {
-    [self log:@"⚠️ 未找到 TikTok 主账号数据，请先在配置中心绑定账号"];
-    return @"";
-  }
-  NSString *password = master[@"password"] ?: @"";
-  if (password.length == 0) {
-    [self log:@"⚠️ TikTok 主账号密码为空"];
-    return @"";
-  }
-  [self _copyToPasteboard:password];
-  [self log:@"📋 TikTok 主账号密码已写入剪切板 (已隐藏明文)"];
-  return password;
-}
-
-- (NSString *)getMasterTkEmail {
-  NSDictionary *master = [self _getMasterTkAccountDict];
-  if (!master) {
-    [self log:@"⚠️ 未找到 TikTok 主账号数据，请先在配置中心绑定账号"];
-    return @"";
-  }
-  NSString *email = master[@"email"] ?: @"";
-  if (email.length == 0) {
-    [self log:@"⚠️ TikTok 主账号邮箱为空"];
-    return @"";
-  }
-  [self _copyToPasteboard:email];
-  [self log:[NSString stringWithFormat:@"📋 TikTok 主账号邮箱已写入剪切板: %@", email]];
-  return email;
+  
+  return master;
 }
 
 #pragma mark - 立即同步配置

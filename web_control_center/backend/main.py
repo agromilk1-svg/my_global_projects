@@ -234,7 +234,6 @@ class DeviceConfigRequest(BaseModel):
     exec_time: str = ""
     apple_account: str = ""
     apple_password: str = ""
-    tiktok_accounts: str = "[]"
     wifi_ssid: str = ""
     wifi_password: str = ""
     watchdog_wda: int = 1
@@ -250,7 +249,7 @@ async def set_device_config(udid: str, req: DeviceConfigRequest, user: dict = De
     success = database.set_device_config(
         udid, req.config_ip, req.config_vpn,
         req.device_no, req.country, req.group_name, req.exec_time,
-        req.apple_account, req.apple_password, req.tiktok_accounts,
+        req.apple_account, req.apple_password, 
         req.wifi_ssid, req.wifi_password, req.watchdog_wda
     )
     if success:
@@ -514,11 +513,13 @@ async def delete_existing_comment(comment_id: int, user: dict = Depends(require_
     database.delete_comment(comment_id)
     return {"status": "ok"}
 
-# ==================== TikTok 账号管理接口 ====================
+# ==================== 泛用账号管理接口 ====================
 
-class UpdateTikTokAccountReq(BaseModel):
+class UpdateAccountReq(BaseModel):
     country: str = ""
+    following_count: int = 0
     fans_count: int = 0
+    likes_count: int = 0
     is_for_sale: int = 0
     is_window_opened: int = 0
     add_time: str = ""
@@ -527,22 +528,34 @@ class UpdateTikTokAccountReq(BaseModel):
     is_primary: int = 0
     password: str = ""
     email: str = ""
+    email_password: str = ""
+    app_id: str = "com.zhiliaoapp.musically"
+    account_type: str = "TK"
+    is_following: int = 0
+    is_farming: int = 0
 
-class CreateTikTokAccountReq(BaseModel):
+class CreateAccountReq(BaseModel):
     device_udid: str
     account: str
     password: str = ""
     email: str = ""
+    email_password: str = ""
+    app_id: str = "com.zhiliaoapp.musically"
+    account_type: str = "TK"
     country: str = ""
+    following_count: int = 0
     fans_count: int = 0
+    likes_count: int = 0
     is_for_sale: int = 0
     is_window_opened: int = 0
+    is_following: int = 0
+    is_farming: int = 0
 
-@app.get("/api/tiktok_accounts")
-async def get_tiktok_accounts_list(request: Request):
-    """获取目前独立管理的全部 TikTok 账号列表及它们的设备关联号"""
-    all_accounts = database.get_all_tiktok_accounts()
-    # [权限过滤] 普通管理员仅看到自己所属设备的 TikTok 账号
+@app.get("/api/accounts")
+async def get_accounts_list(request: Request):
+    """获取目前独立管理的全部账号列表及它们的设备关联号"""
+    all_accounts = database.get_all_accounts()
+    # [权限过滤] 普通管理员仅看到自己所属设备的账号
     try:
         user = get_current_user(request)
         if user and user.get('role') != 'super_admin':
@@ -552,68 +565,94 @@ async def get_tiktok_accounts_list(request: Request):
         pass
     return {"status": "ok", "data": all_accounts}
 
-@app.put("/api/tiktok_accounts/{account_id}")
-async def update_tiktok_account_info(account_id: int, req: UpdateTikTokAccountReq, user: dict = Depends(get_current_user)):
-    success = database.update_tiktok_account(
+@app.put("/api/accounts/{account_id}")
+async def update_account_info(account_id: int, req: UpdateAccountReq, user: dict = Depends(get_current_user)):
+    success = database.update_account(
         account_id, 
         req.country, 
+        req.following_count, 
         req.fans_count, 
+        req.likes_count, 
         req.is_for_sale, 
         req.is_window_opened, 
         req.add_time, 
         req.window_open_time, 
         req.sale_time,
         req.password,
-        req.email
+        req.email,
+        req.email_password,
+        req.app_id,
+        req.account_type,
+        req.is_following,
+        req.is_farming
     )
     if success:
         return {"status": "ok"}
-    raise HTTPException(status_code=400, detail="Failed to update tiktok account or not found")
+    raise HTTPException(status_code=400, detail="Failed to update account or not found")
 
-@app.post("/api/tiktok_accounts")
-async def create_tiktok_account_api(req: CreateTikTokAccountReq, user: dict = Depends(get_current_user)):
-    """手动创建一条 TikTok 账号记录"""
-    new_id = database.create_tiktok_account(
+@app.post("/api/accounts")
+async def create_account_api(req: CreateAccountReq, user: dict = Depends(get_current_user)):
+    """手动创建一条账号记录"""
+    new_id = database.create_account(
         req.device_udid,
         req.account,
         req.password,
         req.email,
+        req.email_password,
+        req.app_id,
+        req.account_type,
         req.country,
+        req.following_count,
         req.fans_count,
+        req.likes_count,
         req.is_for_sale,
-        req.is_window_opened
+        req.is_window_opened,
+        req.is_following,
+        req.is_farming
     )
     if new_id:
         return {"status": "ok", "id": new_id}
-    raise HTTPException(status_code=500, detail="Failed to create tiktok account")
+    raise HTTPException(status_code=500, detail="Failed to create account")
 
-@app.put("/api/tiktok_accounts/{account_id}/primary")
-async def set_tiktok_account_primary_api(account_id: int, user: dict = Depends(get_current_user)):
-    """设置某 TikTok 账号为该设备的主号"""
-    success = database.set_tiktok_account_primary(account_id)
+@app.put("/api/accounts/{account_id}/primary")
+async def set_account_primary_api(account_id: int, user: dict = Depends(get_current_user)):
+    """设置某账号为该设备主号"""
+    success = database.set_account_primary(account_id)
     if success:
         return {"status": "ok"}
     raise HTTPException(status_code=400, detail="Failed to set primary account")
 
-@app.delete("/api/tiktok_accounts/{account_id}")
-async def delete_tiktok_account_api(account_id: int, user: dict = Depends(get_current_user)):
-    """注意：由于前端手机列表依然存活，单独在此处删除只会影响本表的展示"""
-    success = database.delete_tiktok_account(account_id)
+@app.delete("/api/accounts/{account_id}")
+async def delete_account_api(account_id: int, user: dict = Depends(get_current_user)):
+    success = database.delete_account(account_id)
     if success:
         return {"status": "ok"}
-    raise HTTPException(status_code=400, detail="Failed to delete tiktok account")
+    raise HTTPException(status_code=400, detail="Failed to delete account")
 
-class BatchImportTikTokReq(BaseModel):
-    """批量导入 TikTok 账号请求体"""
-    accounts: list  # [{ device_no, account, password, email }, ...]
+@app.get("/api/devices/{udid}/accounts")
+async def get_device_accounts_api(udid: str):
+    """供 iOS 客户端直接查询本机绑定的所有账号"""
+    device_accounts = database.get_accounts_by_device(udid)
+    return {"status": "ok", "data": device_accounts}
 
-@app.post("/api/tiktok_accounts/batch_import")
-async def batch_import_tiktok_accounts_api(req: BatchImportTikTokReq, user: dict = Depends(get_current_user)):
-    """批量导入 TikTok 账号，格式: 设备编号|账号|密码|邮箱
+@app.post("/api/devices/{udid}/accounts")
+async def post_device_accounts_api(udid: str, payload: list):
+    """供 iOS 客户端同步本机账号统计信息（关注、粉丝、点赞）到服务器"""
+    # 期望 payload 为账号字典数组: [{account: "xxx", fans_count: 100, ...}, ...]
+    result = database.batch_update_account_metrics(udid, payload)
+    return {"status": "ok", "data": result}
+
+class BatchImportAccountReq(BaseModel):
+    """批量导入账号请求体"""
+    accounts: list  # [{ device_no, account, password, email, email_password, app_id, account_type }, ...]
+
+@app.post("/api/accounts/batch_import")
+async def batch_import_accounts_api(req: BatchImportAccountReq, user: dict = Depends(get_current_user)):
+    """批量导入账号，格式: 设备编号|账号|密码|邮箱|邮箱密码|APP ID|账号类型
     已存在的账号会被覆盖，所有导入账号自动设为主号"""
     if not req.accounts:
         raise HTTPException(status_code=400, detail="账号列表不能为空")
-    result = database.batch_import_tiktok_accounts(req.accounts)
+    result = database.batch_import_accounts(req.accounts)
     return {"status": "ok", "data": result}
 
 
@@ -2204,6 +2243,7 @@ def handle_heartbeat(req: HeartbeatRequest):
     
     # 获取此手机全局的配置档案，计算 MD5 若不一致，要求客户端下发更新
     device_conf = database.get_device_config(req.udid)
+    
     raw_hash_str = "|".join([
         str(device_conf.get("config_ip", "")),
         str(device_conf.get("config_vpn", "")),
@@ -2212,7 +2252,6 @@ def handle_heartbeat(req: HeartbeatRequest):
         str(device_conf.get("exec_time", "")),
         str(device_conf.get("apple_account", "")),
         str(device_conf.get("apple_password", "")),
-        str(device_conf.get("tiktok_accounts", "[]")),
         str(device_conf.get("watchdog_wda", 1))
     ])
     server_checksum = hashlib.md5(raw_hash_str.encode('utf-8')).hexdigest()
@@ -2227,7 +2266,6 @@ def handle_heartbeat(req: HeartbeatRequest):
             "exec_time": device_conf.get("exec_time", ""),
             "apple_account": device_conf.get("apple_account", ""),
             "apple_password": device_conf.get("apple_password", ""),
-            "tiktok_accounts": device_conf.get("tiktok_accounts", "[]"),
             "watchdog_wda": device_conf.get("watchdog_wda", 1),
             "config_checksum": server_checksum
         }

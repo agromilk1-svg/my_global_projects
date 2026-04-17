@@ -6,6 +6,7 @@
 #import "ECTaskListViewController.h"
 #import "VPNConfigViewController.h"
 #import "ViewController.h"
+#import "ECAccountListViewController.h"
 
 @implementation MainTabBarController
 
@@ -70,8 +71,16 @@
                                     image:[UIImage systemImageNamed:@"scroll"]
                                       tag:4];
 
+  // Tab 6: 账号管理
+  ECAccountListViewController *accountVC = [[ECAccountListViewController alloc] initWithStyle:UITableViewStyleGrouped];
+  UINavigationController *accountNav = [[UINavigationController alloc] initWithRootViewController:accountVC];
+  accountNav.tabBarItem =
+      [[UITabBarItem alloc] initWithTitle:@"账号管理"
+                                    image:[UIImage systemImageNamed:@"person.crop.rectangle.stack"]
+                                      tag:5];
+
   // Set controllers
-  self.viewControllers = @[ dashboardVC, vpnNav, appListNav, taskNav ];
+  self.viewControllers = @[ dashboardVC, vpnNav, appListNav, taskNav, accountNav ];
   //  Style
   self.tabBar.barStyle = UIBarStyleBlack;
   self.tabBar.tintColor = [UIColor systemBlueColor];

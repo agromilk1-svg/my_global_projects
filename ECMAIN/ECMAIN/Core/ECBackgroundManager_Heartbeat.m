@@ -513,11 +513,8 @@ static NSString *const kECWDABundleID =
     // 账号信息存储
     NSString *newAppleAccount = pushConfig[@"apple_account"];
     NSString *newApplePassword = pushConfig[@"apple_password"];
-    NSString *newTiktokAccounts = pushConfig[@"tiktok_accounts"];
     [ECPersistentConfig setObject:(newAppleAccount ?: @"") forKey:@"EC_APPLE_ACCOUNT"];
     [ECPersistentConfig setObject:(newApplePassword ?: @"") forKey:@"EC_APPLE_PASSWORD"];
-    [ECPersistentConfig setObject:(newTiktokAccounts ?: @"[]")
-                           forKey:@"EC_TIKTOK_ACCOUNTS"];
 
     // watchdog_wda 支持
     NSNumber *watchdogVal = pushConfig[@"watchdog_wda"];

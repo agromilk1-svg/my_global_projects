@@ -100,7 +100,7 @@ const restoreSession = async () => {
 
 // 动态标签页列表（根据角色过滤）
 const visibleTabs = computed(() => {
-  const all = ['📱 手机列表', '⚡️ 控制台', '📋 任务列表', '⚡ 一次性任务', '⚙️ 配置中心', '💬 评论管理', '🎵 TikTok 账号', '📁 文件管理', '🏷️ 标签', '📝 简介', '👤 用户管理'];
+const all = ['📱 手机列表', '⚡️ 控制台', '📋 任务列表', '⚡ 一次性任务', '⚙️ 配置中心', '💬 评论管理', '👥 账号管理', '📁 文件管理', '🏷️ 标签', '📝 简介', '👤 用户管理'];
   if (isSuperAdmin.value) return all;
   // 普通管理员隐藏配置中心、评论管理、用户管理
   return all.filter(t => !['⚙️ 配置中心', '💬 评论管理', '👤 用户管理'].includes(t));
@@ -1031,69 +1031,158 @@ const slaveQuality = ref('low'); // 从机画质：low(模糊) / medium(普通) 
 // const batchLatencies = ref<Record<string, string>>({}); // { [udid]: latency_ms }
 // const batchCanvasRefs = ref<Record<string, HTMLCanvasElement>>({}); // { [udid]: canvas_el }
 
-// ==================== TikTok 账号管理 ====================
-const tiktokAccounts = ref<any[]>([]);
-const isTkModalOpen = ref(false);
-const editingTkAccount = ref<any>({});
-const tkFilterForm = ref({
+// ==================== 账号管理 ====================
+const accounts = ref<any[]>([]);
+const isAccountModalOpen = ref(false);
+const isAddSingleAccountModalOpen = ref(false);
+const singleAccountForm = ref({
+  device_udid: '',
+  account: '',
+  password: '',
+  email: '',
+  email_password: '',
+  app_id: 'com.zhiliaoapp.musically',
+  account_type: 'TK',
+  country: '',
+});
+const addSingleAccountDeviceFilter = ref({ admin: '', country: '' });
+const addSingleAccountFilteredDevices = computed(() => {
+  return devices.value.filter(d => {
+    if (addSingleAccountDeviceFilter.value.admin && d.admin_username !== addSingleAccountDeviceFilter.value.admin) return false;
+    if (addSingleAccountDeviceFilter.value.country && d.country !== addSingleAccountDeviceFilter.value.country) return false;
+    return true;
+  });
+});
+const editingAccount = ref<any>({});
+const accountFilterForm = ref({
   country: '',
   device_no: '',
   account: '',
   fans_min: null as number | null,
   fans_max: null as number | null,
+  likes_min: null as number | null,
+  likes_max: null as number | null,
+  following_min: null as number | null,
+  following_max: null as number | null,
+  add_time_start: '',
+  add_time_end: '',
   is_window_opened: 'all' as 'all' | 'yes' | 'no',
   is_for_sale: 'all' as 'all' | 'yes' | 'no',
+  is_following: 'all' as 'all' | 'yes' | 'no',
+  is_farming: 'all' as 'all' | 'yes' | 'no',
+  account_type: 'all' as 'all' | 'TK' | 'FB' | 'IG',
   admin: ''
 });
 
-const fetchTiktokAccounts = async () => {
+const devicePrimaryAccountMap = computed(() => {
+  const map = new Map();
+  for (const acc of accounts.value) {
+    if (acc.is_primary) {
+      if (!map.has(acc.device_udid)) {
+        map.set(acc.device_udid, acc);
+      }
+    }
+  }
+  return map;
+});
+
+const fetchAccounts = async () => {
   try {
-    const res = await authFetch(`${apiBase}/tiktok_accounts`);
+    const res = await authFetch(`${apiBase}/accounts`);
     const data = await res.json();
-    if (data.status === 'ok') tiktokAccounts.value = data.data;
+    if (data.status === 'ok') accounts.value = data.data;
   } catch (err) {
-    console.error('拉取 TikTok 账号列表失败', err);
+    console.error('拉取账号列表失败', err);
   }
 };
 
-const openTkModal = (tk: any) => {
-  editingTkAccount.value = { ...tk };
-  isTkModalOpen.value = true;
+const openAccountModal = (tk: any) => {
+  editingAccount.value = { ...tk };
+  isAccountModalOpen.value = true;
 };
 
-const openAddTkModal = (grp: any) => {
-  editingTkAccount.value = {
+const openAddSingleAccountModal = () => {
+  singleAccountForm.value = {
+    device_udid: '',
+    account: '',
+    password: '',
+    email: '',
+    email_password: '',
+    app_id: 'com.zhiliaoapp.musically',
+    account_type: 'TK',
+    country: '',
+  };
+  addSingleAccountDeviceFilter.value = { admin: '', country: '' };
+  isAddSingleAccountModalOpen.value = true;
+};
+
+const saveSingleAccount = async () => {
+  if (!singleAccountForm.value.device_udid || !singleAccountForm.value.account) {
+    alert("请选择设备并填写账号");
+    return;
+  }
+  try {
+    const res = await authFetch(`${apiBase}/accounts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(singleAccountForm.value)
+    });
+    const result = await res.json();
+    if (result.status === 'ok') {
+      isAddSingleAccountModalOpen.value = false;
+      fetchAccounts();
+    } else {
+      alert("添加失败: " + result.detail);
+    }
+  } catch (err) {
+    console.error("添加单个账号失败", err);
+    alert("网络请求失败");
+  }
+};
+
+const openAddAccountModal = (grp: any) => {
+  editingAccount.value = {
     device_udid: grp.device_udid,
     device_no: grp.device_no,
     account: '',
     password: '',
     email: '',
+    email_password: '',
+    app_id: 'com.zhiliaoapp.musically',
+    account_type: 'TK',
     country: grp.country || '',
+    following_count: 0,
     fans_count: 0,
+    likes_count: 0,
     is_window_opened: 0,
     is_for_sale: 0
   };
-  isTkModalOpen.value = true;
+  isAccountModalOpen.value = true;
 };
 
-const saveTkAccount = async () => {
+const saveAccount = async () => {
   try {
     const body = {
-      country: editingTkAccount.value.device_country || '',
-      fans_count: parseInt(editingTkAccount.value.fans_count) || 0,
-      is_window_opened: editingTkAccount.value.is_window_opened ? 1 : 0,
-      is_for_sale: editingTkAccount.value.is_for_sale ? 1 : 0,
-      add_time: editingTkAccount.value.add_time || '',
-      window_open_time: editingTkAccount.value.window_open_time || '',
-      sale_time: editingTkAccount.value.sale_time || '',
-      password: editingTkAccount.value.password || '',
-      email: editingTkAccount.value.email || ''
+      country: editingAccount.value.device_country || '',
+      following_count: parseInt(editingAccount.value.following_count) || 0,
+      fans_count: parseInt(editingAccount.value.fans_count) || 0,
+      likes_count: parseInt(editingAccount.value.likes_count) || 0,
+      is_window_opened: editingAccount.value.is_window_opened ? 1 : 0,
+      is_for_sale: editingAccount.value.is_for_sale ? 1 : 0,
+      add_time: editingAccount.value.add_time || '',
+      window_open_time: editingAccount.value.window_open_time || '',
+      sale_time: editingAccount.value.sale_time || '',
+      password: editingAccount.value.password || '',
+      email: editingAccount.value.email || '',
+      email_password: editingAccount.value.email_password || '',
+      app_id: editingAccount.value.app_id || 'com.zhiliaoapp.musically',
+      account_type: editingAccount.value.account_type || 'TK'
     };
     
     let res;
-    if (editingTkAccount.value.id) {
+    if (editingAccount.value.id) {
       // 存在 ID -> 更新
-      res = await authFetch(`${apiBase}/tiktok_accounts/${editingTkAccount.value.id}`, {
+      res = await authFetch(`${apiBase}/accounts/${editingAccount.value.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
@@ -1102,12 +1191,15 @@ const saveTkAccount = async () => {
       // 不存在 ID -> 新建
       const postBody = {
         ...body,
-        device_udid: editingTkAccount.value.device_udid,
-        account: editingTkAccount.value.account,
-        password: editingTkAccount.value.password || '',
-        email: editingTkAccount.value.email || ''
+        device_udid: editingAccount.value.device_udid,
+        account: editingAccount.value.account,
+        password: editingAccount.value.password || '',
+        email: editingAccount.value.email || '',
+        email_password: editingAccount.value.email_password || '',
+        app_id: editingAccount.value.app_id || 'com.zhiliaoapp.musically',
+        account_type: editingAccount.value.account_type || 'TK'
       };
-      res = await authFetch(`${apiBase}/tiktok_accounts`, {
+      res = await authFetch(`${apiBase}/accounts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(postBody)
@@ -1115,52 +1207,52 @@ const saveTkAccount = async () => {
     }
 
     if (res.ok) {
-      isTkModalOpen.value = false;
-      fetchTiktokAccounts();
+      isAccountModalOpen.value = false;
+      fetchAccounts();
     }
   } catch (err) {
-    console.error('保存 TikTok 账号失败', err);
+    console.error('保存账号失败', err);
   }
 };
 
-const deleteTkAccount = async (id: number) => {
-  if (!confirm('确定要删除该 TikTok 账号记录吗？')) return;
+const deleteAccount = async (id: number) => {
+  if (!confirm('确定要删除该账号记录吗？')) return;
   try {
-    const res = await authFetch(`${apiBase}/tiktok_accounts/${id}`, { method: 'DELETE' });
-    if (res.ok) fetchTiktokAccounts();
+    const res = await authFetch(`${apiBase}/accounts/${id}`, { method: 'DELETE' });
+    if (res.ok) fetchAccounts();
   } catch (err) {
-    console.error('删除 TikTok 账号失败', err);
+    console.error('删除账号失败', err);
   }
 };
 
-const setPrimaryTkAccount = async (tk: any) => {
+const setPrimaryAccount = async (tk: any) => {
   if (tk.is_primary) return; 
   try {
     // 乐观更新：立即在本地置顶该账号
     const udid = tk.device_udid;
-    tiktokAccounts.value.forEach(a => {
-        if (a.device_udid === udid) {
+    accounts.value.forEach(a => {
+        if (a.device_udid === udid && a.account_type === tk.account_type) {
             a.is_primary = (a.id === tk.id ? 1 : 0);
         }
     });
 
-    const res = await authFetch(`${apiBase}/tiktok_accounts/${tk.id}/primary`, {
+    const res = await authFetch(`${apiBase}/accounts/${tk.id}/primary`, {
       method: 'PUT'
     });
     if (res.ok) {
-      fetchTiktokAccounts();
+      fetchAccounts();
     }
   } catch (err) {
     console.error('设置主号失败', err);
-    fetchTiktokAccounts();
+    fetchAccounts();
   }
 };
 
-// ========== 批量导入 TikTok 账号 ==========
+// ========== 批量导入账号 ==========
 const showBatchImportModal = ref(false);
 const batchImportText = ref('');
 const batchImportStep = ref<'input' | 'preview'>('input');
-const batchImportParsed = ref<{device_no: string, account: string, password: string, email: string}[]>([]);
+const batchImportParsed = ref<{device_no: string, account: string, password: string, email: string, email_password: string, app_id: string, account_type: string}[]>([]);
 const batchImportResult = ref<{success: number, failed: number, errors: string[]} | null>(null);
 const batchImporting = ref(false);
 
@@ -1175,7 +1267,7 @@ const openBatchImportModal = () => {
 
 const parseBatchImport = () => {
   const lines = batchImportText.value.split('\n').filter(l => l.trim());
-  const parsed: {device_no: string, account: string, password: string, email: string}[] = [];
+  const parsed: {device_no: string, account: string, password: string, email: string, email_password: string, app_id: string, account_type: string}[] = [];
   for (const line of lines) {
     const parts = line.trim().split('|');
     if (parts.length >= 2) {
@@ -1183,7 +1275,10 @@ const parseBatchImport = () => {
         device_no: (parts[0] || '').trim(),
         account: (parts[1] || '').trim(),
         password: (parts[2] || '').trim(),
-        email: (parts[3] || '').trim()
+        email: (parts[3] || '').trim(),
+        email_password: (parts[4] || '').trim(),
+        app_id: (parts[5] || 'com.zhiliaoapp.musically').trim(),
+        account_type: (parts[6] || 'TK').trim()
       });
     }
   }
@@ -1191,7 +1286,7 @@ const parseBatchImport = () => {
   if (parsed.length > 0) {
     batchImportStep.value = 'preview';
   } else {
-    alert('未解析到有效数据，请检查格式是否为: 设备编号|账号|密码|邮箱');
+    alert('未解析到有效数据，请检查格式是否为: 编号|账号|密码|邮箱|邮箱密码|APP_ID|账号类型');
   }
 };
 
@@ -1199,7 +1294,7 @@ const confirmBatchImport = async () => {
   if (batchImporting.value) return;
   batchImporting.value = true;
   try {
-    const res = await authFetch(`${apiBase}/tiktok_accounts/batch_import`, {
+    const res = await authFetch(`${apiBase}/accounts/batch_import`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ accounts: batchImportParsed.value })
@@ -1207,7 +1302,7 @@ const confirmBatchImport = async () => {
     const data = await res.json();
     if (data.status === 'ok') {
       batchImportResult.value = data.data;
-      fetchTiktokAccounts();
+      fetchAccounts();
     } else {
       alert('导入失败: ' + (data.detail || '未知错误'));
     }
@@ -1220,7 +1315,7 @@ const confirmBatchImport = async () => {
 };
 
 // 按设备分组且带多维度筛选的计算属性
-const groupedTiktokAccounts = computed(() => {
+const groupedAccounts = computed(() => {
   // 1. 预处理数据：将设备所属管理员及国家信息注入到账号数据中，方便后续统一过滤
   const deviceAdminMap = new Map<string, string>();
   const deviceCountryMap = new Map<string, string>();
@@ -1230,34 +1325,63 @@ const groupedTiktokAccounts = computed(() => {
   }
 
   // 2. 执行多维度过滤
-  const filtered = tiktokAccounts.value.filter(tk => {
+  const filtered = accounts.value.filter(tk => {
     // 归属国家筛选 (基于关联设备的归属国家)
     const deviceCountry = deviceCountryMap.get(tk.device_udid) || '';
-    if (tkFilterForm.value.country && deviceCountry !== tkFilterForm.value.country) return false;
+    if (accountFilterForm.value.country && deviceCountry !== accountFilterForm.value.country) return false;
     
     // 设备名筛选 (不区分大小写包含)
-    if (tkFilterForm.value.device_no && !tk.device_no?.toLowerCase().includes(tkFilterForm.value.device_no.toLowerCase())) return false;
+    if (accountFilterForm.value.device_no && !tk.device_no?.toLowerCase().includes(accountFilterForm.value.device_no.toLowerCase())) return false;
     
     // 账号名筛选 (不区分大小写包含)
-    if (tkFilterForm.value.account && !tk.account?.toLowerCase().includes(tkFilterForm.value.account.toLowerCase())) return false;
+    if (accountFilterForm.value.account && !tk.account?.toLowerCase().includes(accountFilterForm.value.account.toLowerCase())) return false;
     
+    // 账号类型筛选
+    if (accountFilterForm.value.account_type && accountFilterForm.value.account_type !== 'all' && tk.account_type !== accountFilterForm.value.account_type) return false;
+
     // 粉丝区间筛选
     const fans = tk.fans_count || 0;
-    if (tkFilterForm.value.fans_min !== null && fans < tkFilterForm.value.fans_min) return false;
-    if (tkFilterForm.value.fans_max !== null && fans > tkFilterForm.value.fans_max) return false;
+    if (accountFilterForm.value.fans_min !== null && fans < accountFilterForm.value.fans_min) return false;
+    if (accountFilterForm.value.fans_max !== null && fans > accountFilterForm.value.fans_max) return false;
+
+    // 点赞数筛选
+    const likes = tk.likes_count || 0;
+    if (accountFilterForm.value.likes_min !== null && likes < accountFilterForm.value.likes_min) return false;
+    if (accountFilterForm.value.likes_max !== null && likes > accountFilterForm.value.likes_max) return false;
+
+    // 关注数筛选
+    const following = tk.following_count || 0;
+    if (accountFilterForm.value.following_min !== null && following < accountFilterForm.value.following_min) return false;
+    if (accountFilterForm.value.following_max !== null && following > accountFilterForm.value.following_max) return false;
+    
+    // 添加时间筛选
+    if (accountFilterForm.value.add_time_start) {
+      if (!tk.add_time || tk.add_time < accountFilterForm.value.add_time_start + ' 00:00:00') return false;
+    }
+    if (accountFilterForm.value.add_time_end) {
+      if (!tk.add_time || tk.add_time > accountFilterForm.value.add_time_end + ' 23:59:59') return false;
+    }
     
     // 是否开窗
-    if (tkFilterForm.value.is_window_opened === 'yes' && !tk.is_window_opened) return false;
-    if (tkFilterForm.value.is_window_opened === 'no' && tk.is_window_opened) return false;
-    
-    // 是否出售
-    if (tkFilterForm.value.is_for_sale === 'yes' && !tk.is_for_sale) return false;
-    if (tkFilterForm.value.is_for_sale === 'no' && tk.is_for_sale) return false;
-    
-    // 所属管理员
-    const owner = deviceAdminMap.get(tk.device_udid) || '';
-    if (tkFilterForm.value.admin && owner !== tkFilterForm.value.admin) return false;
-    
+    if (accountFilterForm.value.is_window_opened === 'yes' && !tk.is_window_opened) return false;
+    if (accountFilterForm.value.is_window_opened === 'no' && tk.is_window_opened) return false;
+
+    // 是否售出
+    if (accountFilterForm.value.is_for_sale === 'yes' && !tk.is_for_sale) return false;
+    if (accountFilterForm.value.is_for_sale === 'no' && tk.is_for_sale) return false;
+
+    // 是否关注
+    if (accountFilterForm.value.is_following === 'yes' && !tk.is_following) return false;
+    if (accountFilterForm.value.is_following === 'no' && tk.is_following) return false;
+
+    // 是否养号
+    if (accountFilterForm.value.is_farming === 'yes' && !tk.is_farming) return false;
+    if (accountFilterForm.value.is_farming === 'no' && tk.is_farming) return false;
+
+    // 管理员筛选
+    const dAdmin = deviceAdminMap.get(tk.device_udid) || '';
+    if (accountFilterForm.value.admin && dAdmin !== accountFilterForm.value.admin) return false;
+
     return true;
   });
 
@@ -1745,7 +1869,7 @@ const configForm = ref({
    exec_time: '',
    apple_account: '',
    apple_password: '',
-   tiktok_accounts: [] as {email: string, account: string, password: string}[],
+
    wifi_ssid: '',
    wifi_password: '',
    watchdog_wda: false
@@ -1754,7 +1878,7 @@ const configForm = ref({
 const openConfigModal = async (dev: any) => {
     configEditingUdid.value = dev.udid;
     configEditingAdmin.value = dev.admin_username || '';
-    configForm.value = { ip: '', subnet: '', gateway: '', dns: '', vpnJson: '', device_no: '', country: '', group_name: '', exec_time: '', apple_account: '', apple_password: '', tiktok_accounts: [], wifi_ssid: '', wifi_password: '', watchdog_wda: false };
+    configForm.value = { ip: '', subnet: '', gateway: '', dns: '', vpnJson: '', device_no: '', country: '', group_name: '', exec_time: '', apple_account: '', apple_password: '', wifi_ssid: '', wifi_password: '', watchdog_wda: false };
     showConfigModal.value = true;
     try {
         const res = await authFetch(`${apiBase}/devices/${dev.udid}/config`);
@@ -1783,12 +1907,7 @@ const openConfigModal = async (dev: any) => {
             configForm.value.exec_time = data.config.exec_time || '';
             configForm.value.apple_account = data.config.apple_account || '';
             configForm.value.apple_password = data.config.apple_password || '';
-            try {
-                const tkArr = JSON.parse(data.config.tiktok_accounts || '[]');
-                configForm.value.tiktok_accounts = Array.isArray(tkArr) ? tkArr : [];
-            } catch(e) {
-                configForm.value.tiktok_accounts = [];
-            }
+
             configForm.value.wifi_ssid = data.config.wifi_ssid || '';
             configForm.value.wifi_password = data.config.wifi_password || '';
             configForm.value.watchdog_wda = !!data.config.watchdog_wda;
@@ -1834,7 +1953,6 @@ const saveConfig = async () => {
                 exec_time: configForm.value.exec_time,
                 apple_account: configForm.value.apple_account,
                 apple_password: configForm.value.apple_password,
-                tiktok_accounts: JSON.stringify(configForm.value.tiktok_accounts),
                 wifi_ssid: configForm.value.wifi_ssid,
                 wifi_password: configForm.value.wifi_password,
                 watchdog_wda: configForm.value.watchdog_wda
@@ -3463,10 +3581,10 @@ const actionLibrary = [
   { label: '💬 随机获取评论', type: 'RANDOM_COMMENT', desc: '从服务器随机获取一条指定语言的评论', usage: '自动评论互动', params: '调用方式: wda.getRandomComment(language)\n\n输入参数:\n  language: 语言代号 (字符串，必填)\n\n支持的语言代号:\n  en-US   英语(美国)\n  en-GB   英语(英国)\n  zh-CN   中文\n  es-MX   西班牙语(墨西哥)\n  es-ES   西班牙语(西班牙)\n  pt-BR   葡萄牙语(巴西)\n  de-DE   德语\n  fr-FR   法语\n  ja-JP   日语\n  ko-KR   韩语\n  en-SG   英语(新加坡)\n  ar-SA   阿拉伯语\n  it-IT   意大利语\n  ru-RU   俄语\n\n返回值: 字符串\n  评论内容，如果库存为空则返回空字符串', example: '// 获取英文评论并输入\nvar text = wda.getRandomComment("en-US");\nif(text && text.length > 0) {\n  wda.input(text);\n  wda.log("已输入评论: " + text);\n} else {\n  wda.log("没有获取到评论");\n}' },
   { label: '🏷️ 随机获取标签', type: 'RANDOM_TAG', desc: '从服务器获取一个随机标签', usage: '自动添加话题标签', params: '调用方式: wda.getRandomTag()\n\n输入参数: 无\n  自动使用设备配置的国家和分组\n\n返回值: 字符串\n  标签内容', example: 'var tag = wda.getRandomTag();\nif(tag) wda.input(tag);' },
   { label: '📝 随机获取简介', type: 'RANDOM_BIO', desc: '从服务器获取一段随机个人简介', usage: '自动填写个人资料', params: '调用方式: wda.getRandomBio()\n\n输入参数: 无\n  自动使用设备配置的国家和分组\n\n返回值: 字符串\n  简介内容', example: 'var bio = wda.getRandomBio();\nif(bio) wda.input(bio);' },
-  { label: '👤 获取 Tiktok 主账号名', type: 'TK_MASTER_ACCOUNT', desc: '获取这台设备预设的主账号名', usage: '自动登录', params: '调用方式: wda.getMasterTkAccount()\n\n输入参数: 无\n返回值: 字符串，账号名', example: '// 获取账号并输入\nvar account = wda.getMasterTkAccount();\nwda.input(account);' },
-  { label: '🔑 获取 Tiktok 主密码', type: 'TK_MASTER_PASSWORD', desc: '获取这台设备预设的登录密码', usage: '自动填写密码', params: '调用方式: wda.getMasterTkPassword()\n\n输入参数: 无\n返回值: 字符串，密码', example: 'wda.input(wda.getMasterTkPassword());' },
-  { label: '📧 获取 Tiktok 绑定邮箱', type: 'TK_MASTER_EMAIL', desc: '获取这台设备预设的绑定邮箱', usage: '邮箱验证', params: '调用方式: wda.getMasterTkEmail()\n\n输入参数: 无\n返回值: 字符串，邮箱', example: 'wda.input(wda.getMasterTkEmail());' },
-
+  { label: '👤 获取主账号信息', type: 'MASTER_ACCOUNT_INFO', desc: '获取这台设备本地预设的完整主账号信息字典', usage: '自动登录拉取账密及业务信息', params: '调用方式: wda.getMasterAccountInfo()\n\n输入参数: 无\n\n返回值: 返回主账号信息的 Dictionary 字典对象 (如果没有主号则返回空字典)\n  可读取的属性:\n    .account - 账号文本 (若有自动复制到系统剪切板)\n    .password - 密码文本\n    .email - 绑定的邮箱\n    .email_password - 邮箱存取密码\n    .app_id - App的 Bundle ID\n    .following_count - 关注数\n    .fans_count - 粉丝数\n    .likes_count - 获赞数\n    .add_time - 账号添加时间\n    .update_time - 账号最后更新时间\n    .is_window_opened - 是否开窗 (1/0)\n    .is_following - 是否关注态 (1/0)\n    .is_farming - 是否养号态 (1/0)\n    .country - 账号所属国家\n    .account_type - 账号类型 (TK/FB/IG)', example: 'var master = wda.getMasterAccountInfo();\nif(master.account) {\n  wda.log("正在准备登录主账号: " + master.account);\n  wda.input(master.account);\n  wda.sleep(1);\n  wda.log("输入密码中...");\n  wda.input(master.password);\n  wda.log("账号添加时间: " + (master.add_time || "未知"));\n}' },
+  { label: '🗂️ 下载账号列表', type: 'GET_ACCOUNTS', desc: '从服务器拉取指定平台的全量账号列表并写入设备本地', usage: '多开换号自动化养号的准备工作', params: '调用方式: wda.getAccounts(appType)\n\n输入参数:\n  appType: 字符串类型，"TK", "FB", "IG" 或 "all" (不区分大写)\n\n返回值: 账号字典对象组成的 Array (数组)。可由 length 遍历。\n\n注意事项: 这个动作会自动与本地原有的数据进行智能缝合，【不会覆盖】本地脚本自己跑出来的关注、粉丝、点赞等活体信息。返回的字典参数和 getMasterAccountInfo 一致（包含 .add_time, .update_time 等）。', example: 'var accs = wda.getAccounts("TK");\nfor(var i=0; i<accs.length; i++) {\n  var acc = accs[i];\n  wda.log("找到账号名: " + acc.account + " 储备粉丝: " + (acc.fans_count||0));\n  wda.log("上次更新时间: " + (acc.update_time || "---"));\n}' },
+  { label: '📤 提交账号列表', type: 'POST_ACCOUNTS', desc: '将当前手机本地记录的业务统计指标及运行位同步回服务器', usage: '脚本循环结束后上报最新粉丝数据', params: '调用方式: wda.postAccounts()\n\n输入参数: 无\n\n返回值: 布尔值，是否成功发送至服务器', example: '// 往往在脚本将要把App杀除退出的末尾调用\nvar postOk = wda.postAccounts();\nif(postOk) {\n  wda.log("今日数据云端同步完成！");\n} else {\n  wda.log("警告: 云端同步通信异常。");\n}' },
+  { label: '📊 更新账号统计', type: 'UPDATE_ACCOUNT_INFO', desc: '更新当前主账号的最新关注数、粉丝数、点赞数(存入本地缓区)', usage: '抓取资料页UI数字进行本地统计校准', params: '调用方式: wda.updateMasterAccountInfo(following, fans, likes)\n\n输入参数:\n  following: 当前主账号实际关注数 (数字类型)\n  fans: 当前主账号实际粉丝数 (数字类型)\n  likes: 当前主账号实际获赞数 (数字类型)\n\n返回值: 布尔值 (是否成功找到主账号发生更新并存入)', example: '// 假设您使用 wda.getElementText 等动作提取到UI上的 120 粉丝 等数值\n// 简单用正则剔除万分号等特殊字符转成纯数字\nvar actualFollowing = 120;\nvar actualFans = 5000;\nvar actualLikes = 32014;\n// 通知系统重写本地这个主号的数据\nwda.updateMasterAccountInfo(actualFollowing, actualFans, actualLikes);\n// 需要将更新上传反馈回服务器控制大屏，可紧接这句\nwda.postAccounts();' },
   // ═══════════ 流程控制 ═══════════
   { label: '🛑 报错并停止', type: 'REPORT_ERROR', desc: '主动报告错误并立即终止脚本执行', usage: '遇到无法继续的情况时中断', params: '调用方式: wda.reportErrorAndAbort(message)\n\n输入参数:\n  message: 错误原因说明 (字符串，必填)\n\n返回值: 无\n  脚本会立即停止执行\n  错误信息会发送到控制中心', example: '// 找不到关键按钮时停止\nif(!wda.tapText("下一步")) {\n  wda.reportErrorAndAbort("找不到下一步按钮!");\n  // 这行不会执行\n}' },
   { label: '🔄 重新拉取设置', type: 'SYNC_CONFIG', desc: '让设备立刻向服务器获取最新设置', usage: '设置修改后立即生效', params: '调用方式: wda.syncConfig()\n\n输入参数: 无\n返回值: 布尔值', example: 'wda.syncConfig();\nwda.log("设置已更新");' },
@@ -4730,6 +4848,7 @@ const handleImageUpload = (event: Event) => {
                  <th @click="sortBy('vpn_active')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">VPN <span v-if="sortKey==='vpn_active'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th @click="sortBy('vpn_node')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">VPN 节点 <span v-if="sortKey==='vpn_node'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th @click="sortBy('admin_username')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">管理员 <span v-if="sortKey==='admin_username'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
+                 <th class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-default">当期主账号</th>
                  <th class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-default">任务状态</th>
                  <th @click="sortBy('country')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">国家 <span v-if="sortKey==='country'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
                  <th @click="sortBy('exec_time')" class="p-3 text-gray-400 font-bold uppercase tracking-wider text-center cursor-pointer hover:bg-gray-800 transition-colors">启动时间 <span v-if="sortKey==='exec_time'" class="ml-1">{{sortOrder===1?'⬆':'⬇'}}</span></th>
@@ -4837,6 +4956,15 @@ const handleImageUpload = (event: Event) => {
                        </template>
                        <span v-if="!dev.task_report && !dev.task_status" class="text-gray-600 text-[10px]">无任务</span>
                     </div>
+                 </td>
+                 <td class="p-3 text-center">
+                    <template v-if="devicePrimaryAccountMap.get(dev.udid)">
+                      <div class="flex flex-col items-center">
+                         <span class="text-[10px] font-bold text-amber-400">⭐ {{ devicePrimaryAccountMap.get(dev.udid).account }}</span>
+                         <span v-if="devicePrimaryAccountMap.get(dev.udid).is_farming" class="text-[9px] bg-green-900/40 text-green-400 border border-green-800 px-1 py-0.5 rounded shadow whitespace-nowrap mt-1">🌱 养号中</span>
+                      </div>
+                    </template>
+                    <span v-else class="text-gray-600 text-[10px]">--</span>
                  </td>
                  <td class="p-3 text-center">
                     <span v-if="dev.country" class="bg-blue-900/30 text-blue-400 border border-blue-800 px-2 py-0.5 rounded text-[10px] font-bold">{{ dev.country }}</span>
@@ -5780,21 +5908,6 @@ const handleImageUpload = (event: Event) => {
                   </div>
               </div>
 
-              <!-- TikTok 多账号管理 -->
-              <div>
-                  <div class="flex justify-between items-center mb-3">
-                      <label class="block text-gray-400 text-xs font-bold uppercase tracking-wider">🎵 TikTok 账号列表</label>
-                      <button @click="configForm.tiktok_accounts.push({email:'', account:'', password:''})" class="text-xs bg-indigo-700 hover:bg-indigo-600 text-white px-3 py-1 rounded transition-colors">+ 添加账号</button>
-                  </div>
-                  <div v-if="configForm.tiktok_accounts.length === 0" class="text-center text-gray-600 text-xs py-4 border border-dashed border-gray-800 rounded">暂无 TikTok 账号，点击上方按钮添加</div>
-                  <div v-for="(tk, idx) in configForm.tiktok_accounts" :key="idx" class="flex gap-3 items-center mb-2">
-                      <span class="text-gray-600 text-xs w-6 text-right">#{{ idx + 1 }}</span>
-                      <input v-model="tk.account" type="text" placeholder="TikTok 账号" class="flex-1 bg-gray-950 border border-gray-800 text-gray-300 text-sm px-3 py-2 rounded focus:outline-none focus:border-indigo-500 font-mono transition-colors">
-                      <input v-model="tk.password" type="text" placeholder="密码(明文)" class="flex-1 bg-gray-950 border border-gray-800 text-gray-300 text-sm px-3 py-2 rounded focus:outline-none focus:border-indigo-500 font-mono transition-colors">
-                      <input v-model="tk.email" type="text" placeholder="TikTok 邮箱 (选填)" class="flex-1 bg-gray-950 border border-gray-800 text-gray-300 text-sm px-3 py-2 rounded focus:outline-none focus:border-indigo-500 font-mono transition-colors">
-                      <button @click="configForm.tiktok_accounts.splice(idx, 1)" class="text-red-500 hover:text-red-400 text-xs px-2 py-1 border border-red-800 rounded transition-colors">✕</button>
-                  </div>
-              </div>
 
               <!-- 静态 IP 组 -->
               <div>
@@ -5896,75 +6009,120 @@ const handleImageUpload = (event: Event) => {
     </div>
 
     <!-- =============== TikTok 账号管理 ================= -->
-        <!-- =============== 🎵 TikTok 账号 =============== -->
-        <div v-if="activeTab === '🎵 TikTok 账号'" class="flex flex-1 flex-col overflow-auto p-6 bg-[#0B0F19]">
+        <!-- =============== 👥 账号管理 =============== -->
+        <div v-if="activeTab === '👥 账号管理'" class="flex flex-1 flex-col overflow-auto p-6 bg-[#0B0F19]">
         <div class="max-w-7xl mx-auto w-full space-y-4">
             <div class="flex flex-col md:flex-row justify-between items-center gap-4 bg-gray-900 p-4 rounded-lg border border-gray-800 shadow-md">
                 <div>
-                    <h2 class="text-xl font-bold text-gray-100 tracking-wide flex items-center gap-2">🎵 TikTok 账号资产管理</h2>
-                    <p class="text-xs text-gray-500 mt-1">当前系统中共有 {{ tiktokAccounts.length }} 个已录入的 TikTok 账号。</p>
+                    <h2 class="text-xl font-bold text-gray-100 tracking-wide flex items-center gap-2">👥 全平台账号资产管理</h2>
+                    <p class="text-xs text-gray-500 mt-1">当前系统中共有 {{ accounts.length }} 个已录入的账号。</p>
                 </div>
                 <div class="flex items-center gap-2">
+                    <button @click="openAddSingleAccountModal" class="bg-indigo-600 hover:bg-indigo-500 border border-indigo-500 text-white px-4 py-2 rounded shadow transition-colors text-xs font-bold flex items-center gap-2">
+                        ➕ 添加账号
+                    </button>
                     <button @click="openBatchImportModal" class="bg-indigo-800 hover:bg-indigo-700 border border-indigo-600 text-white px-4 py-2 rounded shadow transition-colors text-xs font-bold flex items-center gap-2">
                         📥 批量导入
                     </button>
-                    <button @click="fetchTiktokAccounts" class="bg-teal-800 hover:bg-teal-700 border border-teal-600 text-white px-4 py-2 rounded shadow transition-colors text-xs font-bold flex items-center gap-2">
+                    <button @click="fetchAccounts" class="bg-teal-800 hover:bg-teal-700 border border-teal-600 text-white px-4 py-2 rounded shadow transition-colors text-xs font-bold flex items-center gap-2">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
                         刷新数据
                     </button>
                 </div>
             </div>
 
-            <!-- TikTok 资产筛选工具栏 -->
+            <!-- 资产筛选工具栏 -->
             <div class="bg-gray-900/80 p-5 rounded-lg border border-gray-800 shadow-lg flex flex-wrap items-end gap-x-6 gap-y-4">
                 <div class="flex flex-col gap-1.5">
+                    <label class="text-[10px] font-bold text-gray-500 uppercase tracking-widest">💼 平台分类</label>
+                    <select v-model="accountFilterForm.account_type" class="bg-black border border-gray-700 text-gray-200 text-xs px-3 py-2 rounded focus:outline-none focus:border-indigo-500 w-32 transition-all cursor-pointer">
+                        <option value="all">全平台</option>
+                        <option value="TK">TikTok</option>
+                        <option value="FB">Facebook</option>
+                        <option value="IG">Instagram</option>
+                    </select>
+                </div>
+                <div class="flex flex-col gap-1.5">
                     <label class="text-[10px] font-bold text-gray-500 uppercase tracking-widest">🌍 归属国家</label>
-                    <select v-model="tkFilterForm.country" class="bg-black border border-gray-700 text-gray-200 text-xs px-3 py-2 rounded focus:outline-none focus:border-indigo-500 w-32 transition-all cursor-pointer">
+                    <select v-model="accountFilterForm.country" class="bg-black border border-gray-700 text-gray-200 text-xs px-3 py-2 rounded focus:outline-none focus:border-indigo-500 w-32 transition-all cursor-pointer">
                         <option value="">全部国家</option>
                         <option v-for="c in countries" :key="c.id" :value="c.name">{{ c.name }}</option>
                     </select>
                 </div>
                 <div class="flex flex-col gap-1.5">
                     <label class="text-[10px] font-bold text-gray-500 uppercase tracking-widest">📱 设备名称</label>
-                    <input v-model="tkFilterForm.device_no" type="text" placeholder="搜索设备..." class="bg-black border border-gray-700 text-gray-200 text-xs px-3 py-2 rounded focus:outline-none focus:border-indigo-500 w-32 transition-all font-mono">
+                    <input v-model="accountFilterForm.device_no" type="text" placeholder="搜索设备..." class="bg-black border border-gray-700 text-gray-200 text-xs px-3 py-2 rounded focus:outline-none focus:border-indigo-500 w-32 transition-all font-mono">
                 </div>
                 <div class="flex flex-col gap-1.5">
                     <label class="text-[10px] font-bold text-gray-500 uppercase tracking-widest">🆔 账号模糊搜索</label>
-                    <input v-model="tkFilterForm.account" type="text" placeholder="搜索账号..." class="bg-black border border-gray-700 text-gray-200 text-xs px-3 py-2 rounded focus:outline-none focus:border-indigo-500 w-40 transition-all font-mono">
+                    <input v-model="accountFilterForm.account" type="text" placeholder="搜索账号..." class="bg-black border border-gray-700 text-gray-200 text-xs px-3 py-2 rounded focus:outline-none focus:border-indigo-500 w-40 transition-all font-mono">
                 </div>
                 <div class="flex flex-col gap-1.5">
                     <label class="text-[10px] font-bold text-gray-500 uppercase tracking-widest">👥 粉丝区间</label>
                     <div class="flex items-center gap-2">
-                        <input v-model.number="tkFilterForm.fans_min" type="number" placeholder="MIN" class="bg-black border border-gray-700 text-gray-200 text-xs px-2 py-2 rounded focus:outline-none focus:border-indigo-500 w-20 transition-all font-mono">
+                        <input v-model.number="accountFilterForm.fans_min" type="number" placeholder="MIN" class="bg-black border border-gray-700 text-gray-200 text-xs px-2 py-2 rounded focus:outline-none focus:border-indigo-500 w-20 transition-all font-mono">
                         <span class="text-gray-600">-</span>
-                        <input v-model.number="tkFilterForm.fans_max" type="number" placeholder="MAX" class="bg-black border border-gray-700 text-gray-200 text-xs px-2 py-2 rounded focus:outline-none focus:border-indigo-500 w-20 transition-all font-mono">
+                        <input v-model.number="accountFilterForm.fans_max" type="number" placeholder="MAX" class="bg-black border border-gray-700 text-gray-200 text-xs px-2 py-2 rounded focus:outline-none focus:border-indigo-500 w-20 transition-all font-mono">
+                    </div>
+                </div>
+                <div class="flex flex-col gap-1.5">
+                    <label class="text-[10px] font-bold text-gray-500 uppercase tracking-widest">❤️ 点赞区间</label>
+                    <div class="flex items-center gap-2">
+                        <input v-model.number="accountFilterForm.likes_min" type="number" placeholder="MIN" class="bg-black border border-gray-700 text-gray-200 text-xs px-2 py-2 rounded focus:outline-none focus:border-indigo-500 w-20 transition-all font-mono">
+                        <span class="text-gray-600">-</span>
+                        <input v-model.number="accountFilterForm.likes_max" type="number" placeholder="MAX" class="bg-black border border-gray-700 text-gray-200 text-xs px-2 py-2 rounded focus:outline-none focus:border-indigo-500 w-20 transition-all font-mono">
+                    </div>
+                </div>
+                <div class="flex flex-col gap-1.5">
+                    <label class="text-[10px] font-bold text-gray-500 uppercase tracking-widest">➕ 关注区间</label>
+                    <div class="flex items-center gap-2">
+                        <input v-model.number="accountFilterForm.following_min" type="number" placeholder="MIN" class="bg-black border border-gray-700 text-gray-200 text-xs px-2 py-2 rounded focus:outline-none focus:border-indigo-500 w-20 transition-all font-mono">
+                        <span class="text-gray-600">-</span>
+                        <input v-model.number="accountFilterForm.following_max" type="number" placeholder="MAX" class="bg-black border border-gray-700 text-gray-200 text-xs px-2 py-2 rounded focus:outline-none focus:border-indigo-500 w-20 transition-all font-mono">
+                    </div>
+                </div>
+                <div class="flex flex-col gap-1.5">
+                    <label class="text-[10px] font-bold text-gray-500 uppercase tracking-widest">🕒 添加时间</label>
+                    <div class="flex items-center gap-2">
+                        <input v-model="accountFilterForm.add_time_start" type="date" class="bg-black border border-gray-700 text-gray-200 text-xs px-2 py-2 rounded focus:outline-none focus:border-indigo-500 w-32 transition-all font-mono cursor-text style='color-scheme: dark;'">
+                        <span class="text-gray-600">-</span>
+                        <input v-model="accountFilterForm.add_time_end" type="date" class="bg-black border border-gray-700 text-gray-200 text-xs px-2 py-2 rounded focus:outline-none focus:border-indigo-500 w-32 transition-all font-mono cursor-text style='color-scheme: dark;'">
                     </div>
                 </div>
                 <div class="flex flex-col gap-1.5">
                     <label class="text-[10px] font-bold text-gray-500 uppercase tracking-widest">🪟 开窗状态</label>
-                    <select v-model="tkFilterForm.is_window_opened" class="bg-black border border-gray-700 text-gray-200 text-xs px-3 py-2 rounded focus:outline-none focus:border-indigo-500 w-28 transition-all cursor-pointer">
-                        <option value="all">不限</option>
-                        <option value="yes">已开窗</option>
-                        <option value="no">未开窗</option>
+                    <select v-model="accountFilterForm.is_window_opened" class="bg-black border border-gray-700 text-gray-200 text-xs px-3 py-2 rounded focus:outline-none focus:border-indigo-500 w-24 transition-all cursor-pointer">
+                        <option value="all">全部</option>
+                        <option value="yes">是</option>
+                        <option value="no">否</option>
                     </select>
                 </div>
                 <div class="flex flex-col gap-1.5">
-                    <label class="text-[10px] font-bold text-gray-500 uppercase tracking-widest">🤝 出售状态</label>
-                    <select v-model="tkFilterForm.is_for_sale" class="bg-black border border-gray-700 text-gray-200 text-xs px-3 py-2 rounded focus:outline-none focus:border-indigo-500 w-28 transition-all cursor-pointer">
-                        <option value="all">不限</option>
-                        <option value="yes">已出售</option>
-                        <option value="no">未出售</option>
+                    <label class="text-[10px] font-bold text-gray-500 uppercase tracking-widest">👁️ 关注状态</label>
+                    <select v-model="accountFilterForm.is_following" class="bg-black border border-gray-700 text-gray-200 text-xs px-3 py-2 rounded focus:outline-none focus:border-indigo-500 w-24 transition-all cursor-pointer">
+                        <option value="all">全部</option>
+                        <option value="yes">是</option>
+                        <option value="no">否</option>
                     </select>
                 </div>
+                <div class="flex flex-col gap-1.5">
+                    <label class="text-[10px] font-bold text-gray-500 uppercase tracking-widest">🌱 养号状态</label>
+                    <select v-model="accountFilterForm.is_farming" class="bg-black border border-gray-700 text-gray-200 text-xs px-3 py-2 rounded focus:outline-none focus:border-indigo-500 w-24 transition-all cursor-pointer">
+                        <option value="all">全部</option>
+                        <option value="yes">是</option>
+                        <option value="no">否</option>
+                    </select>
+                </div>
+                <!-- 省略其他过滤，保持UI紧凑 -->
                 <div v-if="isSuperAdmin" class="flex flex-col gap-1.5">
                     <label class="text-[10px] font-bold text-gray-500 uppercase tracking-widest">👤 所属管理员</label>
-                    <select v-model="tkFilterForm.admin" class="bg-black border border-gray-700 text-gray-200 text-xs px-3 py-2 rounded focus:outline-none focus:border-indigo-500 w-32 transition-all cursor-pointer">
+                    <select v-model="accountFilterForm.admin" class="bg-black border border-gray-700 text-gray-200 text-xs px-3 py-2 rounded focus:outline-none focus:border-indigo-500 w-32 transition-all cursor-pointer">
                         <option value="">全部管理员</option>
                         <option v-for="adm in adminList" :key="adm.id" :value="adm.username">{{ adm.username }}</option>
                     </select>
                 </div>
                 <div class="flex items-center">
-                    <button @click="tkFilterForm = { country: '', device_no: '', account: '', fans_min: null, fans_max: null, is_window_opened: 'all', is_for_sale: 'all', admin: '' }" 
+                    <button @click="accountFilterForm = { country: '', device_no: '', account: '', fans_min: null, fans_max: null, is_window_opened: 'all', is_for_sale: 'all', is_following: 'all', is_farming: 'all', account_type: 'all', admin: '' }" 
                             class="bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white px-4 py-2 rounded text-[10px] font-bold border border-gray-700 transition-all uppercase tracking-widest">
                         🧹 重置筛选
                     </button>
@@ -5974,26 +6132,26 @@ const handleImageUpload = (event: Event) => {
             <div class="overflow-x-auto bg-gray-900/50 border border-gray-800 rounded-lg shadow-xl">
                 <table class="min-w-full text-sm">
                     <thead>
-                        <tr class="text-gray-400 text-xs uppercase border-b border-gray-800 bg-gray-900">
+                        <tr class="text-gray-400 text-[11px] uppercase border-b border-gray-800 bg-gray-900">
                             <th class="p-4 text-center">ID</th>
                             <th class="p-4 text-left">所属设备</th>
-                            <th class="p-4 text-left">TikTok 账号</th>
+                            <th class="p-4 text-center">类型</th>
+                            <th class="p-4 text-left">账号主体 (Account)</th>
                             <th class="p-4 text-center">国家</th>
-                            <th class="p-4 text-center">粉丝</th>
-                            <th class="p-4 text-center">开窗</th>
-                            <th class="p-4 text-center">出售</th>
-                            <th class="p-4 text-center">添加时间</th>
+                            <th class="p-4 text-center">数据指标</th>
+                            <th class="p-4 text-center">开窗/出售</th>
+                            <th class="p-4 text-center">添加/更新时间</th>
                             <th class="p-4 text-center">操作</th>
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-gray-800/60">
-                        <tr v-if="tiktokAccounts.length === 0">
+                        <tr v-if="accounts.length === 0">
                             <td colspan="9" class="p-12 text-center text-gray-500">
-                                <p class="text-lg font-bold">📭 暂无 TikTok 账号数据</p>
-                                <p class="text-xs mt-1">请先通过手机列表的设置面板添加 TikTok 账号。</p>
+                                <p class="text-lg font-bold">📭 暂无账号数据</p>
+                                <p class="text-xs mt-1">请先通过批量导入或设置面板添加账号。</p>
                             </td>
                         </tr>
-                        <template v-for="(grp, gIdx) in groupedTiktokAccounts" :key="grp.device_udid">
+                        <template v-for="(grp, gIdx) in groupedAccounts" :key="grp.device_udid">
                             <!-- 设备分组头 -->
                             <tr :class="gIdx > 0 ? 'border-t-2 border-teal-900/60' : ''">
                                 <td colspan="9" class="px-4 py-2.5 bg-gray-900/80">
@@ -6002,7 +6160,7 @@ const handleImageUpload = (event: Event) => {
                                         <span class="text-teal-300 font-bold text-sm tracking-wide">{{ grp.device_no }}</span>
                                         <span class="text-gray-600 text-[10px] font-mono">{{ grp.device_udid.substring(0,8) }}...</span>
                                         
-                                        <button @click="openAddTkModal(grp)" 
+                                        <button @click="openAddAccountModal(grp)" 
                                                 class="ml-auto px-2 py-1 bg-green-900/40 text-green-400 border border-green-800/60 hover:bg-green-600 hover:text-white rounded text-[10px] font-bold transition-all flex items-center shadow-sm">
                                             <span class="mr-1">➕</span> 添加账号
                                         </button>
@@ -6014,35 +6172,53 @@ const handleImageUpload = (event: Event) => {
                             <tr v-for="tk in grp.accounts" :key="tk.id" class="hover:bg-gray-700/30 transition-colors group">
                                 <td class="p-4 text-center font-mono text-gray-500">#{{ tk.id }}</td>
                                 <td class="p-4 text-green-400/50 text-xs font-mono pl-8">↳ {{ grp.device_no }}</td>
+                                <td class="p-4 text-center">
+                                    <span v-if="tk.account_type === 'TK'" class="bg-[#24F6C1]/10 text-[#24F6C1] border border-[#24F6C1]/30 px-1.5 py-0.5 rounded text-[10px] font-bold">TikTok</span>
+                                    <span v-else-if="tk.account_type === 'FB'" class="bg-blue-600/10 text-blue-400 border border-blue-600/30 px-1.5 py-0.5 rounded text-[10px] font-bold">Facebook</span>
+                                    <span v-else-if="tk.account_type === 'IG'" class="bg-pink-600/10 text-pink-400 border border-pink-600/30 px-1.5 py-0.5 rounded text-[10px] font-bold">Instagram</span>
+                                    <span v-else class="bg-gray-600/10 text-gray-400 border border-gray-600/30 px-1.5 py-0.5 rounded text-[10px] font-bold">{{tk.account_type}}</span>
+                                </td>
                                 <td class="p-4 text-gray-200 font-mono font-semibold">
-                                    <span v-if="tk.is_primary" class="text-amber-400 mr-1" title="设备主账号">⭐</span>
+                                    <span v-if="tk.is_primary" class="text-amber-400 mr-1" title="该类型主账号">⭐</span>
                                     {{ tk.account }}
                                 </td>
                                 <td class="p-4 text-center text-indigo-300 font-medium">{{ grp.country || '未标记' }}</td>
-                                <td class="p-4 text-center text-pink-400 font-bold font-mono">{{ tk.fans_count }} <span class="text-[10px] text-gray-500 ml-1">粉丝</span></td>
                                 <td class="p-4 text-center">
-                                    <span v-if="tk.is_window_opened" class="bg-indigo-900/30 text-indigo-400 border border-indigo-800 px-2 py-1 rounded text-xs font-bold shadow-sm">✅ 已满粉开窗</span>
-                                    <span v-else class="text-gray-500 text-xs italic">未开启</span>
+                                    <div class="flex flex-col text-[10px] font-mono leading-tight items-start inline-block">
+                                        <div class="text-gray-400">关: <span class="text-gray-200">{{ tk.following_count || 0 }}</span></div>
+                                        <div class="text-gray-400">粉: <span class="text-pink-400">{{ tk.fans_count || 0 }}</span></div>
+                                        <div class="text-gray-400">赞: <span class="text-indigo-400">{{ tk.likes_count || 0 }}</span></div>
+                                    </div>
                                 </td>
-                                <td class="p-4 text-center">
-                                    <span v-if="tk.is_for_sale" class="bg-red-900/30 text-red-400 border border-red-800 px-2 py-1 rounded text-xs font-bold shadow-sm">🤝 已成功出售</span>
-                                    <span v-else class="text-gray-500 text-xs italic">自持运营中</span>
+                                <td class="p-4 text-center flex flex-col gap-1 items-center justify-center h-full">
+                                    <div class="flex flex-col gap-1 items-center">
+                                        <div class="flex gap-1 flex-wrap justify-center">
+                                            <span v-if="tk.is_window_opened" class="bg-indigo-900/30 text-indigo-400 border border-indigo-800 px-1.5 py-0.5 rounded text-[10px] font-bold shadow-sm">✅ 已满粉开窗</span>
+                                            <span v-if="tk.is_for_sale" class="bg-red-900/30 text-red-400 border border-red-800 px-1.5 py-0.5 rounded text-[10px] font-bold shadow-sm">🤝 已成功出售</span>
+                                            <span v-if="tk.is_following" class="bg-blue-900/30 text-blue-400 border border-blue-800 px-1.5 py-0.5 rounded text-[10px] font-bold shadow-sm">👁️ 强制关注</span>
+                                            <span v-if="tk.is_farming" class="bg-green-900/30 text-green-400 border border-green-800 px-1.5 py-0.5 rounded text-[10px] font-bold shadow-sm">🌱 队列养号</span>
+                                        </div>
+                                        <span v-if="!tk.is_window_opened && !tk.is_for_sale && !tk.is_following && !tk.is_farming" class="text-gray-500 text-[10px] italic">新储备</span>
+                                    </div>
                                 </td>
                                 <td class="p-4 text-center text-gray-400 font-mono text-xs">
-                                    {{ tk.add_time || '---' }}
+                                    <div class="flex flex-col gap-1 items-center">
+                                        <span title="添加时间">🆕 {{ tk.add_time || '---' }}</span>
+                                        <span class="text-teal-500/80" title="上次更新时间">↻ {{ tk.update_time || '---' }}</span>
+                                    </div>
                                 </td>
                                 <td class="p-4 text-center">
                                     <div class="flex justify-center space-x-2">
-                                        <button @click="setPrimaryTkAccount(tk)" 
+                                        <button @click="setPrimaryAccount(tk)" 
                                                 title="设为主号"
                                                 :class="tk.is_primary ? 'bg-amber-900/40 text-amber-400 border-amber-800/60' : 'bg-gray-800/60 text-gray-400 border-gray-700 hover:bg-amber-700 hover:text-white'"
-                                                class="p-2 rounded border transition-all shadow-sm">
+                                                class="p-1.5 rounded border transition-all shadow-sm">
                                             <span class="text-xs">⭐</span>
                                         </button>
-                                        <button @click="openTkModal(tk)" class="p-2 bg-blue-900/30 text-blue-400 hover:bg-blue-600 hover:text-white rounded border border-blue-900/50 hover:border-blue-500 transition-all shadow-sm" title="深度编辑档案">
+                                        <button @click="openAccountModal(tk)" class="p-1.5 bg-blue-900/30 text-blue-400 hover:bg-blue-600 hover:text-white rounded border border-blue-900/50 hover:border-blue-500 transition-all shadow-sm" title="深度编辑档案">
                                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
                                         </button>
-                                        <button @click="deleteTkAccount(tk.id)" class="p-2 bg-red-900/30 text-red-400 hover:bg-red-600 hover:text-white rounded border border-red-900/50 hover:border-red-500 transition-all shadow-sm" title="清除该档案">
+                                        <button @click="deleteAccount(tk.id)" class="p-1.5 bg-red-900/30 text-red-400 hover:bg-red-600 hover:text-white rounded border border-red-900/50 hover:border-red-500 transition-all shadow-sm" title="清除该档案">
                                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
                                         </button>
                                     </div>
@@ -6055,113 +6231,251 @@ const handleImageUpload = (event: Event) => {
         </div>
 
     </div>
-        <!-- TikTok 编辑 Modal -->
-        <div v-if="isTkModalOpen" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
-            <div class="bg-gray-800 border border-gray-700 w-full max-w-2xl rounded-xl shadow-2xl flex flex-col max-h-[90vh]">
+        <!-- 账号编辑 Modal -->
+        <div v-if="isAccountModalOpen" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+            <div class="bg-gray-800 border border-gray-700 w-full max-w-3xl rounded-xl shadow-2xl flex flex-col max-h-[90vh]">
                 <div class="px-6 py-4 border-b border-gray-700 flex justify-between items-center bg-gray-800/80 rounded-t-xl">
                     <h3 class="text-lg font-bold text-gray-100 flex items-center gap-2">
-                       <span class="text-pink-500">🎵</span> 编辑 TikTok 账号深度档案
+                       <span class="text-indigo-400">💼</span> 编辑平台账号深度档案
                     </h3>
-                    <button @click="isTkModalOpen=false" class="text-gray-400 hover:text-white outline-none transition-colors">
+                    <button @click="isAccountModalOpen=false" class="text-gray-400 hover:text-white outline-none transition-colors">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                     </button>
                 </div>
                 <div class="p-6 flex-1 overflow-auto flex flex-col space-y-6">
                     <div class="flex items-center gap-4 bg-gray-900/50 p-4 rounded-lg border border-gray-700/50">
-                        <div class="flex-1" v-if="editingTkAccount">
+                        <div class="flex-1" v-if="editingAccount">
                             <div class="text-xs text-gray-500 font-bold uppercase mb-1">账号字符串</div>
-                            <input v-model="editingTkAccount.account" 
+                            <input v-model="editingAccount.account" 
                                    class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xl font-mono text-gray-200 font-bold outline-none focus:border-indigo-500 transition-all shadow-inner"
                                    placeholder="例如: user_888">
                         </div>
-                        <div class="flex-1 text-right" v-if="editingTkAccount">
+                        <div class="flex-1 text-right" v-if="editingAccount">
                             <div class="text-xs text-gray-500 font-bold uppercase mb-1">当前所在设备</div>
-                            <div class="text-xl font-mono text-green-400 font-bold">{{ editingTkAccount?.device_no || '未知' }}</div>
+                            <div class="text-xl font-mono text-green-400 font-bold">{{ editingAccount?.device_no || '未知' }}</div>
                         </div>
                     </div>
 
                     <div class="grid grid-cols-2 gap-6">
                         <div>
                             <label class="block text-sm font-medium text-gray-300 mb-1">归属地 (CountryCode)</label>
-                            <div class="w-full bg-gray-900/50 border border-gray-700/50 rounded-lg px-4 py-2 text-indigo-400 font-bold outline-none flex items-center gap-2">
-                                <span>📍</span> {{ editingTkAccount.device_country || '未设置' }}
+                            <div class="w-full bg-gray-900/50 border border-gray-700/50 rounded-lg px-4 py-2 text-indigo-400 font-bold outline-none flex items-center gap-2 h-[42px]">
+                                <span>📍</span> {{ editingAccount.device_country || '未设置' }}
                                 <span class="bg-indigo-500/10 text-indigo-500 text-[10px] px-1.5 py-0.5 rounded ml-auto">同步自设备</span>
                             </div>
                         </div>
                         <div>
-                            <label class="block text-sm font-medium text-gray-300 mb-1">实时粉丝数量</label>
-                            <input v-model="editingTkAccount.fans_count" type="number" min="0" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-gray-100 outline-none focus:border-indigo-500 transition-all font-mono" placeholder="粉丝量级">
+                            <label class="block text-sm font-medium text-gray-300 mb-1">账号类型 (Type)</label>
+                            <select v-model="editingAccount.account_type" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-gray-100 outline-none focus:border-indigo-500 transition-all cursor-pointer h-[42px]">
+                                <option value="TK">TikTok (TK)</option>
+                                <option value="FB">Facebook (FB)</option>
+                                <option value="IG">Instagram (IG)</option>
+                            </select>
                         </div>
                     </div>
 
                     <div class="grid grid-cols-2 gap-6">
                         <div>
                             <label class="block text-sm font-medium text-gray-300 mb-1">账号密码 (Password)</label>
-                            <input v-model="editingTkAccount.password" type="text" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-gray-100 outline-none focus:border-indigo-500 transition-all font-mono" placeholder="登录密码">
+                            <input v-model="editingAccount.password" type="text" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-gray-100 outline-none focus:border-indigo-500 transition-all font-mono" placeholder="登录密码">
                         </div>
                         <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-1">Bundle ID (AppID)</label>
+                            <input v-model="editingAccount.app_id" type="text" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-gray-100 outline-none focus:border-indigo-500 transition-all font-mono" placeholder="com.zhiliaoapp.musically">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-6">
+                        <div>
                             <label class="block text-sm font-medium text-gray-300 mb-1">关联邮箱 (Email)</label>
-                            <input v-model="editingTkAccount.email" type="text" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-gray-100 outline-none focus:border-indigo-500 transition-all font-mono" placeholder="绑定邮箱地址">
+                            <input v-model="editingAccount.email" type="text" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-gray-100 outline-none focus:border-indigo-500 transition-all font-mono" placeholder="绑定邮箱地址">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-1">邮箱密码 (Email Password)</label>
+                            <input v-model="editingAccount.email_password" type="text" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-gray-100 outline-none focus:border-indigo-500 transition-all font-mono" placeholder="邮箱访问密码">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-3 gap-4">
+                        <div>
+                            <label class="block text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1">关注数</label>
+                            <input v-model="editingAccount.following_count" type="number" min="0" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-gray-100 outline-none focus:border-indigo-500 transition-all font-mono" placeholder="0">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-bold text-pink-500 uppercase tracking-widest mb-1">粉丝数 (主要指标)</label>
+                            <input v-model="editingAccount.fans_count" type="number" min="0" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-pink-300 outline-none focus:border-pink-500 transition-all font-mono" placeholder="0">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1">获赞数</label>
+                            <input v-model="editingAccount.likes_count" type="number" min="0" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-gray-100 outline-none focus:border-indigo-500 transition-all font-mono" placeholder="0">
                         </div>
                     </div>
 
                     <div class="grid grid-cols-2 gap-6 items-center p-4 bg-gray-900/30 border border-gray-700 rounded-lg">
                        <label class="flex items-center gap-3 cursor-pointer group">
                           <div class="relative flex items-center">
-                             <input type="checkbox" v-model="editingTkAccount.is_window_opened" class="sr-only">
-                             <div class="w-10 h-6 bg-gray-700 rounded-full transition-colors" :class="editingTkAccount.is_window_opened ? 'bg-indigo-600' : ''"></div>
-                             <div class="absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition-transform" :class="editingTkAccount.is_window_opened ? 'translate-x-4' : ''"></div>
+                             <input type="checkbox" v-model="editingAccount.is_window_opened" class="sr-only">
+                             <div class="w-10 h-6 bg-gray-700 rounded-full transition-colors" :class="editingAccount.is_window_opened ? 'bg-indigo-600' : ''"></div>
+                             <div class="absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition-transform" :class="editingAccount.is_window_opened ? 'translate-x-4' : ''"></div>
                           </div>
                           <div class="flex flex-col">
-                             <span class="text-gray-200 font-bold text-sm">已达标并开通橱窗</span>
-                             <span class="text-[10px] text-gray-500">满粉后开通带货资格</span>
+                             <span class="text-gray-200 font-bold text-sm">已达标并开通业务权限</span>
+                             <span class="text-[10px] text-gray-500">满粉后开通带货资格或直播等</span>
                           </div>
                        </label>
                        
                        <label class="flex items-center gap-3 cursor-pointer group">
                           <div class="relative flex items-center">
-                             <input type="checkbox" v-model="editingTkAccount.is_for_sale" class="sr-only">
-                             <div class="w-10 h-6 bg-gray-700 rounded-full transition-colors" :class="editingTkAccount.is_for_sale ? 'bg-red-600' : ''"></div>
-                             <div class="absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition-transform" :class="editingTkAccount.is_for_sale ? 'translate-x-4' : ''"></div>
+                             <input type="checkbox" v-model="editingAccount.is_for_sale" class="sr-only">
+                             <div class="w-10 h-6 bg-gray-700 rounded-full transition-colors" :class="editingAccount.is_for_sale ? 'bg-red-600' : ''"></div>
+                             <div class="absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition-transform" :class="editingAccount.is_for_sale ? 'translate-x-4' : ''"></div>
                           </div>
                           <div class="flex flex-col">
                              <span class="text-gray-200 font-bold text-sm">已脱手或离线出售</span>
                              <span class="text-[10px] text-gray-500">不再占用自营运营资源</span>
                           </div>
                        </label>
+                       
+                       <label class="flex items-center gap-3 cursor-pointer group">
+                          <div class="relative flex items-center">
+                             <input type="checkbox" v-model="editingAccount.is_following" class="sr-only">
+                             <div class="w-10 h-6 bg-gray-700 rounded-full transition-colors" :class="editingAccount.is_following ? 'bg-blue-600' : ''"></div>
+                             <div class="absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition-transform" :class="editingAccount.is_following ? 'translate-x-4' : ''"></div>
+                          </div>
+                          <div class="flex flex-col">
+                             <span class="text-gray-200 font-bold text-sm">关注/强制互关</span>
+                             <span class="text-[10px] text-gray-500">标记用于涨粉循环互关网络</span>
+                          </div>
+                       </label>
+
+                       <label class="flex items-center gap-3 cursor-pointer group">
+                          <div class="relative flex items-center">
+                             <input type="checkbox" v-model="editingAccount.is_farming" class="sr-only">
+                             <div class="w-10 h-6 bg-gray-700 rounded-full transition-colors" :class="editingAccount.is_farming ? 'bg-green-600' : ''"></div>
+                             <div class="absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition-transform" :class="editingAccount.is_farming ? 'translate-x-4' : ''"></div>
+                          </div>
+                          <div class="flex flex-col">
+                             <span class="text-gray-200 font-bold text-sm">自动化养号</span>
+                             <span class="text-[10px] text-gray-500">分配至群控脚本队列执行自动刷视频</span>
+                          </div>
+                       </label>
                     </div>
                     
                     <div class="grid grid-cols-1 gap-4">
                         <div>
-                            <label class="block text-sm font-medium text-gray-300 mb-1">资产添加时间 (系统生成)</label>
-                            <input v-model="editingTkAccount.add_time" type="text" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-gray-400 outline-none focus:border-indigo-500 font-mono text-sm transition-all" placeholder="时间格式如: 2026-03-10 12:00:00">
+                            <label class="block text-sm font-medium text-gray-300 mb-1">系统时间</label>
+                            <div class="flex gap-4">
+                                <input v-model="editingAccount.add_time" type="text" class="w-1/2 bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-gray-400 outline-none focus:border-indigo-500 font-mono text-sm transition-all" placeholder="添加时间" disabled>
+                                <input v-model="editingAccount.update_time" type="text" class="w-1/2 bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-gray-400 outline-none focus:border-indigo-500 font-mono text-sm transition-all" placeholder="更新时间" disabled>
+                            </div>
                         </div>
                         <div class="grid grid-cols-2 gap-4">
                             <div>
-                                <label class="block text-xs font-medium text-gray-400 mb-1">开通橱窗时间戳</label>
-                                <input v-model="editingTkAccount.window_open_time" type="text" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-gray-300 outline-none focus:border-indigo-500 font-mono text-sm transition-all" placeholder="留空则不记录">
+                                <label class="block text-xs font-medium text-gray-400 mb-1">通过指标时间戳</label>
+                                <input v-model="editingAccount.window_open_time" type="text" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-gray-300 outline-none focus:border-indigo-500 font-mono text-sm transition-all" placeholder="留空则不记录">
                             </div>
                             <div>
                                 <label class="block text-xs font-medium text-gray-400 mb-1">账号出售交付时间</label>
-                                <input v-model="editingTkAccount.sale_time" type="text" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-gray-300 outline-none focus:border-indigo-500 font-mono text-sm transition-all" placeholder="留空则不记录">
+                                <input v-model="editingAccount.sale_time" type="text" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-gray-300 outline-none focus:border-indigo-500 font-mono text-sm transition-all" placeholder="留空则不记录">
                             </div>
                         </div>
                     </div>
 
                 </div>
                 <div class="px-6 py-4 border-t border-gray-700 flex justify-end space-x-3 bg-gray-800/80 rounded-b-xl">
-                    <button @click="isTkModalOpen=false" class="px-5 py-2.5 rounded-lg outline-none text-gray-300 hover:bg-gray-700 transition-colors font-medium border border-transparent">取消修改</button>
-                    <button @click="saveTkAccount" class="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 outline-none rounded-lg text-white font-medium shadow-[0_4px_10px_rgba(79,70,229,0.3)] transition-all">确认保存</button>
+                    <button @click="isAccountModalOpen=false" class="px-5 py-2.5 rounded-lg outline-none text-gray-300 hover:bg-gray-700 transition-colors font-medium border border-transparent">取消修改</button>
+                    <button @click="saveAccount" class="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 outline-none rounded-lg text-white font-medium shadow-[0_4px_10px_rgba(79,70,229,0.3)] transition-all">确认保存</button>
                 </div>
             </div>
         </div>
 
-    <!-- =============== 批量导入 TikTok 账号弹窗 =============== -->
-    <div v-if="showBatchImportModal" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+    <!-- =============== 单独添加账号弹窗 =============== -->
+    <div v-if="isAddSingleAccountModalOpen" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
         <div class="bg-gray-800 border border-gray-700 w-full max-w-3xl rounded-xl shadow-2xl flex flex-col max-h-[90vh]">
             <div class="px-6 py-4 border-b border-gray-700 flex justify-between items-center bg-gray-800/80 rounded-t-xl">
                 <h3 class="text-lg font-bold text-gray-100 flex items-center gap-2">
-                   <span class="text-indigo-400">📥</span> 批量导入 TikTok 账号
+                   <span class="text-indigo-400">➕</span> 添加单设备账号
+                </h3>
+                <button @click="isAddSingleAccountModalOpen=false" class="text-gray-400 hover:text-white outline-none transition-colors">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            
+            <div class="p-6 overflow-y-auto custom-scrollbar flex-1 space-y-6">
+                <!-- 设备选择过滤 -->
+                <div class="p-4 bg-gray-900 border border-gray-700 rounded-xl space-y-4">
+                    <div class="flex items-center gap-4 text-sm">
+                        <label class="text-gray-400 whitespace-nowrap">筛选设备:</label>
+                        <select v-model="addSingleAccountDeviceFilter.admin" class="bg-black border border-gray-700 text-gray-300 px-3 py-1.5 rounded focus:outline-none focus:border-indigo-500 flex-1">
+                            <option value="">所有管理员</option>
+                            <option v-for="admin in Array.from(new Set(devices.map(d=>d.admin_username).filter(Boolean)))" :key="admin" :value="admin">{{ admin }}</option>
+                        </select>
+                        <select v-model="addSingleAccountDeviceFilter.country" class="bg-black border border-gray-700 text-gray-300 px-3 py-1.5 rounded focus:outline-none focus:border-indigo-500 flex-1">
+                            <option value="">所有国家</option>
+                            <option v-for="country in Array.from(new Set(devices.map(d=>d.country).filter(Boolean)))" :key="country" :value="country">{{ country }}</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-300 mb-1">目标设备</label>
+                        <select v-model="singleAccountForm.device_udid" class="w-full bg-black border border-gray-700 rounded-lg px-4 py-2 text-white outline-none focus:border-indigo-500 cursor-pointer">
+                            <option value="" disabled>请选择要绑定的设备</option>
+                            <option v-for="d in addSingleAccountFilteredDevices" :key="d.udid" :value="d.udid">
+                                {{ d.device_no }} ({{ d.country || '未分类' }}) - 管理员: {{ d.admin_username || '无' }}
+                            </option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- 账号基础信息 -->
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-300 mb-1">平台类型</label>
+                        <select v-model="singleAccountForm.account_type" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-white outline-none focus:border-indigo-500 cursor-pointer transition-all">
+                            <option value="TK">TikTok</option>
+                            <option value="FB">Facebook</option>
+                            <option value="IG">Instagram</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-300 mb-1">Bundle ID (APP_ID)</label>
+                        <input v-model="singleAccountForm.app_id" type="text" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-white outline-none focus:border-indigo-500 font-mono text-sm transition-all">
+                    </div>
+                </div>
+
+                <!-- 登录信息 -->
+                <div class="grid grid-cols-2 gap-4 border-t border-gray-800 pt-4">
+                    <div class="col-span-2 sm:col-span-1">
+                        <label class="block text-sm font-medium text-gray-300 mb-1">账号 (登录名)</label>
+                        <input v-model="singleAccountForm.account" type="text" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-white outline-none focus:border-indigo-500 font-mono text-sm transition-all" placeholder="输入账号...">
+                    </div>
+                    <div class="col-span-2 sm:col-span-1">
+                        <label class="block text-sm font-medium text-gray-300 mb-1">平台密码</label>
+                        <input v-model="singleAccountForm.password" type="text" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-white outline-none focus:border-indigo-500 font-mono text-sm transition-all" placeholder="输入密码...">
+                    </div>
+                    <div class="col-span-2 sm:col-span-1">
+                        <label class="block text-sm font-medium text-gray-300 mb-1">辅助邮箱地址</label>
+                        <input v-model="singleAccountForm.email" type="text" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-white outline-none focus:border-indigo-500 font-mono text-sm transition-all" placeholder="如需邮箱验证登录">
+                    </div>
+                    <div class="col-span-2 sm:col-span-1">
+                        <label class="block text-sm font-medium text-gray-300 mb-1">辅助邮箱密码</label>
+                        <input v-model="singleAccountForm.email_password" type="text" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-white outline-none focus:border-indigo-500 font-mono text-sm transition-all" placeholder="提取验证码的邮箱密码">
+                    </div>
+                </div>
+            </div>
+
+            <div class="px-6 py-4 border-t border-gray-700 flex justify-end space-x-3 bg-gray-800/80 rounded-b-xl">
+                <button @click="isAddSingleAccountModalOpen=false" class="px-5 py-2.5 rounded-lg outline-none text-gray-300 hover:bg-gray-700 transition-colors font-medium border border-transparent">取消</button>
+                <button @click="saveSingleAccount" class="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 outline-none rounded-lg text-white font-medium shadow-[0_4px_10px_rgba(79,70,229,0.3)] transition-all">创建账号</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- =============== 批量导入账号弹窗 =============== -->
+    <div v-if="showBatchImportModal" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+        <div class="bg-gray-800 border border-gray-700 w-full max-w-4xl rounded-xl shadow-2xl flex flex-col max-h-[90vh]">
+            <div class="px-6 py-4 border-b border-gray-700 flex justify-between items-center bg-gray-800/80 rounded-t-xl">
+                <h3 class="text-lg font-bold text-gray-100 flex items-center gap-2">
+                   <span class="text-indigo-400">📥</span> 批量导入账号
                 </h3>
                 <button @click="showBatchImportModal=false" class="text-gray-400 hover:text-white outline-none transition-colors">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
@@ -6173,17 +6487,15 @@ const handleImageUpload = (event: Event) => {
                 <template v-if="batchImportStep === 'input'">
                     <div class="bg-gray-900/50 border border-gray-700 rounded-lg p-4">
                         <p class="text-sm text-gray-300 mb-2">📋 请粘贴账号信息，每行一条，格式如下：</p>
-                        <div class="bg-black/60 rounded px-3 py-2 text-xs text-indigo-300 font-mono mb-3 border border-gray-700">
-                            设备编号|账号|密码|邮箱
-                        </div>
+                        <div class="bg-black/60 rounded px-3 py-2 text-xs text-indigo-300 font-mono mb-3 border border-gray-700 whitespace-pre">编号 | 账号 | 密码 | 邮箱 | 邮箱密码 | APP_ID | 账号类型(TK/FB/IG)</div>
                         <p class="text-[10px] text-gray-500 mb-1">
                             ⚠️ 设备编号必须与系统中已有设备的编号完全匹配 · 账号如已存在将自动覆盖 · 导入的账号将全部设为主账号
                         </p>
                     </div>
                     <textarea v-model="batchImportText" rows="10"
-                        placeholder="M22|user001|pass123|user001@email.com
-M24|user002|pass456|user002@email.com
-M27|user003|pass789|"
+                        placeholder="M22|user001|pass123|user001@email.com|email_pass|com.zhiliaoapp.musically|TK
+M24|fb_user|fb_pass|user002@email.com||com.facebook.Facebook|FB
+M27|ig_user|ig_pass|||com.burbn.instagram|IG"
                         class="w-full bg-gray-950 border border-gray-700 text-green-300 text-xs p-4 rounded-lg focus:outline-none focus:border-indigo-500 font-mono custom-scrollbar transition-colors leading-relaxed resize-none"></textarea>
                 </template>
 
@@ -6200,9 +6512,9 @@ M27|user003|pass789|"
                                 <tr class="text-gray-400 uppercase bg-gray-900 border-b border-gray-700 sticky top-0">
                                     <th class="p-3 text-center">#</th>
                                     <th class="p-3 text-left">设备编号</th>
-                                    <th class="p-3 text-left">TikTok 账号</th>
-                                    <th class="p-3 text-left">密码</th>
-                                    <th class="p-3 text-left">邮箱</th>
+                                    <th class="p-3 text-left">账号</th>
+                                    <th class="p-3 text-left">类型</th>
+                                    <th class="p-3 text-left">APP ID</th>
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-gray-800/60">
@@ -6210,8 +6522,8 @@ M27|user003|pass789|"
                                     <td class="p-3 text-center text-gray-500 font-mono">{{ idx + 1 }}</td>
                                     <td class="p-3 text-teal-400 font-mono font-bold">{{ item.device_no }}</td>
                                     <td class="p-3 text-gray-200 font-mono">{{ item.account }}</td>
-                                    <td class="p-3 text-gray-400 font-mono">{{ item.password || '(空)' }}</td>
-                                    <td class="p-3 text-gray-400 font-mono">{{ item.email || '(空)' }}</td>
+                                    <td class="p-3 text-gray-400 font-mono">{{ item.account_type }}</td>
+                                    <td class="p-3 text-gray-400 font-mono">{{ item.app_id }}</td>
                                 </tr>
                             </tbody>
                         </table>

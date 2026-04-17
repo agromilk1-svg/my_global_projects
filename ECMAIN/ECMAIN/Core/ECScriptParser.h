@@ -95,10 +95,15 @@ JSExportAs(syncCommentsFromServer,
 JSExportAs(getRandomComment,
            -(NSString *)getRandomComment : (NSString *)language);
 
-// TikTok 主账号数据读取（从设备配置中获取主账号信息并写入剪切板）
-- (NSString *)getMasterTkAccount;
-- (NSString *)getMasterTkPassword;
-- (NSString *)getMasterTkEmail;
+// 主账号数据读取（从设备配置中获取主账号信息并写入剪切板）
+- (NSDictionary *)getMasterAccountInfo;
+
+// 泛用多账号管理环境支持
+JSExportAs(getAccounts,
+           -(NSArray *)getAccounts : (NSString *)appType);
+- (BOOL)postAccounts;
+JSExportAs(updateMasterAccountInfo,
+           -(BOOL)updateMasterAccountInfo:(NSNumber *)following fans:(NSNumber *)fans likes:(NSNumber *)likes);
 
 // 立即同步配置（触发心跳包立即向服务器获取最新配置）
 - (BOOL)syncConfig;

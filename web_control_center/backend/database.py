@@ -262,19 +262,31 @@ def init_db():
             )
         ''')
 
-        # 5. [TikTok 账号管理] 独立账号表
+        # 5. [账号管理] 通用独立账号表 (原 TikTok 账号升级版)
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='ec_tiktok_accounts'")
+        if cursor.fetchone():
+            cursor.execute("ALTER TABLE ec_tiktok_accounts RENAME TO ec_accounts")
+        
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS ec_tiktok_accounts (
+            CREATE TABLE IF NOT EXISTS ec_accounts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 device_udid TEXT NOT NULL,
                 account TEXT NOT NULL,
                 password TEXT DEFAULT '',
                 email TEXT DEFAULT '',
+                email_password TEXT DEFAULT '',
+                app_id TEXT DEFAULT 'com.zhiliaoapp.musically',
+                account_type TEXT DEFAULT 'TK',
                 country TEXT DEFAULT '',
+                following_count INTEGER DEFAULT 0,
                 fans_count INTEGER DEFAULT 0,
+                likes_count INTEGER DEFAULT 0,
                 is_for_sale INTEGER DEFAULT 0,
                 is_window_opened INTEGER DEFAULT 0,
+                is_following INTEGER DEFAULT 0,
+                is_farming INTEGER DEFAULT 0,
                 add_time TEXT DEFAULT '',
+                update_time TEXT DEFAULT '',
                 window_open_time TEXT DEFAULT '',
                 sale_time TEXT DEFAULT '',
                 is_primary INTEGER DEFAULT 0,
@@ -282,15 +294,67 @@ def init_db():
             )
         ''')
         try:
-            cursor.execute("ALTER TABLE ec_tiktok_accounts ADD COLUMN is_primary INTEGER DEFAULT 0;")
+            cursor.execute("ALTER TABLE ec_accounts ADD COLUMN is_primary INTEGER DEFAULT 0;")
         except Exception:
             pass
         try:
-            cursor.execute("ALTER TABLE ec_tiktok_accounts ADD COLUMN password TEXT DEFAULT '';")
+            cursor.execute("ALTER TABLE ec_accounts ADD COLUMN email_password TEXT DEFAULT '';")
         except Exception:
             pass
         try:
-            cursor.execute("ALTER TABLE ec_tiktok_accounts ADD COLUMN email TEXT DEFAULT '';")
+            cursor.execute("ALTER TABLE ec_accounts ADD COLUMN app_id TEXT DEFAULT 'com.zhiliaoapp.musically';")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE ec_accounts ADD COLUMN account_type TEXT DEFAULT 'TK';")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE ec_accounts ADD COLUMN following_count INTEGER DEFAULT 0;")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE ec_accounts ADD COLUMN likes_count INTEGER DEFAULT 0;")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE ec_accounts ADD COLUMN is_following INTEGER DEFAULT 0;")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE ec_accounts ADD COLUMN is_farming INTEGER DEFAULT 0;")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE ec_accounts ADD COLUMN update_time TEXT DEFAULT '';")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE ec_accounts ADD COLUMN password TEXT DEFAULT '';")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE ec_accounts ADD COLUMN email TEXT DEFAULT '';")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE ec_accounts ADD COLUMN email_password TEXT DEFAULT '';")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE ec_accounts ADD COLUMN app_id TEXT DEFAULT 'com.zhiliaoapp.musically';")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE ec_accounts ADD COLUMN account_type TEXT DEFAULT 'TK';")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE ec_accounts ADD COLUMN following_count INTEGER DEFAULT 0;")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE ec_accounts ADD COLUMN likes_count INTEGER DEFAULT 0;")
         except Exception:
             pass
 
@@ -662,30 +726,16 @@ def get_device_config(udid: str) -> dict:
                     "exec_time": row["exec_time"] or "",
                     "apple_account": row["apple_account"] or "",
                     "apple_password": row["apple_password"] or "",
-                    "tiktok_accounts": row["tiktok_accounts"] or "[]",
                     "wifi_ssid": row["wifi_ssid"] or "",
                     "wifi_password": row["wifi_password"] or "",
                     "watchdog_wda": row["watchdog_wda"] if row["watchdog_wda"] is not None else 1
                 }
-                
-                # [TikTok 数据补全逻辑] 从独立账号表拉取实时数据，覆盖 devices 表中的老旧 JSON
-                import json
-                cursor.execute('SELECT account, password, email FROM ec_tiktok_accounts WHERE device_udid = ? ORDER BY is_primary DESC, id ASC', (udid,))
-                rows = cursor.fetchall()
-                accounts = []
-                for r in rows:
-                    accounts.append({
-                        "account": r["account"],
-                        "password": r["password"] or "",
-                        "email": r["email"] or ""
-                    })
-                config_data["tiktok_accounts"] = json.dumps(accounts, ensure_ascii=False)
                 return config_data
     except Exception as e:
         logger.error(f"Error getting config for {udid}: {e}")
-    return {"config_ip": "", "config_vpn": "", "device_no": "", "country": "", "group_name": "", "exec_time": "", "apple_account": "", "apple_password": "", "tiktok_accounts": "[]", "wifi_ssid": "", "wifi_password": "", "watchdog_wda": 1}
+    return {"config_ip": "", "config_vpn": "", "device_no": "", "country": "", "group_name": "", "exec_time": "", "apple_account": "", "apple_password": "", "wifi_ssid": "", "wifi_password": "", "watchdog_wda": 1}
 
-def set_device_config(udid: str, config_ip: str, config_vpn: str, device_no: str = "", country: str = "", group_name: str = "", exec_time: str = "", apple_account: str = "", apple_password: str = "", tiktok_accounts: str = "[]", wifi_ssid: str = "", wifi_password: str = "", watchdog_wda: int = 1):
+def set_device_config(udid: str, config_ip: str, config_vpn: str, device_no: str = "", country: str = "", group_name: str = "", exec_time: str = "", apple_account: str = "", apple_password: str = "", wifi_ssid: str = "", wifi_password: str = "", watchdog_wda: int = 1):
     """保存设备的静态 IP、网络及高级设置配置"""
     try:
         with sqlite3.connect(DB_PATH, timeout=5) as conn:
@@ -694,58 +744,10 @@ def set_device_config(udid: str, config_ip: str, config_vpn: str, device_no: str
                 UPDATE ec_devices
                 SET config_ip = ?, config_vpn = ?,
                     device_no = ?, country = ?, group_name = ?, exec_time = ?,
-                    apple_account = ?, apple_password = ?, tiktok_accounts = ?,
+                    apple_account = ?, apple_password = ?,
                     wifi_ssid = ?, wifi_password = ?, watchdog_wda = ?
                 WHERE udid = ?
-            ''', (config_ip, config_vpn, device_no, country, group_name, exec_time, apple_account, apple_password, tiktok_accounts, wifi_ssid, wifi_password, watchdog_wda, udid))
-            
-            # [TikTok 联动逻辑] 自动解析传递过来的 JSON 格式的 tiktok_accounts
-            import json
-            import datetime
-            try:
-                accounts_list = json.loads(tiktok_accounts)
-            except Exception:
-                accounts_list = []
-                
-            if isinstance(accounts_list, list):
-                # 找出该设备现存的 TikTok 账号
-                cursor.execute('SELECT account FROM ec_tiktok_accounts WHERE device_udid = ?', (udid,))
-                existing_accounts = {row[0] for row in cursor.fetchall()}
-                
-                # 获取系统当前时间用于添加时间
-                now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                
-                # 遍历表单传递过来的账号列表，执行增量更新或插入
-                for act in accounts_list:
-                    if not isinstance(act, dict) or 'account' not in act:
-                        continue
-                    
-                    acc_str = str(act.get('account', '')).strip()
-                    pwd_str = str(act.get('password', '')).strip()
-                    email_str = str(act.get('email', '')).strip()
-                    is_pri = 1 if act.get('is_primary') else 0
-                    
-                    if not acc_str:
-                        continue
-                        
-                    if acc_str in existing_accounts:
-                        # 已存在则更新密码、邮箱和主号标识
-                        cursor.execute('''
-                            UPDATE ec_tiktok_accounts 
-                            SET password = ?, email = ?, is_primary = ?
-                            WHERE device_udid = ? AND account = ?
-                        ''', (pwd_str, email_str, is_pri, udid, acc_str))
-                    else:
-                        # 不存在则新增
-                        cursor.execute('''
-                            INSERT INTO ec_tiktok_accounts 
-                            (device_udid, account, password, email, is_primary, add_time)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        ''', (udid, acc_str, pwd_str, email_str, is_pri, now_str))
-                
-                # 我们选择暂时不自动删除遗失的账号记录（避免误删单独编辑过的状态）
-                # 仅将它与该设备的关联清空或者留档。为保持独立管理，我们什么也不做。
-                
+            ''', (config_ip, config_vpn, device_no, country, group_name, exec_time, apple_account, apple_password, wifi_ssid, wifi_password, watchdog_wda, udid))
             conn.commit()
             return True
     except Exception as e:
@@ -981,8 +983,8 @@ def get_random_comments(language: str = None, limit: int = 50) -> List[dict]:
 
 # ================= TikTok 账号独立管理维护 =================
 
-def get_all_tiktok_accounts() -> List[dict]:
-    """获取目前独立管理的全部 TikTok 账号列表及它们的设备关联号"""
+def get_all_accounts() -> List[dict]:
+    """获取目前独立管理的全部账号列表及它们的设备关联号"""
     try:
         with sqlite3.connect(DB_PATH, timeout=5) as conn:
             conn.row_factory = sqlite3.Row
@@ -990,66 +992,79 @@ def get_all_tiktok_accounts() -> List[dict]:
             # 联表拿 device_no
             cursor.execute('''
                 SELECT t.*, d.device_no, d.country as device_country
-                FROM ec_tiktok_accounts t
+                FROM ec_accounts t
                 LEFT JOIN ec_devices d ON t.device_udid = d.udid
                 ORDER BY t.id DESC
             ''')
             return [dict(r) for r in cursor.fetchall()]
     except Exception as e:
-        logger.error(f"Error getting tiktok accounts: {e}")
+        logger.error(f"Error getting accounts: {e}")
         return []
 
-def update_tiktok_account(account_id: int, country: str, fans_count: int, is_for_sale: int, is_window_opened: int, add_time: str, window_open_time: str, sale_time: str, password: str = "", email: str = "") -> bool:
-    """更新独立维护的 TikTok 账号全部属性"""
+def get_accounts_by_device(udid: str) -> List[dict]:
+    """获取指定设备名下的所有泛用账号列表"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT * FROM ec_accounts 
+                WHERE device_udid = ? 
+                ORDER BY is_primary DESC, id ASC
+            ''', (udid,))
+            return [dict(r) for r in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"Error getting accounts for device {udid}: {e}")
+        return []
+
+def update_account(account_id: int, country: str, following_count: int, fans_count: int, likes_count: int, is_for_sale: int, is_window_opened: int, add_time: str, window_open_time: str, sale_time: str, password: str = "", email: str = "", email_password: str = "", app_id: str = "com.zhiliaoapp.musically", account_type: str = "TK", is_following: int = 0, is_farming: int = 0) -> bool:
+    """更新独立维护的泛用账号全部属性"""
     try:
         with sqlite3.connect(DB_PATH, timeout=5) as conn:
             cursor = conn.cursor()
             
             # 如果传入国家为空，则尝试自动锁定关联设备的国家
             if not country:
-                cursor.execute('SELECT d.country FROM ec_devices d JOIN ec_tiktok_accounts t ON d.udid = t.device_udid WHERE t.id = ?', (account_id,))
+                cursor.execute('SELECT d.country FROM ec_devices d JOIN ec_accounts t ON d.udid = t.device_udid WHERE t.id = ?', (account_id,))
                 row = cursor.fetchone()
                 if row:
                     country = row[0] or ""
 
+            import datetime
+            now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
             cursor.execute('''
-                UPDATE ec_tiktok_accounts 
-                SET country = ?, fans_count = ?, is_for_sale = ?, is_window_opened = ?,
-                    add_time = ?, window_open_time = ?, sale_time = ?,
-                    password = ?, email = ?
+                UPDATE ec_accounts 
+                SET country=?, following_count=?, fans_count=?, likes_count=?, is_for_sale=?, is_window_opened=?, add_time=?, window_open_time=?, sale_time=?, password=?, email=?, email_password=?, app_id=?, account_type=?, is_following=?, is_farming=?, update_time=?
                 WHERE id = ?
-            ''', (country, fans_count, is_for_sale, is_window_opened, add_time, window_open_time, sale_time, password, email, account_id))
+            ''', (country, following_count, fans_count, likes_count, is_for_sale, is_window_opened, add_time, window_open_time, sale_time, password, email, email_password, app_id, account_type, is_following, is_farming, now_str, account_id))
             conn.commit()
             return cursor.rowcount > 0
     except Exception as e:
-        logger.error(f"Error updating tiktok account {account_id}: {e}")
+        logger.error(f"Error updating account {account_id}: {e}")
         return False
 
-def create_tiktok_account(device_udid: str, account: str, password: str = "", email: str = "", country: str = "", fans_count: int = 0, is_for_sale: int = 0, is_window_opened: int = 0) -> int:
-    """手动创建一条 TikTok 账号记录"""
+def create_account(device_udid: str, account: str, password: str = "", email: str = "", email_password: str = "", app_id: str = "com.zhiliaoapp.musically", account_type: str = "TK", country: str = "", following_count: int = 0, fans_count: int = 0, likes_count: int = 0, is_for_sale: int = 0, is_window_opened: int = 0, is_following: int = 0, is_farming: int = 0) -> int:
+    """手动创建一条泛用账号记录"""
     try:
         import datetime
         now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         with sqlite3.connect(DB_PATH, timeout=5) as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO ec_tiktok_accounts 
-                (device_udid, account, password, email, country, fans_count, is_for_sale, is_window_opened, add_time)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (device_udid, account, password, email, country, fans_count, is_for_sale, is_window_opened, now_str))
+                INSERT INTO ec_accounts 
+                (device_udid, account, password, email, email_password, app_id, account_type, country, following_count, fans_count, likes_count, is_for_sale, is_window_opened, is_following, is_farming, add_time, update_time)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (device_udid, account, password, email, email_password, app_id, account_type, country, following_count, fans_count, likes_count, is_for_sale, is_window_opened, is_following, is_farming, now_str, now_str))
             conn.commit()
             return cursor.lastrowid
     except Exception as e:
-        logger.error(f"Error creating tiktok account for {device_udid}: {e}")
+        logger.error(f"Error creating account for {device_udid}: {e}")
         return 0
 
-def batch_import_tiktok_accounts(accounts: list) -> dict:
-    """批量导入 TikTok 账号
-    每条记录格式: { device_no, account, password, email }
-    - 根据 device_no 查找对应的 UDID
-    - 如果数据库中已存在相同账号则覆盖
-    - 所有导入的账号设为主账号 (is_primary=1)
-    返回: { success: int, failed: int, errors: list }
+def batch_import_accounts(accounts: list) -> dict:
+    """批量导入泛用账号
+    每条记录格式: { device_no, account, password, email, email_password, app_id, account_type }
     """
     import datetime
     now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -1067,6 +1082,9 @@ def batch_import_tiktok_accounts(accounts: list) -> dict:
                 account = (item.get('account') or '').strip()
                 password = (item.get('password') or '').strip()
                 email = (item.get('email') or '').strip()
+                email_password = (item.get('email_password') or '').strip()
+                app_id = (item.get('app_id') or 'com.zhiliaoapp.musically').strip()
+                account_type = (item.get('account_type') or 'TK').strip()
                 
                 if not device_no or not account:
                     errors.append(f"缺少必填字段: device_no={device_no}, account={account}")
@@ -1085,24 +1103,21 @@ def batch_import_tiktok_accounts(accounts: list) -> dict:
                 country = row['country'] or ''
                 
                 try:
-                    # 检查是否已存在相同账号
-                    cursor.execute('SELECT id FROM ec_tiktok_accounts WHERE device_udid = ? AND account = ?', (udid, account))
+                    cursor.execute('SELECT id FROM ec_accounts WHERE device_udid = ? AND account = ?', (udid, account))
                     existing = cursor.fetchone()
                     
                     if existing:
-                        # 已存在则覆盖更新
                         cursor.execute('''
-                            UPDATE ec_tiktok_accounts 
-                            SET password = ?, email = ?, is_primary = 1
-                            WHERE device_udid = ? AND account = ?
-                        ''', (password, email, udid, account))
+                            UPDATE ec_accounts 
+                            SET password=?, email=?, email_password=?, app_id=?, account_type=?, country=?, is_primary=1, update_time=?
+                            WHERE id = ?
+                        ''', (password, email, email_password, app_id, account_type, country, now_str, existing['id']))
                     else:
-                        # 不存在则新增
                         cursor.execute('''
-                            INSERT INTO ec_tiktok_accounts 
-                            (device_udid, account, password, email, country, fans_count, is_for_sale, is_window_opened, add_time, is_primary)
-                            VALUES (?, ?, ?, ?, ?, 0, 0, 0, ?, 1)
-                        ''', (udid, account, password, email, country, now_str))
+                            INSERT INTO ec_accounts 
+                            (device_udid, account, password, email, email_password, app_id, account_type, country, add_time, update_time, is_primary)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                        ''', (udid, account, password, email, email_password, app_id, account_type, country, now_str, now_str))
                     
                     success_count += 1
                 except Exception as e:
@@ -1111,47 +1126,42 @@ def batch_import_tiktok_accounts(accounts: list) -> dict:
             
             conn.commit()
     except Exception as e:
-        logger.error(f"批量导入 TikTok 账号失败: {e}")
+        logger.error(f"批量导入账号失败: {e}")
         errors.append(f"数据库连接异常: {str(e)}")
     
     return {"success": success_count, "failed": failed_count, "errors": errors}
 
-def set_tiktok_account_primary(account_id: int) -> bool:
-    """设置某账号为所属设备的主号（排他性设置）"""
+def set_account_primary(account_id: int) -> bool:
+    """设置某账号为所属设备该类型的主号（排他性设置）"""
     try:
         with sqlite3.connect(DB_PATH, timeout=5) as conn:
             cursor = conn.cursor()
-            # 1. 获取该账号关联的设备 UDID
-            cursor.execute('SELECT device_udid FROM ec_tiktok_accounts WHERE id = ?', (account_id,))
+            cursor.execute('SELECT device_udid, account_type FROM ec_accounts WHERE id = ?', (account_id,))
             row = cursor.fetchone()
             if not row:
                 return False
             udid = row[0]
+            account_type = row[1]
             
-            # 2. 开启事务：取消该设备所有其他账号的主号标识，然后设置当前账号
-            cursor.execute('UPDATE ec_tiktok_accounts SET is_primary = 0 WHERE device_udid = ?', (udid,))
-            cursor.execute('UPDATE ec_tiktok_accounts SET is_primary = 1 WHERE id = ?', (account_id,))
+            cursor.execute('UPDATE ec_accounts SET is_primary = 0 WHERE device_udid = ? AND account_type = ?', (udid, account_type))
+            cursor.execute('UPDATE ec_accounts SET is_primary = 1 WHERE id = ?', (account_id,))
             
             conn.commit()
             return True
     except Exception as e:
-        logger.error(f"Error setting primary tiktok account {account_id}: {e}")
+        logger.error(f"Error setting primary account {account_id}: {e}")
         return False
 
-def delete_tiktok_account(account_id: int) -> bool:
-    """删除某条独立维护的 TikTok 账号"""
+def delete_account(account_id: int) -> bool:
+    """删除某条独立维护的账号"""
     try:
         with sqlite3.connect(DB_PATH, timeout=5) as conn:
             cursor = conn.cursor()
-            
-            # 由于可能涉及到需要同步回终端设备的 tiktok_accounts (如果设备存活)
-            # 在这里我们做纯表面的软剔除，因为 set_device_config 时我们只新增。
-            
-            cursor.execute('DELETE FROM ec_tiktok_accounts WHERE id = ?', (account_id,))
+            cursor.execute('DELETE FROM ec_accounts WHERE id = ?', (account_id,))
             conn.commit()
             return cursor.rowcount > 0
     except Exception as e:
-        logger.error(f"Error deleting tiktok account {account_id}: {e}")
+        logger.error(f"Error deleting account {account_id}: {e}")
         return False
 
 # ================= 管理员权限系统 =================
@@ -1487,3 +1497,40 @@ def get_random_bio(country: str, group_name: str = "") -> str:
     except Exception as e:
         logger.error(f"Error getting random bio: {e}")
         return ""
+def batch_update_account_metrics(device_udid: str, accounts: List[dict]) -> dict:
+    """批量更新指定名下设备的所有账号统计信息（仅更新关注、粉丝、点赞记录）"""
+    success_count = 0
+    error_count = 0
+    try:
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
+            cursor = conn.cursor()
+            for acc in accounts:
+                account_name = acc.get('account')
+                if not account_name:
+                    continue
+                
+                # 仅更新统计信息与运行状态，以防客户端篡改配置级字段
+                following = acc.get('following_count', 0)
+                fans = acc.get('fans_count', 0)
+                likes = acc.get('likes_count', 0)
+                is_following = 1 if acc.get('is_following') else 0
+                is_farming = 1 if acc.get('is_farming') else 0
+                
+                import datetime
+                now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+                cursor.execute('''
+                    UPDATE ec_accounts 
+                    SET following_count = ?, fans_count = ?, likes_count = ?, is_following = ?, is_farming = ?, update_time = ?
+                    WHERE device_udid = ? AND account = ?
+                ''', (following, fans, likes, is_following, is_farming, now_str, device_udid, account_name))
+                
+                if cursor.rowcount > 0:
+                    success_count += 1
+                else:
+                    error_count += 1
+            conn.commit()
+        return {"success": success_count, "error": error_count}
+    except Exception as e:
+        logger.error(f"Error batch updating accounts for {device_udid}: {e}")
+        return {"success": 0, "error": len(accounts), "detail": str(e)}

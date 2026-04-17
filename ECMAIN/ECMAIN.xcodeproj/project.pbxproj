@@ -75,6 +75,7 @@
 		FDEC6CA98AE216F3B6C9C2D1 /* Mihomo.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 12ACC38D780C7B52A1B72D12 /* Mihomo.xcframework */; };
 		QRSCAN001000001 /* ECQRScannerViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = QRSCAN001000002 /* ECQRScannerViewController.m */; };
 		QRSCAN001000003 /* ECProxyURIParser.m in Sources */ = {isa = PBXBuildFile; fileRef = QRSCAN001000004 /* ECProxyURIParser.m */; };
+		EA6600022604170000000001 /* ECAccountListViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = EA6600012604170000000001 /* ECAccountListViewController.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -209,6 +210,8 @@
 		QRSCAN001000004 /* ECProxyURIParser.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = ECProxyURIParser.m; path = ECMAIN/Core/ECProxyURIParser.m; sourceTree = SOURCE_ROOT; };
 		QRSCAN001000005 /* ECQRScannerViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ECQRScannerViewController.h; path = ECMAIN/UI/ECQRScannerViewController.h; sourceTree = SOURCE_ROOT; };
 		QRSCAN001000006 /* ECProxyURIParser.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ECProxyURIParser.h; path = ECMAIN/Core/ECProxyURIParser.h; sourceTree = SOURCE_ROOT; };
+		EA6600012604170000000001 /* ECAccountListViewController.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = ECMAIN/UI/ECAccountListViewController.m; sourceTree = "<group>"; };
+		EA6600032604170000000001 /* ECAccountListViewController.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ECMAIN/UI/ECAccountListViewController.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -377,6 +380,8 @@
 		B7FBAA1D7A610887CFEB5A35 /* UI */ = {
 			isa = PBXGroup;
 			children = (
+				EA6600012604170000000001 /* ECAccountListViewController.m */,
+				EA6600032604170000000001 /* ECAccountListViewController.h */,
 				42930ECF0D8BB679035A40C5 /* VPNConfigViewController.h */,
 				76D034688EC18673A1F92EC6 /* VPNConfigViewController.m */,
 				1F5A04198B83F53D60026DB3 /* MainTabBarController.h */,
@@ -553,6 +558,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				EA6600022604170000000001 /* ECAccountListViewController.m in Sources */,
 				C30B964166C44D7A8FABB580 /* ViewController.m in Sources */,
 				2E71B4BCF0B84A40B1D66FD9 /* main.m in Sources */,
 				13153955986E4DAF9C39C17B /* AppDelegate.m in Sources */,
