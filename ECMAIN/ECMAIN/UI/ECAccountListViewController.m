@@ -22,12 +22,19 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"本端账号";
+    self.title = @"账号列表";
     
     if (@available(iOS 13.0, *)) {
         self.view.backgroundColor = [UIColor systemBackgroundColor];
+        self.tableView.backgroundColor = [UIColor systemBackgroundColor];
+    } else {
+        self.view.backgroundColor = [UIColor whiteColor];
+        self.tableView.backgroundColor = [UIColor whiteColor];
     }
     
+    // 淡化的分割线来提供轻微的边界感
+    self.tableView.separatorColor = [UIColor colorWithWhite:0.95 alpha:1.0];
+    self.tableView.separatorInset = UIEdgeInsetsMake(0, 20, 0, 20);
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 80;
     
@@ -39,7 +46,8 @@
     // 顶部按钮：下载与上传
     UIBarButtonItem *downloadBtn = [[UIBarButtonItem alloc] initWithTitle:@"下载" style:UIBarButtonItemStylePlain target:self action:@selector(fetchAccountsFromServer)];
     UIBarButtonItem *uploadBtn = [[UIBarButtonItem alloc] initWithTitle:@"上传" style:UIBarButtonItemStylePlain target:self action:@selector(postAccountsToServer)];
-    self.navigationItem.rightBarButtonItems = @[downloadBtn, uploadBtn];
+    self.navigationItem.leftBarButtonItem = downloadBtn;
+    self.navigationItem.rightBarButtonItem = uploadBtn;
     
     [self loadAccountsFromCache];
 }
@@ -70,7 +78,7 @@
 }
 
 - (void)fetchAccountsFromServer {
-    NSString *serverUrl = [ECPersistentConfig stringForKey:@"EC_SERVER_URL"];
+    NSString *serverUrl = [ECPersistentConfig stringForKey:@"CloudServerURL"];
     if (!serverUrl || serverUrl.length == 0) {
         [self.refreshControl endRefreshing];
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -122,7 +130,7 @@
 }
 
 - (void)postAccountsToServer {
-    NSString *serverUrl = [ECPersistentConfig stringForKey:@"EC_SERVER_URL"];
+    NSString *serverUrl = [ECPersistentConfig stringForKey:@"CloudServerURL"];
     NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
     NSString *json = [defaults stringForKey:@"EC_ACCOUNTS"] ?: @"[]";
     NSArray *accountsArr = [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
@@ -186,6 +194,17 @@
         }
         [arr addObject:acc];
     }
+    for (NSString *key in groups) {
+        NSMutableArray *arr = groups[key];
+        [arr sortUsingComparator:^NSComparisonResult(NSDictionary *obj1, NSDictionary *obj2) {
+            BOOL p1 = [obj1[@"is_primary"] boolValue];
+            BOOL p2 = [obj2[@"is_primary"] boolValue];
+            if (p1 && !p2) return NSOrderedAscending;
+            if (!p1 && p2) return NSOrderedDescending;
+            return NSOrderedSame;
+        }];
+    }
+
     self.groupedAccounts = groups;
     self.sections = [[groups allKeys] sortedArrayUsingSelector:@selector(compare:)];
     
@@ -248,9 +267,15 @@
     NSString *updateTime = acc[@"update_time"] ?: @"---";
     NSString *timeStr = [NSString stringWithFormat:@"\n🕒 添加: %@ | ↻ 更新: %@", addTime, updateTime];
     
+    NSString *email = acc[@"email"] ?: @"---";
+    NSString *password = acc[@"password"] ?: @"---";
+    NSString *emailPwd = acc[@"email_password"] ?: @"---";
+    NSString *appIdText = acc[@"app_id"] ?: @"---";
+    
     cell.detailTextLabel.numberOfLines = 0;
-    cell.detailTextLabel.text = [NSString stringWithFormat:@"📊 关注: %@ | 粉丝: %@ | 点赞: %@ | %@ %@%@", 
-                                followingCount, fans, likes, acc[@"country"] ?: @"", tagString, timeStr];
+    cell.detailTextLabel.text = [NSString stringWithFormat:@"账号: %@\n密码: %@\nApp ID: %@\n邮箱: %@\n邮箱密码: %@\n\n📊 关注: %@ | 粉丝: %@ | 点赞: %@ | %@ %@%@", 
+                                 acc[@"account"] ?: @"---", password, appIdText, email, emailPwd,
+                                 followingCount, fans, likes, acc[@"country"] ?: @"", tagString, timeStr];
     cell.detailTextLabel.textColor = [UIColor systemGrayColor];
     
     return cell;
@@ -258,6 +283,78 @@
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    
+    NSString *type = self.sections[indexPath.section];
+    NSArray *items = self.groupedAccounts[type];
+    NSDictionary *acc = items[indexPath.row];
+    
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"复制信息" message:@"请选择要复制的字段" preferredStyle:UIAlertControllerStyleActionSheet];
+    
+    NSString *account = acc[@"account"];
+    if (account && account.length > 0) {
+        [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"账号: %@", account] style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            [UIPasteboard generalPasteboard].string = account;
+        }]];
+    }
+    
+    NSString *password = acc[@"password"];
+    if (password && password.length > 0) {
+        [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"密码: %@", password] style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            [UIPasteboard generalPasteboard].string = password;
+        }]];
+    }
+    
+    NSString *appIdForCopy = acc[@"app_id"];
+    if (appIdForCopy && appIdForCopy.length > 0) {
+        [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"App ID: %@", appIdForCopy] style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            [UIPasteboard generalPasteboard].string = appIdForCopy;
+        }]];
+    }
+    
+    NSString *email = acc[@"email"];
+    if (email && email.length > 0) {
+        [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"邮箱: %@", email] style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            [UIPasteboard generalPasteboard].string = email;
+        }]];
+    }
+    
+    NSString *emailPwd = acc[@"email_password"];
+    if (emailPwd && emailPwd.length > 0) {
+        [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"邮箱密码: %@", emailPwd] style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            [UIPasteboard generalPasteboard].string = emailPwd;
+        }]];
+    }
+    
+    NSString *historyStr = acc[@"history"];
+    if (historyStr && [historyStr isKindOfClass:[NSString class]] && historyStr.length > 0) {
+        [alert addAction:[UIAlertAction actionWithTitle:@"📈 增量趋势" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            NSData *data = [historyStr dataUsingEncoding:NSUTF8StringEncoding];
+            NSArray *arr = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+            if ([arr isKindOfClass:[NSArray class]] && arr.count > 0) {
+                NSMutableString *msg = [NSMutableString string];
+                for (NSDictionary *dict in arr) {
+                    [msg appendFormat:@"[%@] 粉:%@ 赞:%@\n", dict[@"date"] ?: @"", dict[@"fans"] ?: @"0", dict[@"likes"] ?: @"0"];
+                }
+                UIAlertController *trendAlert = [UIAlertController alertControllerWithTitle:@"近30天上报趋势" message:msg preferredStyle:UIAlertControllerStyleAlert];
+                [trendAlert addAction:[UIAlertAction actionWithTitle:@"关闭" style:UIAlertActionStyleCancel handler:nil]];
+                [self presentViewController:trendAlert animated:YES completion:nil];
+            } else {
+                UIAlertController *trendAlert = [UIAlertController alertControllerWithTitle:@"暂无记录" message:@"该账号近期没有上传粉丝点赞记录。" preferredStyle:UIAlertControllerStyleAlert];
+                [trendAlert addAction:[UIAlertAction actionWithTitle:@"关闭" style:UIAlertActionStyleCancel handler:nil]];
+                [self presentViewController:trendAlert animated:YES completion:nil];
+            }
+        }]];
+    }
+    
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+        UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
+        alert.popoverPresentationController.sourceView = cell;
+        alert.popoverPresentationController.sourceRect = cell.bounds;
+    }
+    
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 @end

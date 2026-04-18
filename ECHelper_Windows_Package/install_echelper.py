@@ -14,7 +14,7 @@ def get_resource_path(relative_path: str) -> Path:
         return Path(os.path.join(sys._MEIPASS, relative_path))
     else:
         # 开发环境下，直接使用相对当前脚本的路径
-        return Path(relative_path).absolute()
+        return Path(os.path.dirname(os.path.abspath(__file__))).joinpath(relative_path).absolute()
 
 # Add installer directory to sys.path to find sparserestore correctly
 sys.path.append(str(get_resource_path("installer")))

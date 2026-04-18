@@ -213,6 +213,11 @@ def init_db():
         except Exception:
             pass
 
+        try:
+            cursor.execute("ALTER TABLE ec_devices ADD COLUMN target_apps TEXT DEFAULT 'com.zhiliaoapp.musically,com.ss.iphone.ugc.Ame,com.ss.iphone.ugc.Aweme';")
+        except Exception:
+            pass
+
         # 2. 任务分发表 (单台下发)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS ec_tasks (
@@ -290,6 +295,7 @@ def init_db():
                 window_open_time TEXT DEFAULT '',
                 sale_time TEXT DEFAULT '',
                 is_primary INTEGER DEFAULT 0,
+                history TEXT DEFAULT '[]',
                 UNIQUE(device_udid, account)
             )
         ''')
@@ -355,6 +361,11 @@ def init_db():
             pass
         try:
             cursor.execute("ALTER TABLE ec_accounts ADD COLUMN likes_count INTEGER DEFAULT 0;")
+        except Exception:
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE ec_accounts ADD COLUMN history TEXT DEFAULT '[]';")
         except Exception:
             pass
 
@@ -665,8 +676,8 @@ def batch_delete_devices(udids: list) -> bool:
         logger.error(f"Error batch deleting devices: {e}")
         return False
 
-def batch_update_devices_config(udids: list, country: str = None, group_name: str = None, exec_time: str = None, config_vpn: str = None, wifi_ssid: str = None, wifi_password: str = None) -> bool:
-    """批量更新设备的国家、分组、启动时间、VPN或WiFi配置，值为 None 则不修改"""
+def batch_update_devices_config(udids: list, country: str = None, group_name: str = None, exec_time: str = None, config_vpn: str = None, wifi_ssid: str = None, wifi_password: str = None, target_apps: str = None) -> bool:
+    """批量更新设备的国家、分组、启动时间、VPN、WiFi配置、或目标拦截包名，值为 None 则不修改"""
     if not udids:
         return True
     updates = []
@@ -690,6 +701,9 @@ def batch_update_devices_config(udids: list, country: str = None, group_name: st
     if wifi_password is not None:
         updates.append("wifi_password = ?")
         params.append(wifi_password)
+    if target_apps is not None:
+        updates.append("target_apps = ?")
+        params.append(target_apps)
         
     if not updates:
         return True # 没有需要修改的字段
@@ -714,7 +728,7 @@ def get_device_config(udid: str) -> dict:
         with sqlite3.connect(DB_PATH, timeout=5) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute('SELECT config_ip, config_vpn, device_no, country, group_name, exec_time, apple_account, apple_password, tiktok_accounts, wifi_ssid, wifi_password, watchdog_wda FROM ec_devices WHERE udid = ?', (udid,))
+            cursor.execute('SELECT config_ip, config_vpn, device_no, country, group_name, exec_time, apple_account, apple_password, tiktok_accounts, wifi_ssid, wifi_password, watchdog_wda, target_apps FROM ec_devices WHERE udid = ?', (udid,))
             row = cursor.fetchone()
             if row:
                 config_data = {
@@ -728,14 +742,15 @@ def get_device_config(udid: str) -> dict:
                     "apple_password": row["apple_password"] or "",
                     "wifi_ssid": row["wifi_ssid"] or "",
                     "wifi_password": row["wifi_password"] or "",
-                    "watchdog_wda": row["watchdog_wda"] if row["watchdog_wda"] is not None else 1
+                    "watchdog_wda": row["watchdog_wda"] if row["watchdog_wda"] is not None else 1,
+                    "target_apps": row["target_apps"] or "com.zhiliaoapp.musically,com.ss.iphone.ugc.Ame,com.ss.iphone.ugc.Aweme"
                 }
                 return config_data
     except Exception as e:
         logger.error(f"Error getting config for {udid}: {e}")
     return {"config_ip": "", "config_vpn": "", "device_no": "", "country": "", "group_name": "", "exec_time": "", "apple_account": "", "apple_password": "", "wifi_ssid": "", "wifi_password": "", "watchdog_wda": 1}
 
-def set_device_config(udid: str, config_ip: str, config_vpn: str, device_no: str = "", country: str = "", group_name: str = "", exec_time: str = "", apple_account: str = "", apple_password: str = "", wifi_ssid: str = "", wifi_password: str = "", watchdog_wda: int = 1):
+def set_device_config(udid: str, config_ip: str, config_vpn: str, device_no: str = "", country: str = "", group_name: str = "", exec_time: str = "", apple_account: str = "", apple_password: str = "", wifi_ssid: str = "", wifi_password: str = "", watchdog_wda: int = 1, target_apps: str = "com.zhiliaoapp.musically,com.ss.iphone.ugc.Ame,com.ss.iphone.ugc.Aweme"):
     """保存设备的静态 IP、网络及高级设置配置"""
     try:
         with sqlite3.connect(DB_PATH, timeout=5) as conn:
@@ -745,9 +760,9 @@ def set_device_config(udid: str, config_ip: str, config_vpn: str, device_no: str
                 SET config_ip = ?, config_vpn = ?,
                     device_no = ?, country = ?, group_name = ?, exec_time = ?,
                     apple_account = ?, apple_password = ?,
-                    wifi_ssid = ?, wifi_password = ?, watchdog_wda = ?
+                    wifi_ssid = ?, wifi_password = ?, watchdog_wda = ?, target_apps = ?
                 WHERE udid = ?
-            ''', (config_ip, config_vpn, device_no, country, group_name, exec_time, apple_account, apple_password, wifi_ssid, wifi_password, watchdog_wda, udid))
+            ''', (config_ip, config_vpn, device_no, country, group_name, exec_time, apple_account, apple_password, wifi_ssid, wifi_password, watchdog_wda, target_apps, udid))
             conn.commit()
             return True
     except Exception as e:
@@ -954,6 +969,18 @@ def add_comment(language: str, content: str) -> bool:
         logger.error(f"Error adding comment: {e}")
         return False
 
+def batch_add_comments(comment_list: List[tuple]) -> int:
+    """批量添加评论，comment_list 格式: [(language, content, created_at), ...]"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
+            cursor = conn.cursor()
+            cursor.executemany('INSERT INTO ec_comments (language, content, created_at) VALUES (?, ?, ?)', comment_list)
+            conn.commit()
+            return cursor.rowcount
+    except Exception as e:
+        logger.error(f"Error batch adding comments: {e}")
+        return 0
+
 def delete_comment(comment_id: int):
     try:
         with sqlite3.connect(DB_PATH, timeout=5) as conn:
@@ -1033,11 +1060,17 @@ def update_account(account_id: int, country: str, following_count: int, fans_cou
             import datetime
             now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
+            # 处理增量历史记录
+            cursor.execute('SELECT history FROM ec_accounts WHERE id = ?', (account_id,))
+            row = cursor.fetchone()
+            old_history = row[0] if row else '[]'
+            new_history = _append_account_history(old_history, now_str[:10], fans_count, following_count, likes_count)
+
             cursor.execute('''
                 UPDATE ec_accounts 
-                SET country=?, following_count=?, fans_count=?, likes_count=?, is_for_sale=?, is_window_opened=?, add_time=?, window_open_time=?, sale_time=?, password=?, email=?, email_password=?, app_id=?, account_type=?, is_following=?, is_farming=?, update_time=?
+                SET country=?, following_count=?, fans_count=?, likes_count=?, is_for_sale=?, is_window_opened=?, add_time=?, window_open_time=?, sale_time=?, password=?, email=?, email_password=?, app_id=?, account_type=?, is_following=?, is_farming=?, update_time=?, history=?
                 WHERE id = ?
-            ''', (country, following_count, fans_count, likes_count, is_for_sale, is_window_opened, add_time, window_open_time, sale_time, password, email, email_password, app_id, account_type, is_following, is_farming, now_str, account_id))
+            ''', (country, following_count, fans_count, likes_count, is_for_sale, is_window_opened, add_time, window_open_time, sale_time, password, email, email_password, app_id, account_type, is_following, is_farming, now_str, new_history, account_id))
             conn.commit()
             return cursor.rowcount > 0
     except Exception as e:
@@ -1049,13 +1082,16 @@ def create_account(device_udid: str, account: str, password: str = "", email: st
     try:
         import datetime
         now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        now_date = now_str[:10]
+        initial_history = _append_account_history("[]", now_date, fans_count, following_count, likes_count)
+
         with sqlite3.connect(DB_PATH, timeout=5) as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO ec_accounts 
-                (device_udid, account, password, email, email_password, app_id, account_type, country, following_count, fans_count, likes_count, is_for_sale, is_window_opened, is_following, is_farming, add_time, update_time)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (device_udid, account, password, email, email_password, app_id, account_type, country, following_count, fans_count, likes_count, is_for_sale, is_window_opened, is_following, is_farming, now_str, now_str))
+                (device_udid, account, password, email, email_password, app_id, account_type, country, following_count, fans_count, likes_count, is_for_sale, is_window_opened, is_following, is_farming, add_time, update_time, history)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (device_udid, account, password, email, email_password, app_id, account_type, country, following_count, fans_count, likes_count, is_for_sale, is_window_opened, is_following, is_farming, now_str, now_str, initial_history))
             conn.commit()
             return cursor.lastrowid
     except Exception as e:
@@ -1497,8 +1533,32 @@ def get_random_bio(country: str, group_name: str = "") -> str:
     except Exception as e:
         logger.error(f"Error getting random bio: {e}")
         return ""
+import json
+
+def _append_account_history(old_history_str: str, today_str: str, fans: int, following: int, likes: int) -> str:
+    """内部通用函数：将当天的各项指标追加到 history json 数组，超过30天的数据切片丢弃"""
+    try:
+        history = json.loads(old_history_str) if old_history_str else []
+    except Exception:
+        history = []
+    
+    if not isinstance(history, list):
+        history = []
+        
+    entry = {"date": today_str, "fans": fans, "following": following, "likes": likes}
+    
+    if len(history) > 0 and history[-1].get("date") == today_str:
+        history[-1] = entry
+    else:
+        history.append(entry)
+        
+    if len(history) > 30:
+        history = history[-30:]
+        
+    return json.dumps(history)
+
 def batch_update_account_metrics(device_udid: str, accounts: List[dict]) -> dict:
-    """批量更新指定名下设备的所有账号统计信息（仅更新关注、粉丝、点赞记录）"""
+    """批量更新指定名下设备的所有账号统计信息（仅更新关注、粉丝、点赞记录，并自动累加30天数据）"""
     success_count = 0
     error_count = 0
     try:
@@ -1518,12 +1578,27 @@ def batch_update_account_metrics(device_udid: str, accounts: List[dict]) -> dict
                 
                 import datetime
                 now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                now_date = now_str[:10]
 
-                cursor.execute('''
-                    UPDATE ec_accounts 
-                    SET following_count = ?, fans_count = ?, likes_count = ?, is_following = ?, is_farming = ?, update_time = ?
-                    WHERE device_udid = ? AND account = ?
-                ''', (following, fans, likes, is_following, is_farming, now_str, device_udid, account_name))
+                cursor.execute('SELECT history FROM ec_accounts WHERE device_udid = ? AND account = ?', (device_udid, account_name))
+                row = cursor.fetchone()
+                
+                if row:
+                    old_history = row[0] if row[0] else '[]'
+                    new_history = _append_account_history(old_history, now_date, fans, following, likes)
+                    cursor.execute('''
+                        UPDATE ec_accounts 
+                        SET following_count = ?, fans_count = ?, likes_count = ?, is_following = ?, is_farming = ?, update_time = ?, history = ?
+                        WHERE device_udid = ? AND account = ?
+                    ''', (following, fans, likes, is_following, is_farming, now_str, new_history, device_udid, account_name))
+                else:
+                    new_history = _append_account_history("[]", now_date, fans, following, likes)
+                    # 如果这都能没找到，理论上这里应该 INSERT。但是目前要求仅 UPDATE，为了健壮可以执行一下 INSERT
+                    cursor.execute('''
+                        INSERT INTO ec_accounts (device_udid, account, following_count, fans_count, likes_count, is_following, is_farming, add_time, update_time, history)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (device_udid, account_name, following, fans, likes, is_following, is_farming, now_str, now_str, new_history))
+
                 
                 if cursor.rowcount > 0:
                     success_count += 1

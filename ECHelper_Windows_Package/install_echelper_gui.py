@@ -85,10 +85,13 @@ def tidevice_exec(args_list, wait=False, background=True, tries=2):
                     break # 其它错误不重试
         except Exception as e:
             logging.error(f"tidevice_exec 异常 (第 {i+1} 次): {e}")
+            from types import SimpleNamespace
+            last_res = SimpleNamespace(returncode=-1, stdout="", stderr=f"[{e.__class__.__name__}] {e}")
             time.sleep(1)
             
     if wait and last_res and last_res.returncode != 0:
-        logging.error(f"tidevice 指令最终失败: {' '.join(cmd)}\n最后报错: {last_res.stderr}")
+        err_msg = getattr(last_res, 'stderr', "Unknown Error")
+        logging.error(f"tidevice 指令最终失败: {' '.join(cmd)}\n最后报错: {err_msg}")
     return last_res
 
 # 为了兼容旧代码，保留 tidevice_invoke 别名并重定向
@@ -109,7 +112,7 @@ def get_resource_path(relative_path: str) -> Path:
     if hasattr(sys, '_MEIPASS'):
         return Path(os.path.join(sys._MEIPASS, relative_path))
     else:
-        return Path(relative_path).absolute()
+        return Path(os.path.dirname(os.path.abspath(__file__))).joinpath(relative_path).absolute()
 sys.path.append(str(get_resource_path("installer")))
 
 # 导入 pymobiledevice3 检测设备
@@ -120,6 +123,79 @@ from packaging.version import parse as parse_version
 
 # 导入静默安装核心
 import install_echelper
+
+def get_best_match_image(target_version_str: str) -> Path:
+    """在 device-support 目录下寻找最接近的可用 iOS 镜像版本"""
+    ds_dir = get_resource_path("device-support")
+    if not ds_dir.exists():
+        return None
+        
+    try:
+        tv = parse_version(target_version_str)
+        best_match_dir = None
+        min_diff = float('inf')
+        
+        for d in ds_dir.iterdir():
+            if d.is_dir() and d.name.count('.') >= 1:
+                try:
+                    dv = parse_version(d.name)
+                    # 优先匹配大版本号，再匹配最近的子版本
+                    if tv.major == dv.major:
+                        diff = abs(tv.minor - dv.minor)
+                        if diff < min_diff:
+                            min_diff = diff
+                            best_match_dir = d
+                except:
+                    pass
+        return best_match_dir
+    except:
+        return None
+
+def auto_mount_developer_image(udid, log_func=None):
+    """自动判断设备的 Developer 镜像状态，缺失则自动注入"""
+    try:
+        from pymobiledevice3.services.mobile_image_mounter import MobileImageMounterService
+        service_provider = create_using_usbmux(serial=udid)
+        ver = service_provider.product_version
+        
+        with MobileImageMounterService(lockdown=service_provider) as mounter:
+            if mounter.is_image_mounted("Developer"):
+                return True
+                
+            if log_func:
+                log_func(f"   💡 [{udid[:8]}] 侦测到该设备未启蒙 (缺失 Developer 镜像)！准备静默重塑核心池...")
+                
+            img_dir = get_best_match_image(ver)
+            if not img_dir:
+                if log_func:
+                    log_func(f"   ⚠️ [{udid[:8]}] 本工程的 'device-support' 文件夹内缺少针对 iOS {ver} 的关联镜像，可能遭遇启蒙挫败！")
+                return False
+                
+            dmg_path = img_dir / "DeveloperDiskImage.dmg"
+            sig_path = img_dir / "DeveloperDiskImage.dmg.signature"
+            
+            if not dmg_path.exists() or not sig_path.exists():
+                return False
+                
+            if log_func:
+                log_func(f"   ⏳ [{udid[:8]}] 正在向设备骨干注入 {img_dir.name} 版本开发者映像，耗时约 5 秒...")
+            
+            with open(sig_path, 'rb') as f:
+                sig_data = f.read()
+            with open(dmg_path, 'rb') as f:
+                dmg_data = f.read()
+                
+            mounter.upload_image("Developer", dmg_data, sig_data)
+            mounter.mount_image("Developer", sig_data)
+            
+            if log_func:
+                log_func(f"   ✅ [{udid[:8]}] 开发者镜像固化完毕！设备现已支持底层调试及无线越狱！")
+            return True
+            
+    except Exception as e:
+        if log_func:
+            log_func(f"   ❌ [{udid[:8]}] 核心镜像写入异常: [{e.__class__.__name__}] {e}")
+        return False
 
 class StreamRedirector:
     def __init__(self, signal):
@@ -152,10 +228,9 @@ class DeviceMonitorThread(QThread):
                 
                 devices = list_devices()
                 for dev in devices:
-                    # [修改] 仅扫描 USB 连接的手机，过滤掉 WiFi 虚拟连接 (network)
+                    # [修改] 之前过滤了 WiFi 虚拟连接 (network)，现在为了无线调试开启，放宽至全部显示！
                     conn_type_str = str(getattr(dev, "connection_type", "")).lower()
-                    if "network" in conn_type_str or "wifi" in conn_type_str:
-                        continue
+                    # 不再执行 continue 阻断
                         
                     try:
                         service_provider = create_using_usbmux(serial=dev.serial)
@@ -371,76 +446,32 @@ class LaunchEcwdaThread(QThread):
                 current_pc_10089 = 10089 + i * 10
                 current_pc_8089 = 8089 + i * 10
                 
-                # 第 1 步：先建立端口转发（relay 不需要代码签名校验，纯 USB 通道）
-                self.log_signal.emit(f"   🔗 [{udid[:8]}] 正在建立 USB 端口转发隧道...")
-                for local_p, remote_p in [(current_pc_10088, 10088), (current_pc_10089, 10089), (current_pc_8089, 8089)]:
+                # 第 0 步：镜像探测 (绝命前摇)
+                auto_mount_developer_image(udid, self.log_signal.emit)
+                
+                # 第 1 步：仅建立基础 WDA 通信端口转发
+                self.log_signal.emit(f"   🔗 [{udid[:8]}] 正在直接建立 USB 端口转发隧道...")
+                for local_p, remote_p in [(current_pc_10088, 10088), (current_pc_10089, 10089)]:
                     tidevice_exec(["-u", udid, "relay", str(local_p), str(remote_p)], wait=False)
                 
-                self.log_signal.emit(f"   ✅ [{udid[:8]}] 转发链已就位: PC:{current_pc_8089} -> 手机:8089")
+                self.log_signal.emit(f"   ✅ [{udid[:8]}] 转发链已就位: PC:{current_pc_10088}及{current_pc_10089} -> 手机:10088/10089")
                 
                 # 等待端口转发生效
                 time.sleep(2)
                 
-                # 第 2 步：通过 ECMAIN 的 HTTP API 触发 WDA 启动
-                # ECMAIN 监听在手机的 8089 端口，我们通过已建立的 USB relay 通道访问
-                self.log_signal.emit(f"   📡 [{udid[:8]}] 通过 ECMAIN 内部通道触发 WDA 启动 (绕过签名校验)...")
+                # 第 2 步：原生的底层 CLI 强行启动 XCTest
+                self.log_signal.emit(f"   🔄 [{udid[:8]}] 尝试强行通过 tidevice CLI 拉起 WDA 底层...")
+                # 注意：拉起 WDA 此类守护进程不能用普通的 app launch，必须用 xctest 专线或分离后台！
+                # 同时为了防沉迷，我们依然暗中释放一个 8089 HTTP 哨卡以备有些修改版 ECWDA 使用
+                tidevice_exec(["-u", udid, "relay", "8089", "8089"], wait=False)
                 
                 import urllib.request
-                import json
+                try:
+                    urllib.request.urlopen("http://127.0.0.1:8089/start-wda", timeout=1)
+                except: pass
                 
-                wda_started = False
-                for attempt in range(3):
-                    try:
-                        # 先探测 ECMAIN 是否在线
-                        ping_url = f"http://127.0.0.1:{current_pc_8089}/ping"
-                        req = urllib.request.Request(ping_url, method="GET")
-                        req.add_header("Connection", "close")
-                        resp = urllib.request.urlopen(req, timeout=5)
-                        ping_result = resp.read().decode("utf-8", errors="replace")
-                        
-                        if "pong" in ping_result:
-                            self.log_signal.emit(f"   ✅ [{udid[:8]}] ECMAIN 主控已在线 (端口 {current_pc_8089})")
-                            
-                            # 调用 /start-wda 端点,让 ECMAIN 用 root 权限启动 WDA
-                            wda_url = f"http://127.0.0.1:{current_pc_8089}/start-wda"
-                            wda_req = urllib.request.Request(wda_url, method="GET")
-                            wda_req.add_header("Connection", "close")
-                            wda_resp = urllib.request.urlopen(wda_req, timeout=30)
-                            wda_body = wda_resp.read().decode("utf-8", errors="replace")
-                            
-                            try:
-                                wda_json = json.loads(wda_body)
-                                if wda_json.get("status") == "ok":
-                                    self.log_signal.emit(f"   ✅ [{udid[:8]}] WDA 底核已通过内部提权成功启动！")
-                                    wda_started = True
-                                    break
-                                else:
-                                    self.log_signal.emit(f"   ⚠️ [{udid[:8]}] WDA 启动返回异常: {wda_json.get('message', '未知')}")
-                            except json.JSONDecodeError:
-                                self.log_signal.emit(f"   ⚠️ [{udid[:8]}] WDA 启动响应解析失败: {wda_body[:100]}")
-                            break  # 不再重试
-                        else:
-                            self.log_signal.emit(f"   ⚠️ [{udid[:8]}] ECMAIN 响应异常 (第 {attempt+1} 次)，等待重试...")
-                            time.sleep(2)
-                    except Exception as e:
-                        err_str = str(e)
-                        if attempt < 2:
-                            self.log_signal.emit(f"   ⏳ [{udid[:8]}] ECMAIN 探测中 (第 {attempt+1}/3 次): {err_str[:80]}")
-                            time.sleep(3)
-                        else:
-                            self.log_signal.emit(f"   ❌ [{udid[:8]}] ECMAIN 不可达: {err_str[:120]}")
-                            self.log_signal.emit(f"       💡 请确保手机上 ECMAIN 已在前台运行过至少一次！")
-                
-                if not wda_started:
-                    # 兜底方案：尝试 tidevice launch（仅对非 TrollStore 安装的 WDA 有效）
-                    self.log_signal.emit(f"   🔄 [{udid[:8]}] 尝试回退至 tidevice 直接拉起模式...")
-                    res = tidevice_exec(["-u", udid, "launch", "com.apple.accessibility.ecwda"], wait=True)
-                    if res and res.returncode == 0:
-                        self.log_signal.emit(f"   ✅ [{udid[:8]}] 通过 tidevice 直接拉起成功")
-                    else:
-                        err = res.stderr if res else "未知错误"
-                        self.log_signal.emit(f"   ❌ [{udid[:8]}] 所有启动方式均失败: {err.strip().split(chr(10))[-1][:100]}")
-                        self.log_signal.emit(f"       💡 解决方案: 在手机上打开 ECMAIN App，点击 [🚀 启动 WDA] 按钮")
+                res = tidevice_exec(["-u", udid, "xctest", "-B", "com.apple.accessibility.ecwda"], wait=False)
+                self.log_signal.emit(f"   ✅ [{udid[:8]}] 后台拉起信号已投递 (若失败请看手机端是否死锁！)")
             
             self.log_signal.emit("\n🎉 所有设备驱动已就位！")
             self.finished_signal.emit(True)
@@ -481,39 +512,20 @@ class WatchdogThread(QThread):
             return False
 
     def _launch_and_relay(self, udid, port_base):
-        """通过 ECMAIN 内部通道拉起 WDA 并建立端口映射"""
+        """直接使用命令行原生拉起 WDA 并建立独立的端口映射"""
+        
+        self.log_signal.emit(f"   🚀 [{udid[:8]}] 发起看护者 WDA 拉起指令...")
+        # 同样切换为专用的防阻塞模式机制
+        tidevice_exec(["-u", udid, "relay", "8089", "8089"], wait=False)
+        
         import urllib.request
-        import json
-        
-        # 确保 8089 relay 存在（ECMAIN 的 HTTP API）
-        ecmain_port = port_base + 1  # 8089 系列（与 port_base 偏移对应）
-        # 动态计算: 如果 port_base 是 10088, 则对应的 8089 端口偏移
-        device_index = (port_base - self.port_base) // 10
-        local_8089 = 8089 + device_index * 10
-        
-        tidevice_exec(["-u", udid, "relay", str(local_8089), "8089"], wait=False)
-        time.sleep(1)
-        
-        # 通过 ECMAIN HTTP API 启动 WDA
         try:
-            wda_url = f"http://127.0.0.1:{local_8089}/start-wda"
-            req = urllib.request.Request(wda_url, method="GET")
-            req.add_header("Connection", "close")
-            resp = urllib.request.urlopen(req, timeout=30)
-            body = resp.read().decode("utf-8", errors="replace")
-            result = json.loads(body)
-            if result.get("status") == "ok":
-                self.log_signal.emit(f"   ✅ [{udid[:8]}] 看护已通过内部通道重启 WDA")
-            else:
-                self.log_signal.emit(f"   ⚠️ [{udid[:8]}] WDA 重启返回异常: {result.get('message', '未知')}")
-        except Exception as e:
-            self.log_signal.emit(f"   ⚠️ [{udid[:8]}] 内部通道重启失败({e})，尝试 tidevice 直接拉起...")
-            res = tidevice_exec(["-u", udid, "launch", self.wda_bundle], wait=True)
-            if res and res.returncode != 0:
-                self.log_signal.emit(f"   ❌ [{udid[:8]}] 看护重启 WDA 失败: {res.stderr.strip()[:100]}")
-                return
+            urllib.request.urlopen("http://127.0.0.1:8089/start-wda", timeout=1)
+        except: pass
+            
+        tidevice_exec(["-u", udid, "xctest", "-B", self.wda_bundle], wait=False)
 
-        # relay 异步执行（WDA 端口）
+        # relay 异步执行（仅建立 WDA 必要的端口组合）
         for local_p, remote_p in [(port_base, 10088), (port_base + 1, 10089)]:
             tidevice_exec(["-u", udid, "relay", str(local_p), str(remote_p)], wait=False)
 
@@ -954,7 +966,10 @@ class ECHelperGUI(QMainWindow):
         self.append_log(f"📡 正在为 {len(selected_udids)} 台设备尝试开启无线同步...\n")
         for udid in selected_udids:
             try:
-                self.append_log(f"   [{udid[:8]}] 正在注入开启指令...")
+                self.append_log(f"   [{udid[:8]}] 正在注入网络重塑指令...")
+                # 在向设备下达无线指令前，它必须具备开发者身份镜像
+                auto_mount_developer_image(udid, self.append_log)
+                
                 service_provider = create_using_usbmux(serial=udid)
                 # 在此版本 pymobiledevice3 中，这是 LockdownClient 的一个属性
                 service_provider.enable_wifi_connections = True

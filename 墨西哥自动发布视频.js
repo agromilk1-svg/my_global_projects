@@ -1,76 +1,84 @@
 // [样例参考]: [系统弹窗自动扫雷] Auto Alert Handling
 function autoHandleAlert() {
-    let msg = wda.getAlertText();
-    if (!msg) return false;
-    msg = msg.toLowerCase();
-    let btns = wda.getAlertButtons() || [];
+    var handledCount = 0;
+    while (handledCount < 3) {
+        // [v2025优化] 使用全新极速接口 getAlertInfo()
+        let info = wda.getAlertInfo();
+        if (!info) break;
+        
+        let msg = (info.text || "").toLowerCase();
+        let btns = info.buttons || [];
 
+        var deny = ["不允许", "不", "don\'t", "nicht", "しない", "ne ", "non ", "no ", "não", "refuser"];
 
-    var deny = ["不允许", "不", "don\'t", "nicht", "しない", "ne ", "non ", "no ", "não", "refuser"];
-
-    function clickBtn(keywords, excludeWords) {
-        if (!excludeWords) excludeWords = [];
-        for (var i = 0; i < btns.length; i++) {
-            var b = btns[i].toLowerCase();
-            var skip = false;
-            for (var e = 0; e < excludeWords.length; e++) {
-                if (b.indexOf(excludeWords[e].toLowerCase()) >= 0) { skip = true; break; }
-            }
-            if (skip) continue;
-            for (var j = 0; j < keywords.length; j++) {
-                if (b.indexOf(keywords[j].toLowerCase()) >= 0) {
-                    wda.clickAlertButton(btns[i]);
-                    wda.sleep(1);
-                    return true;
+        var clicked = false;
+        function clickBtn(keywords, excludeWords) {
+            if (!excludeWords) excludeWords = [];
+            if (clicked) return true;
+            for (var i = 0; i < btns.length; i++) {
+                var b = btns[i].toLowerCase();
+                var skip = false;
+                for (var e = 0; e < excludeWords.length; e++) {
+                    if (b.indexOf(excludeWords[e].toLowerCase()) >= 0) { skip = true; break; }
+                }
+                if (skip) continue;
+                for (var j = 0; j < keywords.length; j++) {
+                    if (b.indexOf(keywords[j].toLowerCase()) >= 0) {
+                        wda.clickAlertButton(btns[i]);
+                        clicked = true;
+                        return true;
+                    }
                 }
             }
+            return false;
         }
-        return false;
-    }
 
-    function has(keywords) {
-        for (var i = 0; i < keywords.length; i++) {
-            if (msg.indexOf(keywords[i].toLowerCase()) >= 0) return true;
+        function has(keywords) {
+            for (var i = 0; i < keywords.length; i++) {
+                if (msg.indexOf(keywords[i].toLowerCase()) >= 0) return true;
+            }
+            return false;
         }
-        return false;
-    }
 
-    // 优先级最高：听写弹窗（处理其中文/西语正文中包含的“位置”、“联系人”等干扰词）
-    if (has(["dictado", "dictation", "听写", "语音", "diktierfunktion", "dettatura", "dictée", "音声入力"])) {
-        if (clickBtn(["以后", "ahora no", "not now", "以后再说", "plus tard", "今はしない", "agora não", "nicht jetzt", "non ora"])) return true;
-    }
+        // 优先级最高：听写弹窗（处理其中文/西语正文中包含的“位置”、“联系人”等干扰词）
+        if (has(["dictado", "dictation", "听写", "语音", "diktierfunktion", "dettatura", "dictée", "音声入力"])) {
+            clickBtn(["以后", "ahora no", "not now", "以后再说", "plus tard", "今はしない", "agora não", "nicht jetzt", "non ora"]);
+        }
+        else if (has(["photo", "照片", "相片", "相册", "写真", "foto", "フォト"])) {
+            clickBtn(["完全", "所有", "full", "すべて", "vollen zugriff", "accès complet", "accesso completo", "acceso total", "acesso a todas"]);
+            clickBtn(["允许", "allow", "許可", "erlauben", "autoriser", "consenti", "permitir", "zulassen"], deny);
+        }
+        else if (has(["location", "位置", "定位", "standort", "localização", "ubicación", "posizione", "position", "位置情報"])) {
+            clickBtn(["不允许", "don\'t allow", "許可しない", "nicht erlauben", "nicht zulassen", "ne pas autoriser", "non consentire", "no permitir", "não permitir"]);
+        }
+        else if (has(["wlan", "cellular", "wi-fi", "network", "网络", "局域网", "蜂窝", "ネット", "netzwerk", "rede", "red", "rete", "réseau", "モバイルデータ"])) {
+            clickBtn(["蜂窝", "cellular", "モバイルデータ", "wlan &", "celular", "cellulare", "cellulaires", "mobilfunk"]);
+            clickBtn(["允许", "allow", "ok", "好", "許可", "erlauben", "autoriser", "consenti", "permitir", "zulassen"], deny);
+        }
+        else if (has(["calendar", "reminder", "日历", "备忘录", "カレンダー", "kalender", "erinnerungen", "calendário", "calendario", "promemoria", "calendrier", "リマインダー"])) {
+            clickBtn(["完全", "full", "フル", "vollen", "complet", "completo", "total"]);
+            clickBtn(["允许", "allow", "ok", "好", "許可", "erlauben", "autoriser", "consenti", "permitir", "zulassen"], deny);
+        }
+        else if (has(["track", "跟踪", "追踪", "トラッキング", "rastrear", "rastreo", "tracciamento", "suivi", "tracking"])) {
+            clickBtn(["不跟踪", "not to track", "トラッキングしないよう", "ablehnen", "ne pas suivre", "non consentire", "no permitir", "não rastrear", "nicht erlauben"]);
+        }
+        else if (has(["contact", "通讯录", "联系人", "連絡先", "kontakte", "contato", "contacto", "contatti", "contacts"])) {
+            clickBtn(["不允许", "don\'t allow", "許可しない", "nicht erlauben", "nicht zulassen", "ne pas autoriser", "non consentire", "no permitir", "não permitir", "refuser"]);
+        }
+        else if (has(["paste", "粘贴", "剪贴板", "local network", "本地", "ローカル", "bluetooth", "camera", "microphone", "蓝牙", "相机", "摄像头", "麦克风", "マイク", "カメラ", "notification", "通知", "vpn", "profile", "描述文件", "benachrichtigung", "notifica"])) {
+            clickBtn(["允许", "allow", "許可", "好", "ok", "erlauben", "autoriser", "consenti", "permitir", "zulassen", "aceptar"], deny);
+        }
+        
+        clickBtn(["好", "ok", "是", "yes", "はい", "允许", "allow", "erlauben", "autoriser", "consenti", "permitir", "zulassen", "accept", "同意", "aceptar", "ja", "sì", "oui"], deny);
 
-    if (has(["photo", "照片", "相片", "相册", "写真", "foto", "フォト"])) {
-        if (clickBtn(["完全", "所有", "full", "すべて", "vollen zugriff", "accès complet", "accesso completo", "acceso total", "acesso a todas"])) return true;
-        if (clickBtn(["允许", "allow", "許可", "erlauben", "autoriser", "consenti", "permitir", "zulassen"], deny)) return true;
-    }
-    else if (has(["location", "位置", "定位", "standort", "localização", "ubicación", "posizione", "position", "位置情報"])) {
-        if (clickBtn(["不允许", "don\'t allow", "許可しない", "nicht erlauben", "nicht zulassen", "ne pas autoriser", "non consentire", "no permitir", "não permitir"])) return true;
-    }
-    else if (has(["wlan", "cellular", "wi-fi", "network", "网络", "局域网", "蜂窝", "ネット", "netzwerk", "rede", "red", "rete", "réseau", "モバイルデータ"])) {
-        if (clickBtn(["蜂窝", "cellular", "モバイルデータ", "wlan &", "celular", "cellulare", "cellulaires", "mobilfunk"])) return true;
-        if (clickBtn(["允许", "allow", "ok", "好", "許可", "erlauben", "autoriser", "consenti", "permitir", "zulassen"], deny)) return true;
-    }
-    else if (has(["calendar", "reminder", "日历", "备忘录", "カレンダー", "kalender", "erinnerungen", "calendário", "calendario", "promemoria", "calendrier", "リマインダー"])) {
-        if (clickBtn(["完全", "full", "フル", "vollen", "complet", "completo", "total"])) return true;
-        if (clickBtn(["允许", "allow", "ok", "好", "許可", "erlauben", "autoriser", "consenti", "permitir", "zulassen"], deny)) return true;
-    }
-    else if (has(["track", "跟踪", "追踪", "トラッキング", "rastrear", "rastreo", "tracciamento", "suivi", "tracking"])) {
-        if (clickBtn(["不跟踪", "not to track", "トラッキングしないよう", "ablehnen", "ne pas suivre", "non consentire", "no permitir", "não rastrear", "nicht erlauben"])) return true;
-    }
+        if (!clicked) {
+            wda.acceptAlert();
+        }
 
-    else if (has(["contact", "通讯录", "联系人", "連絡先", "kontakte", "contato", "contacto", "contatti", "contacts"])) {
-        if (clickBtn(["不允许", "don\'t allow", "許可しない", "nicht erlauben", "nicht zulassen", "ne pas autoriser", "non consentire", "no permitir", "não permitir", "refuser"])) return true;
+        wda.sleep(2);
+        handledCount++;
     }
-    else if (has(["paste", "粘贴", "剪贴板", "local network", "本地", "ローカル", "bluetooth", "camera", "microphone", "蓝牙", "相机", "摄像头", "麦克风", "マイク", "カメラ", "notification", "通知", "vpn", "profile", "描述文件", "benachrichtigung", "notifica"])) {
-        if (clickBtn(["允许", "allow", "許可", "好", "ok", "erlauben", "autoriser", "consenti", "permitir", "zulassen", "aceptar"], deny)) return true;
-    }
-    if (clickBtn(["好", "ok", "是", "yes", "はい", "允许", "allow", "erlauben", "autoriser", "consenti", "permitir", "zulassen", "accept", "同意", "aceptar", "ja", "sì", "oui"], deny)) {
-        return true;
-    }
-
-    wda.acceptAlert();
-    return true;
+    return handledCount > 0;
 }
 
 // 关闭各种带有叉的提示

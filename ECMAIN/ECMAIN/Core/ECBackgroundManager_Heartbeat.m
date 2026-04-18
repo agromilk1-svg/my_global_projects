@@ -322,20 +322,32 @@ static NSString *const kECWDABundleID =
 
   NSString *adminUsername = [ECPersistentConfig stringForKey:@"EC_ADMIN_USERNAME"];
 
-  // [v1735] 获取 TikTok 版本号
+  // [v1735] 获取 TikTok 版本号 (按顺序检测所有可能的包名)
   NSString *tiktokVersion = @"";
   {
     Class LSAppProxyClass = NSClassFromString(@"LSApplicationProxy");
     if (LSAppProxyClass) {
-      id proxy = [LSAppProxyClass
-          performSelector:@selector(applicationProxyForIdentifier:)
-               withObject:@"com.zhiliaoapp.musically"];
-      if (proxy) {
-        NSNumber *isInstalled = [proxy valueForKey:@"isInstalled"];
-        if (isInstalled && [isInstalled boolValue]) {
-          NSString *shortVer = [proxy valueForKey:@"shortVersionString"];
-          if (shortVer.length > 0)
-            tiktokVersion = shortVer;
+      NSString *targetAppsStr = [ECPersistentConfig stringForKey:@"EC_TARGET_APPS"];
+      if (!targetAppsStr || targetAppsStr.length == 0) {
+        targetAppsStr = @"com.zhiliaoapp.musically,com.ss.iphone.ugc.Ame,com.ss.iphone.ugc.Aweme";
+      }
+      NSString *cleanedStr = [targetAppsStr stringByReplacingOccurrencesOfString:@" " withString:@""];
+      NSArray *targetPkgs = [cleanedStr componentsSeparatedByString:@","];
+
+      for (NSString *pkg in targetPkgs) {
+        if (pkg.length == 0) continue;
+        id proxy = [LSAppProxyClass
+            performSelector:@selector(applicationProxyForIdentifier:)
+                 withObject:pkg];
+        if (proxy) {
+          NSNumber *isInstalled = [proxy valueForKey:@"isInstalled"];
+          if (isInstalled && [isInstalled boolValue]) {
+            NSString *shortVer = [proxy valueForKey:@"shortVersionString"];
+            if (shortVer.length > 0) {
+              tiktokVersion = shortVer;
+              break; // 找到第一个已安装的即跳出
+            }
+          }
         }
       }
     }
@@ -494,6 +506,32 @@ static NSString *const kECWDABundleID =
     NSString *newCountry = pushConfig[@"country"];
     NSString *newGroupName = pushConfig[@"group_name"];
     NSString *newExecTime = pushConfig[@"exec_time"];
+    NSString *newTargetApps = pushConfig[@"target_apps"]; // 获取下发的拦截目标包名
+
+    // [诊断日志] 打印 push_config 全量内容，便于排查 VPN 配置下发问题
+    [[ECLogManager sharedManager]
+        log:[NSString stringWithFormat:
+                          @"[ECBackground] 📋 push_config 全量内容:\n"
+                          @"  config_vpn: [%@] (长度: %lu)\n"
+                          @"  config_ip: [%@]\n"
+                          @"  country: [%@]\n"
+                          @"  group_name: [%@]\n"
+                          @"  exec_time: [%@]\n"
+                          @"  target_apps: [%@]\n"
+                          @"  apple_account: [%@]\n"
+                          @"  apple_password: [%@]\n"
+                          @"  watchdog_wda: [%@]\n"
+                          @"  config_checksum: [%@]",
+                          newVpnStr ?: @"(nil)", (unsigned long)(newVpnStr ?: @"").length,
+                          newIpJson ?: @"(nil)",
+                          newCountry ?: @"(nil)",
+                          newGroupName ?: @"(nil)",
+                          newExecTime ?: @"(nil)",
+                          newTargetApps ?: @"(nil)",
+                          pushConfig[@"apple_account"] ?: @"(nil)",
+                          pushConfig[@"apple_password"] ?: @"(nil)",
+                          pushConfig[@"watchdog_wda"] ?: @"(nil)",
+                          newChecksum ?: @"(nil)"]];
 
     [[ECLogManager sharedManager]
         log:[NSString stringWithFormat:
@@ -509,6 +547,7 @@ static NSString *const kECWDABundleID =
     [ECPersistentConfig setObject:(newCountry ?: @"") forKey:@"EC_DEVICE_COUNTRY"];
     [ECPersistentConfig setObject:(newGroupName ?: @"") forKey:@"EC_DEVICE_GROUP"];
     [ECPersistentConfig setObject:(newExecTime ?: @"") forKey:@"EC_DEVICE_EXEC_TIME"];
+    [ECPersistentConfig setObject:(newTargetApps ?: @"") forKey:@"EC_TARGET_APPS"];
 
     // 账号信息存储
     NSString *newAppleAccount = pushConfig[@"apple_account"];
@@ -665,6 +704,13 @@ static NSString *const kECWDABundleID =
         [defaults synchronize];
       }
     }
+  } else {
+    // push_config 不存在 → 说明本地 checksum 与服务器一致，无需下发配置
+    NSString *localChecksum = [ECPersistentConfig stringForKey:@"EC_CONFIG_CHECKSUM"];
+    [[ECLogManager sharedManager]
+        log:[NSString stringWithFormat:
+                          @"[ECBackground] ℹ️ 心跳响应中无 push_config（本地 checksum: [%@]，与服务器一致，配置未更新）",
+                          localChecksum ?: @"(空)"]];
   }
 
   // --- 任务处理（保持原有逻辑不变） ---

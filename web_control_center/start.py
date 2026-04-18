@@ -16,6 +16,14 @@ Web Control Center — 跨平台统一启动脚本
 import os
 import sys
 import signal
+
+# [抗宿主终端环境崩溃保护]
+# 针对 Mac/Linux 下典型的“幽灵目录错误”(在当前所在目录被外部比如 Finder 同名重写或删除后，终端残留的旧句柄会引发 CWD 相关的一切子进程抛错)
+try:
+    os.getcwd()
+except FileNotFoundError:
+    # 如果发现终端处在被幽灵化的路径，则强行将其基准重置为当前代码文件真实的绝对路径句柄
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
 import subprocess
 import platform
 import time

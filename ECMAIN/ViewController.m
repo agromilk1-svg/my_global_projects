@@ -61,14 +61,14 @@
 
   // UI Layout Constants
   CGFloat padding = 20.0;
-  CGFloat fieldHeight = 40.0;
+  CGFloat fieldHeight = 44.0;
   CGFloat width = self.view.bounds.size.width - 2 * padding;
   CGFloat y = 88.0;
 
   // --- Version Label ---
   UILabel *versionLabel =
       [[UILabel alloc] initWithFrame:CGRectMake(padding, 50, width, 20)];
-  versionLabel.text = @"Build: 2026-04-17 14:08 #2019 (Auto)";
+  versionLabel.text = @"Build: 2026-04-18 22:43 #2037 (Auto)";
   versionLabel.textColor = [UIColor grayColor];
   versionLabel.textAlignment = NSTextAlignmentRight;
   versionLabel.font = [UIFont systemFontOfSize:12];
@@ -94,8 +94,11 @@
   self.serverUrlField = [[UITextField alloc]
       initWithFrame:CGRectMake(padding + 80, y, width - 80, fieldHeight)];
   self.serverUrlField.placeholder = @"http://192.168.x.x:8088";
-  self.serverUrlField.borderStyle = UITextBorderStyleRoundedRect;
-  self.serverUrlField.backgroundColor = [UIColor whiteColor];
+  self.serverUrlField.borderStyle = UITextBorderStyleNone;
+  self.serverUrlField.backgroundColor = [UIColor colorWithWhite:0.95 alpha:1.0];
+  self.serverUrlField.layer.cornerRadius = 8;
+  self.serverUrlField.leftView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 12, fieldHeight)];
+  self.serverUrlField.leftViewMode = UITextFieldViewModeAlways;
   self.serverUrlField.textColor = [UIColor blackColor];
   self.serverUrlField.autocapitalizationType = UITextAutocapitalizationTypeNone;
   self.serverUrlField.delegate = self;
@@ -134,8 +137,11 @@
   self.deviceNoField = [[UITextField alloc]
       initWithFrame:CGRectMake(padding + 80, y, width - 80, fieldHeight)];
   self.deviceNoField.placeholder = @"例如：手机001";
-  self.deviceNoField.borderStyle = UITextBorderStyleRoundedRect;
-  self.deviceNoField.backgroundColor = [UIColor whiteColor];
+  self.deviceNoField.borderStyle = UITextBorderStyleNone;
+  self.deviceNoField.backgroundColor = [UIColor colorWithWhite:0.95 alpha:1.0];
+  self.deviceNoField.layer.cornerRadius = 8;
+  self.deviceNoField.leftView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 12, fieldHeight)];
+  self.deviceNoField.leftViewMode = UITextFieldViewModeAlways;
   self.deviceNoField.textColor = [UIColor blackColor];
   self.deviceNoField.delegate = self;
 
@@ -157,8 +163,11 @@
   self.adminField = [[UITextField alloc]
       initWithFrame:CGRectMake(padding + 80, y, width - 80, fieldHeight)];
   self.adminField.placeholder = @"控制中心管理员账号";
-  self.adminField.borderStyle = UITextBorderStyleRoundedRect;
-  self.adminField.backgroundColor = [UIColor whiteColor];
+  self.adminField.borderStyle = UITextBorderStyleNone;
+  self.adminField.backgroundColor = [UIColor colorWithWhite:0.95 alpha:1.0];
+  self.adminField.layer.cornerRadius = 8;
+  self.adminField.leftView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 12, fieldHeight)];
+  self.adminField.leftViewMode = UITextFieldViewModeAlways;
   self.adminField.textColor = [UIColor blackColor];
   self.adminField.autocapitalizationType = UITextAutocapitalizationTypeNone;
   self.adminField.delegate = self;
@@ -176,7 +185,8 @@
   self.saveTestButton = [UIButton buttonWithType:UIButtonTypeSystem];
   self.saveTestButton.frame = CGRectMake(padding, y, btnWidth, 40);
   [self.saveTestButton setTitle:@"保存测试" forState:UIControlStateNormal];
-  self.saveTestButton.backgroundColor = [UIColor systemBlueColor];
+  self.saveTestButton.backgroundColor = [UIColor colorWithRed:0.1 green:0.1 blue:0.1 alpha:1.0];
+  self.saveTestButton.titleLabel.font = [UIFont boldSystemFontOfSize:15];
   [self.saveTestButton setTitleColor:[UIColor whiteColor]
                             forState:UIControlStateNormal];
   self.saveTestButton.layer.cornerRadius = 8;
@@ -189,8 +199,9 @@
   UIButton *interruptButton = [UIButton buttonWithType:UIButtonTypeSystem];
   interruptButton.frame = CGRectMake(padding + btnWidth + 20, y, btnWidth, 40);
   [interruptButton setTitle:@"🛑 中断任务" forState:UIControlStateNormal];
-  interruptButton.backgroundColor = [UIColor systemRedColor];
-  [interruptButton setTitleColor:[UIColor whiteColor]
+  interruptButton.backgroundColor = [UIColor colorWithRed:1.0 green:0.9 blue:0.9 alpha:1.0];
+  interruptButton.titleLabel.font = [UIFont boldSystemFontOfSize:15];
+  [interruptButton setTitleColor:[UIColor systemRedColor]
                         forState:UIControlStateNormal];
   interruptButton.layer.cornerRadius = 8;
   [interruptButton addTarget:self
@@ -213,8 +224,9 @@
   startWdaBtn.frame = CGRectMake(padding, y, btnWidth, 40);
   [startWdaBtn setTitle:@"🚀 独立重启 WDA"
                forState:UIControlStateNormal];
-  startWdaBtn.backgroundColor = [UIColor systemGreenColor];
-  [startWdaBtn setTitleColor:[UIColor whiteColor]
+  startWdaBtn.backgroundColor = [UIColor colorWithWhite:0.95 alpha:1.0];
+  startWdaBtn.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+  [startWdaBtn setTitleColor:[UIColor darkGrayColor]
                     forState:UIControlStateNormal];
   startWdaBtn.layer.cornerRadius = 8;
   [startWdaBtn addTarget:self
@@ -226,8 +238,9 @@
   freeMemoryBtn.frame = CGRectMake(padding + btnWidth + 20, y, btnWidth, 40);
   [freeMemoryBtn setTitle:@"🧹 强制清理内存"
                  forState:UIControlStateNormal];
-  freeMemoryBtn.backgroundColor = [UIColor systemPurpleColor];
-  [freeMemoryBtn setTitleColor:[UIColor whiteColor]
+  freeMemoryBtn.backgroundColor = [UIColor colorWithWhite:0.95 alpha:1.0];
+  freeMemoryBtn.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+  [freeMemoryBtn setTitleColor:[UIColor darkGrayColor]
                       forState:UIControlStateNormal];
   freeMemoryBtn.layer.cornerRadius = 8;
   [freeMemoryBtn addTarget:self
@@ -272,15 +285,7 @@
 
   y += 24;
 
-  // --- 账号信息展示区域 ---
-  CGFloat remainingHeight = self.view.bounds.size.height - y - 60;
-  self.accountScrollView = [[UIScrollView alloc]
-      initWithFrame:CGRectMake(padding, y, width, remainingHeight)];
-  self.accountScrollView.backgroundColor = [UIColor colorWithWhite:0.05
-                                                             alpha:1.0];
-  self.accountScrollView.layer.cornerRadius = 12;
-  self.accountScrollView.showsVerticalScrollIndicator = YES;
-  [self.view addSubview:self.accountScrollView];
+  // 先直接加载紧随其后的代码
 
   // 初次加载账号数据
   [self refreshAccountLabels];
@@ -628,11 +633,21 @@
                       stringWithFormat:@"✅ 已保存 → 服务器: %@  编号: %@  管理: %@",
                                        url, deviceNo, adminUsername]];
 
-  // 3. 直接调用心跳线程的完整 sendHeartbeat: 方法，发送与心跳包完全一致的数据
-  //    服务器会返回包含 push_config / update / ecwda_update 等完整响应，
-  //    handleHeartbeatResponse: 会自动将所有配置落地到本地存储。
+  // 3. 清空本地配置校验和与 VPN/IP 缓存，确保服务端全量下发 push_config
+  //    根因：如果本地 checksum 与服务端一致，服务端会跳过 push_config 下发，
+  //    导致即使本地 VPN 为空，也无法从服务器重新获取配置。
+  [ECPersistentConfig setObject:@"" forKey:@"EC_CONFIG_CHECKSUM"];
+  NSUserDefaults *sharedDefaults =
+      [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
+  [sharedDefaults removeObjectForKey:@"EC_CONFIG_VPN_CACHED"];
+  [sharedDefaults removeObjectForKey:@"EC_CONFIG_IP_CACHED"];
+  [sharedDefaults synchronize];
+
+  // 4. 直接调用心跳线程的完整 sendHeartbeat: 方法，发送与心跳包完全一致的数据
+  //    由于 checksum 已被清空，服务器一定会返回包含 push_config 的完整响应，
+  //    handleHeartbeatResponse: 会自动将所有配置（VPN/IP/国家/分组等）落地到本地存储。
   self.statusIcon.hidden = YES;
-  [self appendLog:@"📡 正在发送完整心跳探测..."];
+  [self appendLog:@"📡 正在发送完整心跳探测（已清空本地缓存，将强制拉取服务器全量配置）..."];
 
   // [v1934] 注册一次性通知监听：心跳响应回来后立刻刷新仪表盘
   __block id observer = nil;
@@ -715,104 +730,33 @@
 
 // 账号信息展示区域刷新
 - (void)refreshAccountLabels {
-  // 清空旧内容
-  for (UIView *sub in self.accountScrollView.subviews) {
-    [sub removeFromSuperview];
-  }
-
-  NSUserDefaults *defaults =
-      [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
-  NSString *appleAcc = [defaults stringForKey:@"EC_APPLE_ACCOUNT"] ?: @"未设置";
-  NSString *applePwd =
-      [defaults stringForKey:@"EC_APPLE_PASSWORD"] ?: @"未设置";
-  NSString *tkJson = [defaults stringForKey:@"EC_TIKTOK_ACCOUNTS"] ?: @"[]";
-
-  CGFloat w = self.accountScrollView.bounds.size.width;
-  CGFloat curY = 12;
-  CGFloat labelH = 22;
-  CGFloat sectionGap = 16;
-
-  // --- TikTok 账号区域 ---
-  UILabel *tkTitle =
-      [[UILabel alloc] initWithFrame:CGRectMake(12, curY, w - 24, labelH)];
-  tkTitle.text = @"🎵 TikTok 账号";
-  tkTitle.font = [UIFont boldSystemFontOfSize:15];
-  tkTitle.textColor = [UIColor systemPinkColor];
-  [self.accountScrollView addSubview:tkTitle];
-  curY += labelH + 6;
-
-  NSData *tkData = [tkJson dataUsingEncoding:NSUTF8StringEncoding];
-  NSArray *tkArr = [NSJSONSerialization JSONObjectWithData:tkData
-                                                   options:0
-                                                     error:nil];
-  if (![tkArr isKindOfClass:[NSArray class]] || tkArr.count == 0) {
-    UILabel *empty =
-        [[UILabel alloc] initWithFrame:CGRectMake(12, curY, w - 24, labelH)];
-    empty.text = @"暂无 TikTok 账号";
-    empty.font = [UIFont systemFontOfSize:13];
-    empty.textColor = [UIColor secondaryLabelColor];
-    [self.accountScrollView addSubview:empty];
-    curY += labelH + 4;
-  } else {
-    for (NSInteger i = 0; i < tkArr.count; i++) {
-      NSDictionary *item = tkArr[i];
-      NSString *email = item[@"email"] ?: @"";
-      NSString *acc = item[@"account"] ?: @"";
-      NSString *pwd = item[@"password"] ?: @"";
-
-      UILabel *numLabel =
-          [[UILabel alloc] initWithFrame:CGRectMake(12, curY, w - 24, labelH)];
-      numLabel.text = [NSString stringWithFormat:@"#%ld", (long)(i + 1)];
-      numLabel.font = [UIFont boldSystemFontOfSize:12];
-      numLabel.textColor = [UIColor tertiaryLabelColor];
-      [self.accountScrollView addSubview:numLabel];
-      curY += labelH;
-
-      if (email.length > 0) {
-        UILabel *tkEmailLabel = [self
-            createCopyableLabel:[NSString stringWithFormat:@"  邮箱: %@", email]
-                          frame:CGRectMake(12, curY, w - 24, labelH)];
-        [self.accountScrollView addSubview:tkEmailLabel];
-        curY += labelH + 2;
+  // 先把旧的 Apple ID label 去除
+  for (UIView *v in self.view.subviews) {
+      if (v.tag == 9991 || v.tag == 9992) {
+          [v removeFromSuperview];
       }
-
-      UILabel *tkAccLabel = [self
-          createCopyableLabel:[NSString stringWithFormat:@"  账号: %@", acc]
-                        frame:CGRectMake(12, curY, w - 24, labelH)];
-      [self.accountScrollView addSubview:tkAccLabel];
-      curY += labelH + 2;
-
-      UILabel *tkPwdLabel = [self
-          createCopyableLabel:[NSString stringWithFormat:@"  密码: %@", pwd]
-                        frame:CGRectMake(12, curY, w - 24, labelH)];
-      [self.accountScrollView addSubview:tkPwdLabel];
-      curY += labelH + 8;
-    }
   }
-  curY += sectionGap;
 
-  // --- Apple 账号区域 ---
-  UILabel *appleTitle =
-      [[UILabel alloc] initWithFrame:CGRectMake(12, curY, w - 24, labelH)];
-  appleTitle.text = @"🍎 Apple 账号";
-  appleTitle.font = [UIFont boldSystemFontOfSize:15];
-  appleTitle.textColor = [UIColor systemOrangeColor];
-  [self.accountScrollView addSubview:appleTitle];
-  curY += labelH + 6;
+  NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
+  NSString *appleAcc = [defaults stringForKey:@"EC_APPLE_ACCOUNT"] ?: @"未设置";
+  NSString *applePwd = [defaults stringForKey:@"EC_APPLE_PASSWORD"] ?: @"未设置";
 
-  UILabel *accLabel = [self
-      createCopyableLabel:[NSString stringWithFormat:@"账号: %@", appleAcc]
-                    frame:CGRectMake(12, curY, w - 24, labelH)];
-  [self.accountScrollView addSubview:accLabel];
-  curY += labelH + 4;
+  CGFloat padding = 20.0;
+  CGFloat width = self.view.bounds.size.width - 2 * padding;
+  CGFloat labelH = 22;
+  // 紧随 metadataLabel 下方
+  CGFloat y = CGRectGetMaxY(self.metadataLabel.frame) + 15;
 
-  UILabel *pwdLabel = [self
-      createCopyableLabel:[NSString stringWithFormat:@"密码: %@", applePwd]
-                    frame:CGRectMake(12, curY, w - 24, labelH)];
-  [self.accountScrollView addSubview:pwdLabel];
-  curY += labelH + sectionGap;
+  UILabel *accLabel = [self createCopyableLabel:[NSString stringWithFormat:@"🍎 账号: %@", appleAcc] frame:CGRectMake(padding, y, width, labelH)];
+  accLabel.textColor = [UIColor darkGrayColor];
+  accLabel.tag = 9991;
+  [self.view addSubview:accLabel];
+  y += labelH + 8;
 
-  self.accountScrollView.contentSize = CGSizeMake(w, curY + 12);
+  UILabel *pwdLabel = [self createCopyableLabel:[NSString stringWithFormat:@"🔑 密码: %@", applePwd] frame:CGRectMake(padding, y, width, labelH)];
+  pwdLabel.textColor = [UIColor darkGrayColor];
+  pwdLabel.tag = 9992;
+  [self.view addSubview:pwdLabel];
 }
 
 // 创建可点击复制的 Label

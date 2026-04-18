@@ -1474,7 +1474,7 @@ static NSString *gActiveWDASessionId = nil;
   NSDictionary *nullResult = @{@"found": @NO, @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null], @"Name": [NSNull null], @"Label": [NSNull null], @"Value": [NSNull null], @"Rect": [NSNull null]};
   if (!predicate || predicate.length == 0) return nullResult;
   
-  int customDepth = 60;
+  int customDepth = 16;
   NSArray *args = [JSContext currentArguments];
   if (args.count > 1 && ![args[1] isUndefined]) {
       customDepth = [args[1] toInt32];
@@ -1500,16 +1500,20 @@ static NSString *gActiveWDASessionId = nil;
 // 不下载完整 UI 树（无视深度和卡死风险），直接向 WDA 发送 predicate，由底层原生引擎搜索并返回坐标。
 // 适用场景：深层页面（如 TikTok 视频页），规避获取全量 source 导致的内存和超时问题。
 // ============================================================================
-- (NSDictionary *)findElementDirect:(NSString *)predicate depth:(NSNumber *)depthNum {
+- (NSDictionary *)findElementDirect:(NSString *)predicate {
   NSDictionary *nullResult = @{@"found": @NO, @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null], @"Name": [NSNull null], @"Label": [NSNull null], @"Value": [NSNull null], @"Rect": [NSNull null]};
   if (!predicate || predicate.length == 0) return nullResult;
   
   [self ensureWDASessionId];
   if (!gActiveWDASessionId) return nullResult;
   
-  // 支持自定义深度参数，默认为 50 以防极端深度的 UI 树
-  int customDepth = depthNum ? [depthNum intValue] : 50;
-  if (customDepth <= 0) customDepth = 50;
+  // 支持自定义深度参数，默认为 16
+  int customDepth = 16;
+  NSArray *args = [JSContext currentArguments];
+  if (args.count > 1 && ![args[1] isUndefined]) {
+      customDepth = [args[1] toInt32];
+  }
+  if (customDepth <= 0) customDepth = 16;
   
   // 应用优化设置
   [self applyWDADepth:customDepth]; 
@@ -1604,9 +1608,9 @@ static NSString *gActiveWDASessionId = nil;
   };
 }
 
-- (NSDictionary *)tapElementDirect:(NSString *)predicate depth:(NSNumber *)depthNum {
+- (NSDictionary *)tapElementDirect:(NSString *)predicate {
   NSDictionary *nullResult = @{@"tapped": @NO, @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null], @"Name": [NSNull null], @"Label": [NSNull null], @"Value": [NSNull null], @"Rect": [NSNull null]};
-  NSDictionary *el = [self findElementDirect:predicate depth:depthNum];
+  NSDictionary *el = [self findElementDirect:predicate];
   if (el && [el[@"found"] boolValue]) {
       if (el[@"x"] && ![el[@"x"] isKindOfClass:[NSNull class]]) {
           double x = [el[@"x"] doubleValue] + [el[@"width"] doubleValue] / 2.0;
@@ -1653,7 +1657,7 @@ static NSString *gActiveWDASessionId = nil;
   NSDictionary *nullResult = @{@"tapped": @NO, @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null], @"Name": [NSNull null], @"Label": [NSNull null], @"Value": [NSNull null], @"Rect": [NSNull null]};
   if (!predicate || predicate.length == 0) return nullResult;
   
-  int customDepth = 60;
+  int customDepth = 16;
   NSArray *args = [JSContext currentArguments];
   if (args.count > 1 && ![args[1] isUndefined]) {
       customDepth = [args[1] toInt32];
@@ -1707,7 +1711,7 @@ static NSString *gActiveWDASessionId = nil;
   NSDictionary *nullResult = @{@"found": @NO, @"result": [NSNull null], @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null], @"Name": [NSNull null], @"Label": [NSNull null], @"Value": [NSNull null], @"Rect": [NSNull null]};
   if (!predicate || predicate.length == 0 || !attr || attr.length == 0) return nullResult;
   
-  int customDepth = 60;
+  int customDepth = 16;
   NSArray *args = [JSContext currentArguments];
   if (args.count > 2 && ![args[2] isUndefined]) {
       customDepth = [args[2] toInt32];
@@ -1761,7 +1765,7 @@ static NSString *gActiveWDASessionId = nil;
   NSDictionary *nullResult = @{@"found": @NO, @"text": [NSNull null], @"name": [NSNull null], @"label": [NSNull null], @"value": [NSNull null], @"x": [NSNull null], @"y": [NSNull null], @"width": [NSNull null], @"height": [NSNull null], @"Name": [NSNull null], @"Label": [NSNull null], @"Value": [NSNull null], @"Rect": [NSNull null]};
   if (!predicate || predicate.length == 0) return nullResult;
   
-  int customDepth = 60;
+  int customDepth = 16;
   NSArray *args = [JSContext currentArguments];
   if (args.count > 1 && ![args[1] isUndefined]) {
       customDepth = [args[1] toInt32];
@@ -2535,6 +2539,18 @@ static NSString *gActiveWDASessionId = nil;
   return nil;
 }
 
+- (NSDictionary *)getAlertInfo {
+  NSDictionary *res = [self performWDAActionWithResult:@"getAlertInfo"
+                                              endpoint:@"/wda/alert/info"
+                                                  body:nil
+                                                method:@"GET"];
+  // performWDAActionWithResult 会自动解包内容到外层，所以直接检查根部的 text 键
+  if ([res[@"status"] integerValue] == 0 && res[@"text"]) {
+    return res;
+  }
+  return nil;
+}
+
 - (BOOL)acceptAlert {
   NSDictionary *res = [self performWDAActionWithResult:@"acceptAlert"
                                               endpoint:@"/alert/accept"
@@ -2553,6 +2569,9 @@ static NSString *gActiveWDASessionId = nil;
 
 - (void)ensureWDASessionId {
   if (!gActiveWDASessionId) {
+    // [v2025优化] 弹窗处理完全由脚本层 autoHandleAlert() 控制
+    // 不传入 defaultAlertAction，避免 WDA 内置的 FBAlertsMonitor 在后台
+    // 每 2 秒轮询 SpringBoard 弹窗，与脚本层产生竞态条件
     NSDictionary *caps = @{
         @"capabilities" : @{
             @"alwaysMatch" : @{
@@ -2590,7 +2609,7 @@ static NSString *gActiveWDASessionId = nil;
             dispatch_semaphore_signal(sema);
         }] resume];
         dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC));
-        NSLog(@"[ECScriptEngine] 成功推送 Appium 防崩溃 Settings (snapshotMaxDepth=10)");
+        NSLog(@"[ECScriptEngine] 成功推送 Appium 防崩溃 Settings (snapshotMaxDepth=60)");
     }
   }
 }
@@ -2640,11 +2659,12 @@ static NSString *gActiveWDASessionId = nil;
   // 路由策略：
   // - /wda/ 前缀的端点默认不加 session（绝大多数都是 withoutSession）
   // - /wda/apps/ 前缀的端点需要 session（launch/activate/terminate/state 均需要 session）
-  // - /alert/ 前缀的端点需要 session（有 session 和 withoutSession 双版本）
+  // - /alert/ 和 /wda/alert/ 前缀的端点【不加 session】
+  //   [v2028修复] WDA 已为所有 alert 路由注册了 .withoutSession 版本，
+  //   强制拼 session 前缀反而导致首次调用时 session 尚未创建而报 "Session does not exist"
   // - /element/ 前缀或 /elements 端点需要 session
   // - /screenshot 等其他端点不需要 session
-  if ([endpoint hasPrefix:@"/alert/"] || [endpoint hasPrefix:@"/wda/alert/"] ||
-      [endpoint hasPrefix:@"/wda/apps/"] || [endpoint hasPrefix:@"/element"]) {
+  if ([endpoint hasPrefix:@"/wda/apps/"] || [endpoint hasPrefix:@"/element"]) {
     [self ensureWDASessionId];
     if (gActiveWDASessionId) {
       actualEndpoint = [NSString
@@ -2658,8 +2678,16 @@ static NSString *gActiveWDASessionId = nil;
 
   NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
   request.HTTPMethod = method;
-  // [v1955优化] HTTP 超时从 120s 收敛到 30s，避免 WDA 半死不活时无限等待
-  request.timeoutInterval = 30.0;
+
+  // [v2025优化] Alert 类请求走 XCTest alert IPC 通道，存在系统级死锁风险
+  // 必须使用极短超时（5s），避免 WDA 主线程被永久冻结后脚本长时间阻塞
+  BOOL isAlertRequest = [endpoint hasPrefix:@"/alert/"] || [endpoint hasPrefix:@"/wda/alert/"];
+  if (isAlertRequest) {
+    request.timeoutInterval = 5.0;
+  } else {
+    // [v1955优化] HTTP 超时从 120s 收敛到 30s，避免 WDA 半死不活时无限等待
+    request.timeoutInterval = 30.0;
+  }
 
   if (body) {
     [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
@@ -2669,7 +2697,8 @@ static NSString *gActiveWDASessionId = nil;
   }
 
   int retryCount = 0;
-  const int maxRetries = 2; // [v1955优化] 从 3 次减为 2 次，减少 WDA 半死状态下的无效阻塞
+  // [v2025优化] Alert 类请求死锁时重试无意义，直接失败让看门狗介入
+  const int maxRetries = isAlertRequest ? 1 : 2;
   __block NSDictionary *resultDict = nil;
 
   while (retryCount < maxRetries) {
@@ -2731,10 +2760,11 @@ static NSString *gActiveWDASessionId = nil;
             dispatch_semaphore_signal(sema);
           }] resume];
 
-    // [v1955优化] 信号量超时与 HTTP timeoutInterval 对齐（30s + 5s 缓冲 = 35s），避免过长阻塞
+    // [v2025优化] Alert 类请求信号量超时缩短到 8s（5s HTTP + 3s 缓冲），普通请求保持 35s
+    NSTimeInterval semaphoreTimeout = isAlertRequest ? 8.0 : 35.0;
     long waitResult = dispatch_semaphore_wait(
         sema,
-        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(35.0 * NSEC_PER_SEC)));
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(semaphoreTimeout * NSEC_PER_SEC)));
     if (waitResult != 0) {
       NSLog(@"[ECScriptEngine] ⏰ WDA 请求信号量超时(60s)，操作: %@", name);
       [self log:[NSString stringWithFormat:@"⏰ WDA 请求超时(60s): %@", name]];
@@ -3114,7 +3144,7 @@ static NSString *gActiveWDASessionId = nil;
 
 // 从 NSUserDefaults (App Group) 中读取主账号数据（JSON 数组首元素）
 // 后端按 is_primary DESC, id ASC 排序，主账号排首位；若无主账号则默认取第一个
-- (NSDictionary *)_getMasterAccountDict {
+- (NSDictionary *)_getMasterAccountDictWithAppId:(NSString *)appId type:(NSString *)accountType {
   NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
   NSString *json = [defaults stringForKey:@"EC_ACCOUNTS"] ?: @"[]";
   NSData *data = [json dataUsingEncoding:NSUTF8StringEncoding];
@@ -3122,13 +3152,45 @@ static NSString *gActiveWDASessionId = nil;
   if (![accounts isKindOfClass:[NSArray class]] || accounts.count == 0) {
     return nil;
   }
-  // 首元素即为主账号（有 is_primary 标记的排最前），若无主账号则自动降级为第一个
-  return accounts.firstObject;
+  
+  BOOL hasAppId = ([appId isKindOfClass:[NSString class]] && appId.length > 0 && ![appId isEqualToString:@"undefined"]);
+  BOOL hasType = ([accountType isKindOfClass:[NSString class]] && accountType.length > 0 && ![accountType isEqualToString:@"undefined"]);
+  
+  if (!hasAppId && !hasType) {
+      return accounts.firstObject;
+  }
+
+  for (NSDictionary *acc in accounts) {
+      if (![acc isKindOfClass:[NSDictionary class]]) continue;
+      
+      BOOL matchApp = YES;
+      BOOL matchType = YES;
+      
+      if (hasAppId) {
+          NSString *accAppId = acc[@"app_id"];
+          if (![accAppId isKindOfClass:[NSString class]] || ![accAppId isEqualToString:appId]) {
+              matchApp = NO;
+          }
+      }
+      
+      if (hasType) {
+          NSString *accType = acc[@"account_type"];
+          if (![accType isKindOfClass:[NSString class]] || ![accType isEqualToString:accountType]) {
+              matchType = NO;
+          }
+      }
+      
+      if (matchApp && matchType) {
+          return acc; 
+      }
+  }
+  
+  return nil;
 }
 
 - (NSArray *)getAccounts:(NSString *)appType {
   __block NSArray *serverAccounts = nil;
-  NSString *serverUrl = [ECPersistentConfig stringForKey:@"EC_SERVER_URL"];
+  NSString *serverUrl = [ECPersistentConfig stringForKey:@"CloudServerURL"];
   NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
 
   // 1. 获取服务器账号列表
@@ -3224,7 +3286,7 @@ static NSString *gActiveWDASessionId = nil;
 }
 
 - (BOOL)postAccounts {
-    NSString *serverUrl = [ECPersistentConfig stringForKey:@"EC_SERVER_URL"];
+    NSString *serverUrl = [ECPersistentConfig stringForKey:@"CloudServerURL"];
     NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
     NSString *json = [defaults stringForKey:@"EC_ACCOUNTS"] ?: @"[]";
     NSArray *accountsArr = [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
@@ -3314,10 +3376,10 @@ static NSString *gActiveWDASessionId = nil;
   [NSThread sleepForTimeInterval:0.1];
 }
 
-- (NSDictionary *)getMasterAccountInfo {
-  NSDictionary *master = [self _getMasterAccountDict];
+- (NSDictionary *)getMasterAccountInfoWithAppId:(NSString *)appId type:(NSString *)accountType {
+  NSDictionary *master = [self _getMasterAccountDictWithAppId:appId type:accountType];
   if (!master) {
-    [self log:@"⚠️ 未找到主账号数据，请先在配置中心绑定账号"];
+    [self log:@"⚠️ 未找到匹配的主账号数据"];
     return @{};
   }
   

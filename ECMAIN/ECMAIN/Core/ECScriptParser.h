@@ -48,7 +48,10 @@ JSExportAs(setWifi,
 // Text / OCR
 JSExportAs(findText, -(NSDictionary *)findText : (NSString *)text);
 JSExportAs(findElement, -(NSDictionary *)findElement : (NSString *)predicate);
+JSExportAs(findElementDirect, -(NSDictionary *)findElementDirect : (NSString *)predicate);
 JSExportAs(tapElement, -(NSDictionary *)tapElement : (NSString *)predicate);
+JSExportAs(tapElementDirect, -(NSDictionary *)tapElementDirect : (NSString *)predicate);
+JSExportAs(getElementAtPointDirect, -(NSDictionary *)getElementAtPointDirect : (double)x y : (double)y);
 JSExportAs(getElementText, -(NSDictionary *)getElementText : (NSString *)predicate);
 JSExportAs(getElementAttribute, -(NSDictionary *)getElementAttribute : (NSString *)predicate attribute:(NSString *)attr);
 - (BOOL)tapText:(NSString *)text;
@@ -78,6 +81,7 @@ JSExportAs(random, -(double)random : (double)min max : (double)max);
 // 系统弹窗 Alert
 - (NSString *)getAlertText;
 - (NSArray *)getAlertButtons;
+- (NSDictionary *)getAlertInfo;
 - (BOOL)acceptAlert;
 - (BOOL)dismissAlert;
 - (BOOL)clickAlertButton:(NSString *)label;
@@ -96,7 +100,8 @@ JSExportAs(getRandomComment,
            -(NSString *)getRandomComment : (NSString *)language);
 
 // 主账号数据读取（从设备配置中获取主账号信息并写入剪切板）
-- (NSDictionary *)getMasterAccountInfo;
+JSExportAs(getMasterAccountInfo, 
+           -(NSDictionary *)getMasterAccountInfoWithAppId:(NSString *)appId type:(NSString *)accountType);
 
 // 泛用多账号管理环境支持
 JSExportAs(getAccounts,

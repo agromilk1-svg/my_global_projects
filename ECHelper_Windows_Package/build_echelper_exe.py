@@ -80,6 +80,8 @@ cmd = [
     "--collect-all", "tidevice",
     "--collect-all", "pymobiledevice3",
     "--collect-all", "zeroconf",
+    "--collect-all", "apple_compress",
+    "--collect-all", "pyimg4",
     "--hidden-import", "pymobiledevice3.services.mobilebackup2",
     "--hidden-import", "pymobiledevice3.services.installation_proxy",
     "--hidden-import", "pymobiledevice3.services.diagnostics",

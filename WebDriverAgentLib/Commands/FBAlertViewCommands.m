@@ -11,6 +11,7 @@
 #import "FBAlert.h"
 #import "FBRouteRequest.h"
 #import "FBSession.h"
+#import "XCUIApplication+FBAlert.h"
 #import "XCUIApplication+FBHelpers.h"
 
 @implementation FBAlertViewCommands
@@ -43,6 +44,15 @@
     [[FBRoute GET:@"/wda/alert/buttons"]
         respondWithTarget:self
                    action:@selector(handleGetAlertButtonsCommand:)],
+    [[FBRoute GET:@"/wda/alert/buttons"].withoutSession
+        respondWithTarget:self
+                   action:@selector(handleGetAlertButtonsCommand:)],
+    [[FBRoute GET:@"/wda/alert/info"]
+        respondWithTarget:self
+                   action:@selector(handleAlertInfoCommand:)],
+    [[FBRoute GET:@"/wda/alert/info"].withoutSession
+        respondWithTarget:self
+                   action:@selector(handleAlertInfoCommand:)],
   ];
 }
 
@@ -169,4 +179,38 @@
   NSArray *labels = alert.buttonLabels;
   return FBResponseWithObject(labels);
 }
+
++ (id<FBResponsePayload>)handleAlertInfoCommand:
+    (FBRouteRequest *)request {
+  // [v2025] 极速弹窗探测：一次调用同时获取 Text 和 Buttons，避免多次 XCTest IPC 调用引发死锁。
+  // 直接查询 SpringBoard 避免耗时的活跃 App 枚举
+  XCUIApplication *application = XCUIApplication.fb_systemApplication;
+  XCUIElement *alertElement = application.fb_alertElement;
+  
+  // 若无弹窗直接返回 null，不抛错，极大降低脚本层的出错率和耗时
+  if (nil == alertElement) {
+    return FBResponseWithObject([NSNull null]);
+  }
+  
+  FBAlert *alert = [FBAlert alertWithElement:alertElement];
+  if (!alert.isPresent) {
+    return FBResponseWithObject([NSNull null]);
+  }
+  
+  NSString *text = alert.text;
+  NSArray *buttons = alert.buttonLabels;
+  
+  // [v2025优化] 增加一次轻量级重试：如果抓到了 text 但 buttons 为空，
+  // 可能是系统弹窗还在动画中，UI 树尚未完全挂载。
+  if (text && (!buttons || buttons.count == 0)) {
+    [NSThread sleepForTimeInterval:0.5];
+    buttons = alert.buttonLabels;
+  }
+  
+  return FBResponseWithObject(@{
+    @"text": text ?: @"",
+    @"buttons": buttons ?: @[]
+  });
+}
+
 @end

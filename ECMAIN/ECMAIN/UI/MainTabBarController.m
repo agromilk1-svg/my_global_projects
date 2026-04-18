@@ -82,12 +82,19 @@
   // Set controllers
   self.viewControllers = @[ dashboardVC, vpnNav, appListNav, taskNav, accountNav ];
   //  Style
-  self.tabBar.barStyle = UIBarStyleBlack;
-  self.tabBar.tintColor = [UIColor systemBlueColor];
+  self.tabBar.barStyle = UIBarStyleDefault;
+  self.tabBar.tintColor = [UIColor blackColor];
+  self.tabBar.unselectedItemTintColor = [UIColor systemGray2Color];
   if (@available(iOS 15.0, *)) {
     UITabBarAppearance *appearance = [[UITabBarAppearance alloc] init];
-    [appearance configureWithOpaqueBackground];
-    appearance.backgroundColor = [UIColor colorWithWhite:0.1 alpha:1.0];
+    [appearance configureWithTransparentBackground];
+    appearance.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.95];
+    appearance.shadowColor = [UIColor clearColor];
+    
+    UITabBarItemAppearance *itemApp = appearance.stackedLayoutAppearance;
+    itemApp.selected.titleTextAttributes = @{ NSForegroundColorAttributeName: [UIColor blackColor], NSFontAttributeName: [UIFont boldSystemFontOfSize:10] };
+    itemApp.normal.titleTextAttributes = @{ NSForegroundColorAttributeName: [UIColor systemGray2Color] };
+    
     self.tabBar.standardAppearance = appearance;
     self.tabBar.scrollEdgeAppearance = appearance;
   }

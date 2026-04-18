@@ -782,6 +782,9 @@ static NSString *_cachedDeviceUDID = nil;
                                        if (error) {
                                          NSLog(@"[Tunnel] Ping 失败: %@",
                                                error.localizedDescription);
+                                         // [增加重火力防线]：如果控制中心被杀后台或突然断网没有发送关闭指令
+                                         // 直接强制取消当前僵尸 Task，这将自动触发 _wsReceiveLoop 报错，进而调用 stopMJPEGStream 停止一切截图！
+                                         [task cancelWithCloseCode:NSURLSessionWebSocketCloseCodeAbnormalClosure reason:nil];
                                        }
                                      }];
                                    } else {

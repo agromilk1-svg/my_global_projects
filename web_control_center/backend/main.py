@@ -237,6 +237,7 @@ class DeviceConfigRequest(BaseModel):
     wifi_ssid: str = ""
     wifi_password: str = ""
     watchdog_wda: int = 1
+    target_apps: str = "com.zhiliaoapp.musically,com.ss.iphone.ugc.Ame,com.ss.iphone.ugc.Aweme"
 
 @app.get("/api/devices/{udid}/config")
 def get_device_config_api(udid: str):
@@ -250,7 +251,7 @@ async def set_device_config(udid: str, req: DeviceConfigRequest, user: dict = De
         udid, req.config_ip, req.config_vpn,
         req.device_no, req.country, req.group_name, req.exec_time,
         req.apple_account, req.apple_password, 
-        req.wifi_ssid, req.wifi_password, req.watchdog_wda
+        req.wifi_ssid, req.wifi_password, req.watchdog_wda, req.target_apps
     )
     if success:
         return {"status": "ok", "message": "配置保存成功"}
@@ -264,6 +265,7 @@ class BatchDeviceConfigRequest(BaseModel):
     config_vpn: str = None
     wifi_ssid: str = None
     wifi_password: str = None
+    target_apps: str = None
 
 @app.post("/api/devices/batch_update")
 async def batch_update_devices(req: BatchDeviceConfigRequest, user: dict = Depends(get_current_user)):
@@ -273,7 +275,7 @@ async def batch_update_devices(req: BatchDeviceConfigRequest, user: dict = Depen
         await require_device_permission(user, udid)
         
     success = database.batch_update_devices_config(
-        req.udids, req.country, req.group_name, req.exec_time, req.config_vpn, req.wifi_ssid, req.wifi_password
+        req.udids, req.country, req.group_name, req.exec_time, req.config_vpn, req.wifi_ssid, req.wifi_password, req.target_apps
     )
     if success:
         return {"status": "ok", "message": f"成功更新 {len(req.udids)} 台设备的配置"}
@@ -489,6 +491,10 @@ async def delete_existing_script(script_id: int, user: dict = Depends(get_curren
         return {"status": "ok"}
     raise HTTPException(status_code=400, detail="Failed to delete script or not found")
 
+class BatchImportReq(BaseModel):
+    language: str
+    content: str
+
 # ==================== 评论列表接口 ====================
 
 @app.get("/api/comments")
@@ -512,6 +518,70 @@ async def create_new_comment(req: CommentDataReq, user: dict = Depends(require_s
 async def delete_existing_comment(comment_id: int, user: dict = Depends(require_super_admin)):
     database.delete_comment(comment_id)
     return {"status": "ok"}
+
+@app.post("/api/comments/generate_batch")
+async def generate_batch_comments(user: dict = Depends(require_super_admin)):
+    """批量生成泰语和马来语评论"""
+    import random
+    import time
+    
+    emojis = ["😂", "🥰", "🔥", "👏", "👍", "😁", "❤️", "🙌", "✨", ""]
+    
+    langs_config = {
+        "th-TH": {
+            "A": ["วิดีโอนี้", "ว้าว", "โอ้มายก๊อด", "ฮ่าๆ", "บ้าไปแล้ว", "เอาจริงนะ", "จริงๆ นะ", "มัน", "ไม่น่าเชื่อ", "สุดยอด"],
+            "B": ["ตลกมาก", "เจ๋งสุดๆ", "ดีมากจริงๆ", "น่าสนใจมาก", "เป็นผลงานที่ยอดเยี่ยม", "เท่มาก", "ขำกลิ้งเลย", "น่าทึ่งมาก", "ดีกว่าที่คิดไว้เยอะ", "พิเศษจริงๆ"],
+            "C": ["สู้ๆ นะ!", "บันทึกไว้ดูอีก!", "ชอบมาก!", "กดไลก์รัวๆ!", "เป็นกำลังใจให้!", "หลงรักเลย", "ดูวนไปหลายรอบ", "ขำหนักมาก", "ช่องโปรดเลย", "ขอบคุณสำหรับเนื้อหาดีๆ"]
+        },
+        "ms-MY": {
+            "A": ["Video ini", "Weyh", "Wah", "Ya ampun", "Haha", "Gila lah", "Sejujurnya", "Sumpah", "Memang", "Tak percaya"],
+            "B": ["kelakar gila", "mantap gila", "memang padu", "sangat menarik", "memang masterpiece", "power lah", "lawak betul", "fantastik", "luar jangkaan", "memang istimewa"],
+            "C": ["teruskan usaha!", "dah save!", "suka sangat!", "dah like!", "support korang", "sayang sangat", "tengok banyak kali", "gelak pecah perut", "creator terbaik", "dapat ilmu baru"]
+        }
+    }
+    
+    total_inserted = 0
+    all_comments = []
+    
+    for lang, parts in langs_config.items():
+        combinations = []
+        for a in parts["A"]:
+            for b in parts["B"]:
+                for c in parts["C"]:
+                    for e in emojis:
+                        # 组合逻辑：A B C 表情
+                        if lang == "th-TH":
+                            text = f"{a} {b} {c} {e}".strip()
+                        else:
+                            text = f"{a} {b}, {c} {e}".strip()
+                        combinations.append(text)
+        
+        # 随机洗牌并取 1000 条
+        random.shuffle(combinations)
+        selected = combinations[:1000]
+        
+        now = time.time()
+        for content in selected:
+            all_comments.append((lang, content, now))
+            
+    if all_comments:
+        total_inserted = database.batch_add_comments(all_comments)
+        
+    return {"status": "ok", "message": f"成功生成并插入 {total_inserted} 条评论（泰语: 1000, 马来语: 1000）"}
+
+@app.post("/api/comments/batch_import")
+async def batch_import_comments(req: BatchImportReq, user: dict = Depends(require_super_admin)):
+    """手动批量导入评论"""
+    import time
+    lines = [line.strip() for line in req.content.split('\n') if line.strip()]
+    if not lines:
+        raise HTTPException(status_code=400, detail="Content is empty")
+    
+    now = time.time()
+    all_comments = [(req.language, line, now) for line in lines]
+    
+    total_inserted = database.batch_add_comments(all_comments)
+    return {"status": "ok", "message": f"成功导入 {total_inserted} 条评论到语言 {req.language}"}
 
 # ==================== 泛用账号管理接口 ====================
 
@@ -1523,9 +1593,54 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
              return {"status": "ok"}
 
         elif req.action_type == "SCRIPT":
-             # [v1736] 脚本分发同步化路由：实现从手机端到前端的 logs/return_value 透明传回
-             _script_ws = ACTIVE_TUNNELS.get(req.udid)
+             # [v2028] 脚本分发同步化路由（通道优先级重构）
+             # 核心修复：USB/LAN 直连优先，WS 隧道仅在纯远程模式或直连不可用时兜底
+             # 
+             # 旧逻辑的致命缺陷：无论 connection_mode 是什么，都先走 WS 隧道。
+             # 当 WS 隧道不健康（如 ECMAIN 刚更新重启、隧道对象还残留在字典里但已断裂），
+             # 会白白等 120 秒超时后才降级，导致用户看到 "Script execution timeout over WS tunnel"。
+             # 
+             # 新逻辑：
+             #   USB 模式 → 直接本机 HTTP (dev.script_port/8089) → 失败才降级 WS
+             #   LAN 模式 → 直接局域网 HTTP (wlan_ip:8089) → 失败才降级 WS
+             #   WS 模式  → WS 隧道（纯远程，无 USB/LAN 可用）→ 失败报错
              
+             _script_payload = {"type": "SCRIPT", "payload": req.script_code}
+             _script_delivered = False
+             
+             # ===== 快速通道 1：USB 直连（本机端口转发，0 跳延迟，最可靠）=====
+             if dev and req.connection_mode == "usb":
+                 try:
+                     script_port = getattr(dev, 'script_port', 8089)
+                     logging.info(f"[SCRIPT] USB 快速通道下发: 127.0.0.1:{script_port}/task (udid={req.udid})")
+                     status, resp = await _async_wda_request(
+                         "POST", f"http://127.0.0.1:{script_port}/task",
+                         json_body=_script_payload, timeout=120.0, force_http=True
+                     )
+                     if status == 200:
+                         return resp  # 直接透传 iOS 返回的 {"status": "ok", "logs": [...], ...}
+                     else:
+                         logging.warning(f"[SCRIPT] USB 通道返回非 200: status={status}, resp={resp}")
+                 except Exception as usb_err:
+                     logging.error(f"[SCRIPT] USB 通道异常: {usb_err}")
+             
+             # ===== 快速通道 2：LAN 直连（同一局域网，1 跳延迟）=====
+             if not _script_delivered and wlan_ip and req.connection_mode in ("lan", "usb"):
+                 try:
+                     logging.info(f"[SCRIPT] LAN 快速通道下发: {wlan_ip}:8089/task (udid={req.udid})")
+                     status, resp = await _async_wda_request(
+                         "POST", f"http://{wlan_ip}:8089/task",
+                         json_body=_script_payload, timeout=120.0, force_http=True
+                     )
+                     if status == 200:
+                         return resp
+                     else:
+                         logging.warning(f"[SCRIPT] LAN 通道返回非 200: status={status}")
+                 except Exception as lan_err:
+                     logging.error(f"[SCRIPT] LAN 通道异常: {lan_err}")
+             
+             # ===== 兜底通道：WS 隧道（纯远程或直连全部失败后的最后手段）=====
+             _script_ws = ACTIVE_TUNNELS.get(req.udid)
              if not _script_ws:
                  for tk, tw in ACTIVE_TUNNELS.items():
                      if req.udid in tk or tk in req.udid:
@@ -1535,17 +1650,17 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
              
              if _script_ws:
                  try:
-                     import uuid
                      task_id = "proxy_script_" + str(uuid.uuid4())[:8]
                      loop = asyncio.get_event_loop()
                      future = loop.create_future()
                      PENDING_TASKS[task_id] = future
                      
+                     logging.info(f"[SCRIPT] WS 隧道下发: task_id={task_id} (udid={req.udid})")
                      await _script_ws.send_json({
                          "id": task_id, 
                          "method": "POST", 
                          "url": "http://127.0.0.1:8089/task", 
-                         "body": {"type": "SCRIPT", "payload": req.script_code}
+                         "body": _script_payload
                      })
                      
                      # 同步透传等待（120秒超时）
@@ -1553,30 +1668,12 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                          result = await asyncio.wait_for(future, timeout=120.0)
                          return result.get("body", {"status": "success", "detail": "WS Dispatch OK"})
                      except asyncio.TimeoutError:
+                         logging.error(f"[SCRIPT] WS 隧道 120s 超时! task_id={task_id}, udid={req.udid}")
                          return {"status": "error", "msg": "Script execution timeout over WS tunnel"}
                      finally:
                          PENDING_TASKS.pop(task_id, None)
                  except Exception as ws_err:
                      logging.error(f"[SCRIPT] WS 隧道发送失败 ({req.udid}): {ws_err}")
-             
-             # USB 通道：透传原始响应
-             if dev:
-                 try:
-                     script_port = getattr(dev, 'script_port', 8089)
-                     status, resp = await _async_wda_request("POST", f"http://127.0.0.1:{script_port}/task", json_body={"type":"SCRIPT", "payload": req.script_code}, timeout=60.0, force_http=True)
-                     if status == 200:
-                         return resp # 直接透传 iOS 返回的 {"status": "ok", "logs": [...], ...}
-                 except Exception as usb_err:
-                     logging.error(f"[SCRIPT] USB 通道异常: {usb_err}")
-             
-             # LAN 通道：透传原始响应
-             if wlan_ip:
-                 try:
-                     status, resp = await _async_wda_request("POST", f"http://{wlan_ip}:8089/task", json_body={"type":"SCRIPT", "payload": req.script_code}, timeout=60.0, force_http=True)
-                     if status == 200:
-                         return resp
-                 except Exception as lan_err:
-                     logging.error(f"[SCRIPT] LAN 通道异常: {lan_err}")
              
              # 三路全挂：输出详细诊断信息
              logging.error(f"[SCRIPT] 三通道全部失败! udid={req.udid}, tunnels={list(ACTIVE_TUNNELS.keys())}, dev={'exists' if dev else 'None'}, wlan_ip={wlan_ip}")
@@ -1893,12 +1990,15 @@ async def ws_screen_stream(websocket: WebSocket, udid: str, mode: str = 'ws', sl
                 try:
                     _stop_ws = _find_tunnel() if '_find_tunnel' in dir() else ACTIVE_TUNNELS.get(udid)
                     if _stop_ws:
-                        await _stop_ws.send_json({
+                        _stop_task = {
                             "id": f"stream_stop_{time.monotonic_ns()}",
                             "method": "STOP_STREAM",
                             "url": "",
                             "body": None
-                        })
+                        }
+                        # [v1930 fix] 放入独立的后台任务执行，防止在 Cancelled 状态下 await 被强制打断
+                        asyncio.create_task(_stop_ws.send_json(_stop_task))
+                        logging.info(f"[WS STREAM] 后台任务已触发 STOP_STREAM (_find_tunnel)")
                 except:
                     pass
         logging.info(f"[WS STREAM] 方案B从机推流结束，共推 {frame_count} 帧")
@@ -2027,12 +2127,15 @@ async def get_screen_stream(udid: str, ip: str = None, usb: str = 'true', mode: 
                                         _stop_ws = tw
                                         break
                             if _stop_ws:
-                                await _stop_ws.send_json({
+                                _stop_task = {
                                     "id": f"stream_stop_{time.monotonic_ns()}",
                                     "method": "STOP_STREAM",
                                     "url": "",
                                     "body": None
-                                })
+                                }
+                                # [v1930 fix] 放入独立的后台任务执行，防止 StreamingResponse 在 Cancelled 状态下抛出 CancelledError 导致指令无法发给手机
+                                asyncio.create_task(_stop_ws.send_json(_stop_task))
+                                logging.info(f"[WS MJPEG] 后台任务已触发 STOP_STREAM (ACTIVE_TUNNELS)")
                         except:
                             pass
                 logging.info(f"[WS MJPEG] 方案B推流结束，共消费 {frame_count} 帧")
@@ -2252,7 +2355,8 @@ def handle_heartbeat(req: HeartbeatRequest):
         str(device_conf.get("exec_time", "")),
         str(device_conf.get("apple_account", "")),
         str(device_conf.get("apple_password", "")),
-        str(device_conf.get("watchdog_wda", 1))
+        str(device_conf.get("watchdog_wda", 1)),
+        str(device_conf.get("target_apps", ""))
     ])
     server_checksum = hashlib.md5(raw_hash_str.encode('utf-8')).hexdigest()
 
@@ -2267,6 +2371,7 @@ def handle_heartbeat(req: HeartbeatRequest):
             "apple_account": device_conf.get("apple_account", ""),
             "apple_password": device_conf.get("apple_password", ""),
             "watchdog_wda": device_conf.get("watchdog_wda", 1),
+            "target_apps": device_conf.get("target_apps", ""),
             "config_checksum": server_checksum
         }
     

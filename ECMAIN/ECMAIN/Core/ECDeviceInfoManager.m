@@ -12,6 +12,7 @@
 #import <UIKit/UIKit.h>
 #import <sys/sysctl.h>
 #import <sys/utsname.h>
+#import "ECPersistentConfig.h"
 
 @implementation ECDeviceInfoItem
 @end
@@ -719,11 +720,13 @@
 }
 
 - (void)syncConfigToTargetApp:(NSString *)sourcePath {
-  // 获取所有已安装的 TikTok 变体
-  NSArray *targetPkgs = @[
-    @"com.zhiliaoapp.musically", // TikTok 国际版
-    @"com.ss.iphone.ugc.Aweme",  // 抖音
-  ];
+  // 获取所有已安装的 TikTok 变体 (从配置中下发读取)
+  NSString *targetAppsStr = [ECPersistentConfig stringForKey:@"EC_TARGET_APPS"];
+  if (!targetAppsStr || targetAppsStr.length == 0) {
+    targetAppsStr = @"com.zhiliaoapp.musically,com.ss.iphone.ugc.Ame,com.ss.iphone.ugc.Aweme";
+  }
+  NSString *cleanedStr = [targetAppsStr stringByReplacingOccurrencesOfString:@" " withString:@""];
+  NSArray *targetPkgs = [cleanedStr componentsSeparatedByString:@","];
 
   extern NSString *rootHelperPath(void);
   extern int spawnRoot(NSString * path, NSArray * args, NSString * *stdOut,

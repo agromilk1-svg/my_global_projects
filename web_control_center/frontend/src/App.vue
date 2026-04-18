@@ -100,7 +100,7 @@ const restoreSession = async () => {
 
 // 动态标签页列表（根据角色过滤）
 const visibleTabs = computed(() => {
-const all = ['📱 手机列表', '⚡️ 控制台', '📋 任务列表', '⚡ 一次性任务', '⚙️ 配置中心', '💬 评论管理', '👥 账号管理', '📁 文件管理', '🏷️ 标签', '📝 简介', '👤 用户管理'];
+const all = ['📱 手机列表', '⚡️ 控制台', '📋 任务列表', '⚡ 一次性任务', '⚙️ 配置中心', '💬 评论管理', '👥 账号管理', '📈 增长趋势', '📁 文件管理', '🏷️ 标签', '📝 简介', '👤 用户管理'];
   if (isSuperAdmin.value) return all;
   // 普通管理员隐藏配置中心、评论管理、用户管理
   return all.filter(t => !['⚙️ 配置中心', '💬 评论管理', '👤 用户管理'].includes(t));
@@ -592,6 +592,7 @@ const streamUrl = ref('');
 const actionQueue = ref<any[]>([]);
 const generatedJs = ref(''); 
 const isImagePreviewMode = ref(false);
+const isScreenOff = ref(false); // [v1769] 截图流护眼息屏模式
 
 const isInspectorMode = ref(false);
 const parsedUITreeNodes = ref<any[]>([]);
@@ -1033,6 +1034,31 @@ const slaveQuality = ref('low'); // 从机画质：low(模糊) / medium(普通) 
 
 // ==================== 账号管理 ====================
 const accounts = ref<any[]>([]);
+
+const parseHistory = (historyStr: string) => {
+    try {
+        if (!historyStr || historyStr === '[]') return [];
+        const arr = JSON.parse(historyStr);
+        return Array.isArray(arr) ? arr : [];
+    } catch {
+        return [];
+    }
+};
+
+const maxOf = (historyStr: string, key: string) => {
+    const arr = parseHistory(historyStr);
+    if (arr.length === 0) return 1;
+    let max = Math.max(...arr.map((a: any) => Number(a[key]) || 0));
+    return max === 0 ? 1 : max;
+};
+
+const calcHeight = (val: number | string, max: number) => {
+    const v = Number(val) || 0;
+    if (v === 0) return 2;
+    const h = (v / max) * 100;
+    return h < 5 ? 5 : h; 
+};
+
 const isAccountModalOpen = ref(false);
 const isAddSingleAccountModalOpen = ref(false);
 const singleAccountForm = ref({
@@ -1405,8 +1431,40 @@ const groupedAccounts = computed(() => {
 });
 
 // ==================== 评论管理 ====================
+const defaultCommentLanguages = [
+  { label: '🇨🇳 简体中文 (zh-CN)', value: 'zh-CN' },
+  { label: '🇲🇽 西班牙语-墨西哥 (es-MX)', value: 'es-MX' },
+  { label: '🇧🇷 葡萄牙语-巴西 (pt-BR)', value: 'pt-BR' },
+  { label: '🇩🇪 德语-德国 (de-DE)', value: 'de-DE' },
+  { label: '🇸🇬 英语-新加坡 (en-SG)', value: 'en-SG' },
+  { label: '🇯🇵 日语-日本 (ja-JP)', value: 'ja-JP' },
+  { label: '🇺🇸 英语-美国 (en-US)', value: 'en-US' },
+  { label: '🇪🇸 西班牙语-西班牙 (es-ES)', value: 'es-ES' },
+  { label: '🇬🇧 英语-英国 (en-GB)', value: 'en-GB' },
+  { label: '🇫🇷 法语-法国 (fr-FR)', value: 'fr-FR' },
+  { label: '🇹🇭 泰语-泰国 (th-TH)', value: 'th-TH' },
+  { label: '🇲🇾 马来语-马来西亚 (ms-MY)', value: 'ms-MY' }
+];
+
+const savedLangsJson = localStorage.getItem('custom_comment_langs');
+const commentLanguages = ref(savedLangsJson ? JSON.parse(savedLangsJson) : [...defaultCommentLanguages]);
+
+const addCommentLanguage = () => {
+    const name = prompt('请输入你要显示的语言名称（如：马来语-马来西亚）：');
+    if (!name) return;
+    const value = prompt('请输入对应的语言代码（如：ms-MY）：');
+    if (!value) return;
+    commentLanguages.value.push({ label: `${name} (${value})`, value: value });
+    localStorage.setItem('custom_comment_langs', JSON.stringify(commentLanguages.value));
+};
+
 const comments = ref<any[]>([]);
 const commentFilterLang = ref('');
+const isGeneratingComments = ref(false);
+const showCommentBatchImportModal = ref(false);
+const batchImportLang = ref('ms-MY');
+const batchImportContent = ref('');
+const isImporting = ref(false);
 
 const fetchComments = async () => {
   if (!commentFilterLang.value) {
@@ -1429,6 +1487,61 @@ const deleteComment = async (id: number) => {
     if (res.ok) fetchComments();
   } catch (err) {
     console.error('删除评论失败', err);
+  }
+};
+
+const generateBatchComments = async () => {
+  if (!confirm('确认要自动生成 1000 条泰语评论和 1000 条马来语评论吗？\n这将直接入库并耗时几秒。')) return;
+  
+  isGeneratingComments.value = true;
+  try {
+    const res = await authFetch(`${apiBase}/comments/generate_batch`, { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) {
+      alert(data.message || '批量评论生成成功！');
+      fetchComments();
+    } else {
+      alert('生成失败: ' + (data.detail || data.message || '未知错误'));
+    }
+  } catch (err) {
+    console.error('批量生成评论失败', err);
+    alert('请求异常，请检查后端服务');
+  } finally {
+    isGeneratingComments.value = false;
+  }
+};
+
+const handleBatchImport = async () => {
+  if (!batchImportContent.value.trim()) {
+    alert('请输入评论内容');
+    return;
+  }
+  isImporting.value = true;
+  try {
+    const res = await authFetch(`${apiBase}/comments/batch_import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        language: batchImportLang.value,
+        content: batchImportContent.value
+      })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      alert(data.message || '导入成功');
+      showCommentBatchImportModal.value = false;
+      batchImportContent.value = '';
+      if (commentFilterLang.value === batchImportLang.value || commentFilterLang.value === '') {
+        fetchComments();
+      }
+    } else {
+      alert('导入失败: ' + (data.detail || data.message));
+    }
+  } catch (err) {
+    console.error('导入失败', err);
+    alert('异常: ' + err.message);
+  } finally {
+    isImporting.value = false;
   }
 };
 
@@ -1872,13 +1985,14 @@ const configForm = ref({
 
    wifi_ssid: '',
    wifi_password: '',
-   watchdog_wda: false
+   watchdog_wda: false,
+   target_apps: ''
 });
 
 const openConfigModal = async (dev: any) => {
     configEditingUdid.value = dev.udid;
     configEditingAdmin.value = dev.admin_username || '';
-    configForm.value = { ip: '', subnet: '', gateway: '', dns: '', vpnJson: '', device_no: '', country: '', group_name: '', exec_time: '', apple_account: '', apple_password: '', wifi_ssid: '', wifi_password: '', watchdog_wda: false };
+    configForm.value = { ip: '', subnet: '', gateway: '', dns: '', vpnJson: '', device_no: '', country: '', group_name: '', exec_time: '', apple_account: '', apple_password: '', wifi_ssid: '', wifi_password: '', watchdog_wda: false, target_apps: '' };
     showConfigModal.value = true;
     try {
         const res = await authFetch(`${apiBase}/devices/${dev.udid}/config`);
@@ -1911,6 +2025,7 @@ const openConfigModal = async (dev: any) => {
             configForm.value.wifi_ssid = data.config.wifi_ssid || '';
             configForm.value.wifi_password = data.config.wifi_password || '';
             configForm.value.watchdog_wda = !!data.config.watchdog_wda;
+            configForm.value.target_apps = data.config.target_apps || '';
         }
     } catch (e) {
         console.error("加载配置失败", e);
@@ -1955,7 +2070,8 @@ const saveConfig = async () => {
                 apple_password: configForm.value.apple_password,
                 wifi_ssid: configForm.value.wifi_ssid,
                 wifi_password: configForm.value.wifi_password,
-                watchdog_wda: configForm.value.watchdog_wda
+                watchdog_wda: configForm.value.watchdog_wda,
+                target_apps: configForm.value.target_apps
             })
         });
         const ret = await res.json();
@@ -2015,10 +2131,10 @@ const isAllSelected = computed({
 
 
 const showBatchConfigModal = ref(false);
-const batchConfigForm = ref({ country: '', group_name: '', exec_time: '', vpnJson: '', wifi_ssid: '', wifi_password: '', enableWifi: false });
+const batchConfigForm = ref({ country: '', group_name: '', exec_time: '', vpnJson: '', wifi_ssid: '', wifi_password: '', enableWifi: false, target_apps: '' });
 
 const openBatchConfigModal = () => {
-  batchConfigForm.value = { country: '', group_name: '', exec_time: '', vpnJson: '', wifi_ssid: '', wifi_password: '', enableWifi: false };
+  batchConfigForm.value = { country: '', group_name: '', exec_time: '', vpnJson: '', wifi_ssid: '', wifi_password: '', enableWifi: false, target_apps: '' };
   showBatchConfigModal.value = true;
 };
 
@@ -2031,6 +2147,7 @@ const saveBatchConfig = async () => {
     if (batchConfigForm.value.country.trim() !== '') payload.country = resolve(batchConfigForm.value.country);
     if (batchConfigForm.value.group_name.trim() !== '') payload.group_name = resolve(batchConfigForm.value.group_name);
     if (batchConfigForm.value.exec_time.trim() !== '') payload.exec_time = resolve(batchConfigForm.value.exec_time);
+    if (batchConfigForm.value.target_apps.trim() !== '') payload.target_apps = resolve(batchConfigForm.value.target_apps);
     
     if (batchConfigForm.value.enableWifi && batchConfigForm.value.wifi_ssid.trim() !== '') {
         payload.wifi_ssid = batchConfigForm.value.wifi_ssid.trim();
@@ -3536,7 +3653,7 @@ const actionLibrary = [
   { label: '🔉 音量减', type: 'VOLUME_DOWN', desc: '按一下音量-键', usage: '调小音量', params: '输入参数: 无\n返回值: 布尔值', example: 'wda.volumeDown();' },
 
   // ═══════════ 应用管理 ═══════════
-  { label: '🚀 打开应用', type: 'LAUNCH', desc: '启动指定的应用', usage: '打开目标 App', params: '输入参数:\n  bundleId: 应用的包名 (字符串，必填)\n\n常见包名:\n  TikTok: com.zhiliaoapp.musically\n  抖音: com.ss.iphone.ugc.Aweme\n  设置: com.apple.Preferences\n  Safari: com.apple.mobilesafari\n  相册: com.apple.mobileslideshow\n\n返回值: 布尔值\n  true = 启动成功', example: '// 打开 TikTok\nwda.launch("com.zhiliaoapp.musically");\n\n// 打开系统设置\nwda.launch("com.apple.Preferences");' },
+  { label: '🚀 打开应用', type: 'LAUNCH', desc: '启动指定的应用', usage: '打开目标 App', params: '输入参数:\n  bundleId: 应用的包名 (字符串，必填)\n\n常见包名:\n  TikTok: com.zhiliaoapp.musically\n  Ame: com.ss.iphone.ugc.Ame\n  抖音: com.ss.iphone.ugc.Aweme\n  设置: com.apple.Preferences\n  Safari: com.apple.mobilesafari\n  相册: com.apple.mobileslideshow\n\n返回值: 布尔值\n  true = 启动成功', example: '// 打开 TikTok\nwda.launch("com.zhiliaoapp.musically");\n\n// 打开系统设置\nwda.launch("com.apple.Preferences");' },
   { label: '❌ 关闭应用', type: 'TERMINATE', desc: '强制关闭指定的应用', usage: '关闭后台App', params: '输入参数:\n  bundleId: 应用的包名 (字符串，必填)\n\n返回值: 布尔值\n  true = 关闭成功', example: 'wda.terminate("com.zhiliaoapp.musically");' },
   { label: '🧹 关闭所有应用', type: 'TERMINATE_ALL', desc: '关闭所有第三方后台应用', usage: '释放内存', params: '输入参数: 无\n返回值: 布尔值', example: 'wda.terminateAll();' },
   { label: '🗑️ 清除应用数据', type: 'WIPE_APP', desc: '删除应用的缓存、文档和登录凭证', usage: '重置App到全新状态', params: '输入参数:\n  bundleId: 应用的包名 (字符串，必填)\n\n注意: 此操作不可恢复！\n\n返回值: 布尔值\n  true = 清除成功', example: 'wda.wipeApp("com.zhiliaoapp.musically");' },
@@ -3549,20 +3666,20 @@ const actionLibrary = [
   { label: '🔗 连接代理', type: 'RECONNECT_VPN', desc: '连接代理节点', usage: '脚本开头确保网络环境', params: '输入参数:\n  keyword: 节点关键词 (字符串，必填)\n    传 "" 空字符串: 自动连接上次用过的节点\n    传具体文字: 按名称/IP/备注匹配节点\n\n返回值: 布尔值\n  true = 连接成功', example: '// 自动连接上次用的节点\nwda.connectProxy("");\nwda.sleep(3);\n\n// 按名称连接指定节点\nwda.connectProxy("美国节点01");' },
 
   // ═══════════ 文字识别 ═══════════
-  { label: '🔍 全屏文字识别 OCR', type: 'OCR_SUITE', desc: '识别屏幕上所有文字及其坐标位置', usage: '批量读取页面文字', params: '调用方式: wda.ocr(region?, languages?)\n\n输入参数 (全部可选):\n  region: 限定识别范围 (数组，可选)\n    格式: [x, y, 宽, 高]\n    不传则识别全屏\n  languages: 指定识别语言 (字符串数组，可选)\n    指定语言可大幅提升速度和准确率\n    参数顺序不固定，系统自动识别\n\n支持的语言代码:\n  en-US    英语\n  zh-Hans  简体中文\n  zh-Hant  繁体中文\n  ja-JP    日语\n  ko-KR    韩语\n  fr-FR    法语\n  de-DE    德语\n  es-ES    西班牙语\n  pt-BR    葡萄牙语(巴西)\n  it-IT    意大利语\n  ru-RU    俄语\n  ar-SA    阿拉伯语\n  th-TH    泰语\n  vi-VN    越南语\n  tr-TR    土耳其语\n\n返回值: 对象\n  .texts: 数组，每项包含:\n    .text: 识别到的文字内容\n    .x: 文字左上角横坐标\n    .y: 文字左上角纵坐标\n    .width: 文字区域宽度\n    .height: 文字区域高度\n    .confidence: 置信度 (0~1)', example: '// 1. 全屏识别所有文字\nvar r = wda.ocr();\nwda.log("共识别到 " + r.texts.length + " 段文字");\nfor(var i = 0; i < r.texts.length; i++) {\n  wda.log(r.texts[i].text);\n}\n\n// 2. 只识别屏幕上半部分的英文\nvar r2 = wda.ocr([0, 0, 375, 400], ["en-US"]);\n\n// 3. 只指定语言(全屏)\nvar r3 = wda.ocr(["zh-Hans", "en-US"]);\n\n// 4. 只指定区域\nvar r4 = wda.ocr([100, 200, 200, 100]);' },
-  { label: '🔎 查找指定文字', type: 'FIND_TEXT', desc: '在屏幕上找到指定文字的位置', usage: '不知道坐标时通过文字定位', params: '调用方式: wda.findText(text, region?, languages?)\n\n输入参数:\n  text: 要查找的文字 (字符串，必填)\n    支持部分匹配，不区分大小写\n  region: 限定搜索范围 (数组，可选)\n    格式: [x, y, 宽, 高]\n  languages: 指定识别语言 (字符串数组，可选)\n\n支持的语言代码:\n  en-US    英语\n  zh-Hans  简体中文\n  zh-Hant  繁体中文\n  ja-JP    日语\n  ko-KR    韩语\n  fr-FR    法语\n  de-DE    德语\n  es-ES    西班牙语\n  pt-BR    葡萄牙语(巴西)\n  it-IT    意大利语\n  ru-RU    俄语\n  ar-SA    阿拉伯语\n  th-TH    泰语\n  vi-VN    越南语\n  tr-TR    土耳其语\n\n返回值: 对象\n  .found: 是否找到 (布尔值)\n  .text: 匹配结果的文字内容\n  .x, .y: 文字坐标\n  .width, .height: 文字区域大小\n  .result: 原始结果对象 (包含上述所有字段，兼容旧写法)', example: '// 1. 基本用法：全屏查找\nvar t = wda.findText("同意");\nif(t.found) {\n  wda.tap(t.x, t.y);\n  wda.log("找到文字: " + t.text);\n}\n\n// 2. 限定范围 + 指定语言\nvar t2 = wda.findText("Next", [0, 400, 375, 400], ["en-US"]);\nif(t2.found) wda.tap(t2.x, t2.y);' },
-  { label: '🖱️ 找到文字并点击', type: 'TAP_TEXT', desc: '找到屏幕上的指定文字并自动点击它', usage: '最方便的文字按钮点击', params: '调用方式: wda.tapText(text, region?, languages?)\n\n输入参数:\n  text: 要找并点击的文字 (字符串，必填)\n  region: 限定搜索范围 (数组，可选)\n  languages: 指定语言 (数组，可选)\n\n支持的语言代码:\n  en-US    英语\n  zh-Hans  简体中文\n  zh-Hant  繁体中文\n  ja-JP    日语\n  ko-KR    韩语\n  fr-FR    法语\n  de-DE    德语\n  es-ES    西班牙语\n  pt-BR    葡萄牙语(巴西)\n  it-IT    意大利语\n  ru-RU    俄语\n  ar-SA    阿拉伯语\n  th-TH    泰语\n  vi-VN    越南语\n  tr-TR    土耳其语\n\n返回值: 布尔值\n  true = 找到并点击成功\n  false = 没找到该文字', example: '// 点击"同意并继续"按钮\nif(wda.tapText("同意并继续")) {\n  wda.log("点击成功");\n} else {\n  wda.log("没找到这个文字");\n}\n\n// 2. 带范围和语言点击\nwda.tapText("Confirm", [0, 500, 375, 300], ["en-US"]);' },
+  { label: '🔍 全屏文字识别 OCR', type: 'OCR_SUITE', desc: '识别屏幕上所有文字及其坐标位置', usage: '批量读取页面文字', params: '调用方式: wda.ocr(region?, languages?)\n\n输入参数 (全部可选):\n  region: 限定识别范围 (数组，可选)\n    格式: [x, y, 宽, 高]\n    不传则识别全屏\n  languages: 指定识别语言 (字符串数组，可选)\n    指定语言可大幅提升速度和准确率\n    参数顺序不固定，系统自动识别\n\n支持的语言代码:\n  en-US    英语\n  zh-Hans  简体中文\n  zh-Hant  繁体中文\n  ja-JP    日语\n  ko-KR    韩语\n  fr-FR    法语\n  de-DE    德语\n  es-ES    西班牙语\n  es-MX    西班牙语(墨西哥)\n  pt-BR    葡萄牙语(巴西)\n  it-IT    意大利语\n  ru-RU    俄语\n  ar-SA    阿拉伯语\n  th-TH    泰语\n  vi-VN    越南语\n  tr-TR    土耳其语\n\n返回值: 对象\n  .texts: 数组，每项包含:\n    .text: 识别到的文字内容\n    .x: 文字左上角横坐标\n    .y: 文字左上角纵坐标\n    .width: 文字区域宽度\n    .height: 文字区域高度\n    .confidence: 置信度 (0~1)', example: '// 1. 全屏识别所有文字\nvar r = wda.ocr();\nwda.log("共识别到 " + r.texts.length + " 段文字");\nfor(var i = 0; i < r.texts.length; i++) {\n  wda.log(r.texts[i].text);\n}\n\n// 2. 只识别屏幕上半部分的英文\nvar r2 = wda.ocr([0, 0, 375, 400], ["en-US"]);\n\n// 3. 只指定语言(全屏)\nvar r3 = wda.ocr(["zh-Hans", "en-US"]);\n\n// 4. 只指定区域\nvar r4 = wda.ocr([100, 200, 200, 100]);' },
+  { label: '🔎 查找指定文字', type: 'FIND_TEXT', desc: '在屏幕上找到指定文字的位置', usage: '不知道坐标时通过文字定位', params: '调用方式: wda.findText(text, region?, languages?)\n\n输入参数:\n  text: 要查找的文字 (字符串，必填)\n    支持部分匹配，不区分大小写\n  region: 限定搜索范围 (数组，可选)\n    格式: [x, y, 宽, 高]\n  languages: 指定识别语言 (字符串数组，可选)\n\n支持的语言代码:\n  en-US    英语\n  zh-Hans  简体中文\n  zh-Hant  繁体中文\n  ja-JP    日语\n  ko-KR    韩语\n  fr-FR    法语\n  de-DE    德语\n  es-ES    西班牙语\n  es-MX    西班牙语(墨西哥)\n  pt-BR    葡萄牙语(巴西)\n  it-IT    意大利语\n  ru-RU    俄语\n  ar-SA    阿拉伯语\n  th-TH    泰语\n  vi-VN    越南语\n  tr-TR    土耳其语\n\n返回值: 对象\n  .found: 是否找到 (布尔值)\n  .text: 匹配结果的文字内容\n  .x, .y: 文字坐标\n  .width, .height: 文字区域大小\n  .result: 原始结果对象 (包含上述所有字段，兼容旧写法)', example: '// 1. 基本用法：全屏查找\nvar t = wda.findText("同意");\nif(t.found) {\n  wda.tap(t.x, t.y);\n  wda.log("找到文字: " + t.text);\n}\n\n// 2. 限定范围 + 指定语言\nvar t2 = wda.findText("Next", [0, 400, 375, 400], ["en-US"]);\nif(t2.found) wda.tap(t2.x, t2.y);' },
+  { label: '🖱️ 找到文字并点击', type: 'TAP_TEXT', desc: '找到屏幕上的指定文字并自动点击它', usage: '最方便的文字按钮点击', params: '调用方式: wda.tapText(text, region?, languages?)\n\n输入参数:\n  text: 要找并点击的文字 (字符串，必填)\n  region: 限定搜索范围 (数组，可选)\n  languages: 指定语言 (数组，可选)\n\n支持的语言代码:\n  en-US    英语\n  zh-Hans  简体中文\n  zh-Hant  繁体中文\n  ja-JP    日语\n  ko-KR    韩语\n  fr-FR    法语\n  de-DE    德语\n  es-ES    西班牙语\n  es-MX    西班牙语(墨西哥)\n  pt-BR    葡萄牙语(巴西)\n  it-IT    意大利语\n  ru-RU    俄语\n  ar-SA    阿拉伯语\n  th-TH    泰语\n  vi-VN    越南语\n  tr-TR    土耳其语\n\n返回值: 布尔值\n  true = 找到并点击成功\n  false = 没找到该文字', example: '// 点击"同意并继续"按钮\nif(wda.tapText("同意并继续")) {\n  wda.log("点击成功");\n} else {\n  wda.log("没找到这个文字");\n}\n\n// 2. 带范围和语言点击\nwda.tapText("Confirm", [0, 500, 375, 300], ["en-US"]);' },
 
   // ═══════════ 原生直查（针对卡死优化） ═══════════
-  { label: '🎯 原生直查节点', type: 'FIND_ELEMENT_DIRECT', desc: '不获取全量UI树，使用原生XCUIElementQuery直接查找目标并返回坐标（深层防卡死）', usage: '适用于TikTok这种非常深、容易造成WDA内存溢出的应用', params: '调用方式: wda.findElementDirect(predicate)\n\n输入参数:\n  predicate: 匹配条件 (字符串，必填)\n    写法同"查找页面元素"\n\n返回值: 对象\n  .found: 是否找到 (布尔值)\n  .x, .y: 元素位置\n  .width, .height: 元素大小\n  .name, .label, .value: 属性', example: "var el = wda.findElementDirect(\"name == 'top_tabs_recomend'\");\nif(el.found) {\n  wda.tap(el.x + el.width/2.0, el.y + el.height/2.0);\n}" },
-  { label: '🖱️ 原生查并点击', type: 'TAP_ELEMENT_DIRECT', desc: '原生查找后直接触发点击位置', usage: '一步极速点击', params: '调用方式: wda.tapElementDirect(predicate)\n返回值: 对象\n  .tapped: 是否成功点击 (布尔值)', example: "var res = wda.tapElementDirect(\"name == 'top_tabs_recomend'\");\nif (res.tapped) wda.log('点击成功');" },
-  { label: '📍 坐标直查元素', type: 'GET_ELEMENT_AT_POINT_DIRECT', desc: '根据屏幕坐标瞬间抓取该点的控件信息（等同于免扫雷达）', usage: '点对点的极速信息探测，永不卡死', params: '调用方式: wda.getElementAtPointDirect(x, y)\n\n输入参数:\n  x: 屏幕横坐标 (数字)\n  y: 屏幕纵坐标 (数字)\n\n返回值: 对象\n  .found: 是否找到 (布尔值)\n  .Name: 控件内部名\n  .Label: 显示文案\n  .Value: 取值 (按钮通常返回 null)\n  .type: 控件类型 (如 XCUIElementTypeButton)\n  .depth: 层级\n  .Rect: {x,y,width,height} 尺寸属性', example: "var el = wda.getElementAtPointDirect(100, 200);\nif (el.found) {\n  wda.log('选中控件: ' + el.type);\n  wda.log('名字: ' + el.Name);\n  wda.log('文案: ' + el.Label);\n}" },
+  { label: '🎯 原生直查节点', type: 'FIND_ELEMENT_DIRECT', desc: '不获取全量UI树，使用原生XCUIElementQuery直接查找目标并返回坐标（深层防卡死）', usage: '适用于TikTok这种非常深、容易造成WDA内存溢出的应用', params: '调用方式: wda.findElementDirect(predicate, depth?)\n\n输入参数:\n  predicate: 匹配条件 (字符串，必填)\n    写法同"查找页面元素"\n  depth: 搜索深度 (数字，可选)\n    默认16，对于极其复杂页面可适当调大\n\n返回值: 对象\n  .found: 是否找到 (布尔值)\n  .x, .y: 元素位置\n  .width, .height: 元素大小\n  .name, .label, .value: 属性', example: "var el = wda.findElementDirect(\"name == 'top_tabs_recomend'\", 16);\nif(el.found) {\n  wda.tap(el.x + el.width/2.0, el.y + el.height/2.0);\n}" },
+  { label: '🖱️ 原生查并点击', type: 'TAP_ELEMENT_DIRECT', desc: '原生查找后直接触发点击位置', usage: '一步极速点击', params: '调用方式: wda.tapElementDirect(predicate, depth?)\n\n输入参数:\n  predicate: 匹配条件 (字符串，必填)\n  depth: 搜索深度 (数字，可选，默认16)\n\n返回值: 对象\n  .tapped: 是否成功点击 (布尔值)', example: "var res = wda.tapElementDirect(\"name == 'top_tabs_recomend'\", 16);\nif (res.tapped) wda.log('点击成功');" },
+  { label: '📍 坐标直查元素', type: 'GET_ELEMENT_AT_POINT_DIRECT', desc: '根据屏幕坐标瞬间抓取该点的控件信息（等同于免扫雷达）', usage: '点对点的极速信息探测，永不卡死', params: '调用方式: wda.getElementAtPointDirect(x, y)\n\n输入参数:\n  x: 屏幕横坐标 (数字)\n  y: 屏幕纵坐标 (数字)\n\n返回值: 对象\n  .found: 是否找到 (布尔值)\n  .Name: 控件内部名\n  .Label: 显示文案\n  .Value: 取值 (按钮通常返回 null)\n  .type: 控件类型 (如 XCUIElementTypeButton)\n  .depth: 层级\n  .Rect: {x,y,width,height} 尺寸属性', example: "var el = wda.getElementAtPointDirect(100, 200);\nif (el.found) {\n  wda.log('选中控件: ' + el.type);\n  wda.log('名字: ' + el.Name);\n  wda.log('文案: ' + el.Label);\n wda.log('文案: ' + el.Label);\n wda.log('Value: ' + el.Value);\n wda.log('type: ' + el.type);\n wda.log('depth: ' + el.depth);\n wda.log('RectX: ' + el.Rect.x);\n wda.log('RectY: ' + el.Rect.y);\n wda.log('RectWidth: ' + el.Rect.width);\n wda.log('RectHeight: ' + el.Rect.height);\n}" },
 
   // ═══════════ 页面元素 ═══════════
-  { label: '🧩 查找页面元素', type: 'FIND_ELEMENT', desc: '通过属性条件查找应用界面中的按钮、文字等元素', usage: '查找没有可见文字的隐藏元素', params: '调用方式: wda.findElement(predicate, maxDepth?)\n\n输入参数:\n  predicate: 匹配条件 (字符串，必填)\n    支持的属性:\n      name   - 元素标识名称\n      label  - 显示文字\n      value  - 值\n      type   - 类型（Button/StaticText等）\n      enabled - 是否可用\n      visible - 是否可见\n    支持的运算符:\n      ==         精确匹配\n      !=         不等于\n      CONTAINS   包含\n      BEGINSWITH 开头匹配\n      ENDSWITH   结尾匹配\n      LIKE       通配符匹配(*和?)\n    支持 AND / OR 组合多个条件\n\n  maxDepth: 最大搜索层级 (数字，可选)\n    默认60，数字越小搜索越快\n    建议: 简单页面用15~30，复杂页面用60\n\n返回值: 对象\n  .found: 是否找到 (布尔值)\n  .x, .y: 元素中心点坐标\n  .width, .height: 元素大小\n  .name: 元素名称\n  .label: 显示文字\n  .value: 值', example: "// 1. 查找包含'Privacy'的元素\nvar el = wda.findElement(\"label CONTAINS 'Privacy'\", 30);\nif(el.found) {\n  wda.tap(el.x, el.y);\n  wda.log(\"元素文字: \" + el.label);\n}\n\n// 2. 查找特定类型的按钮\nvar btn = wda.findElement(\"type == 'Button' AND label == 'Done'\");\n\n// 3. 用通配符匹配\nvar el2 = wda.findElement(\"name LIKE '*follow*'\", 20);" },
-  { label: '🎯 查找元素并点击', type: 'TAP_ELEMENT', desc: '找到符合条件的元素并自动点击它', usage: '一步到位点击隐藏按钮', params: '调用方式: wda.tapElement(predicate, maxDepth?)\n\n输入参数:\n  predicate: 匹配条件 (字符串，必填)\n    写法同"查找页面元素"\n  maxDepth: 最大搜索层级 (数字，可选，默认60)\n\n返回值: 对象\n  .tapped: 是否成功点击 (布尔值)\n  .x, .y: 实际点击的坐标\n  .name, .label, .value: 元素属性', example: "// 点击'Skip'按钮\nvar r = wda.tapElement(\"label == 'Skip'\", 20);\nif(r.tapped) wda.log(\"成功跳过\");\n\n// 点击包含'同意'的按钮\nwda.tapElement(\"label CONTAINS '同意'\");" },
-  { label: '📖 读取元素文字', type: 'GET_ELEMENT_TEXT', desc: '找到元素并读取它内部的文字内容', usage: '读取粉丝数、点赞数等', params: '调用方式: wda.getElementText(predicate, maxDepth?)\n\n输入参数:\n  predicate: 匹配条件 (字符串，必填)\n  maxDepth: 最大搜索层级 (数字，可选，默认60)\n\n返回值: 对象\n  .found: 是否找到 (布尔值)\n  .text: 元素的文字内容\n    优先顺序: label > value > name\n  .name, .label, .value: 各属性原值\n  .x, .y, .width, .height: 位置', example: "// 读取粉丝数\nvar r = wda.getElementText(\"name CONTAINS 'followers'\", 60);\nif(r.found) {\n  wda.log(\"粉丝数: \" + r.text);\n}" },
-  { label: '🏷️ 读取元素属性', type: 'GET_ELEMENT_ATTR', desc: '找到元素并读取它的指定属性值', usage: '判断开关状态、按钮是否可用', params: '调用方式:\n  wda.getElementAttribute(predicate, attributeName, maxDepth?)\n\n输入参数:\n  predicate: 匹配条件 (字符串，必填)\n  attributeName: 要读取的属性名 (字符串，必填)\n    可选属性: name, label, value, type, enabled, visible\n  maxDepth: 最大搜索层级 (数字，可选，默认60)\n\n返回值: 对象\n  .found: 是否找到 (布尔值)\n  .result: 属性的值', example: "// 读取开关是否可点击\nvar r = wda.getElementAttribute(\"label == 'Sync'\", \"enabled\", 20);\nwda.log(\"是否可用: \" + r.result);\n\n// 读取元素类型\nvar r2 = wda.getElementAttribute(\"name == 'tab_home'\", \"type\");\nwda.log(\"类型: \" + r2.result);" },
+  { label: '🧩 查找页面元素', type: 'FIND_ELEMENT', desc: '通过属性条件查找应用界面中的按钮、文字等元素', usage: '查找没有可见文字的隐藏元素', params: '调用方式: wda.findElement(predicate, maxDepth?)\n\n输入参数:\n  predicate: 匹配条件 (字符串，必填)\n    支持的属性:\n      name   - 元素标识名称\n      label  - 显示文字\n      value  - 值\n      type   - 类型（Button/StaticText等）\n      enabled - 是否可用\n      visible - 是否可见\n    支持的运算符:\n      ==         精确匹配\n      !=         不等于\n      CONTAINS   包含\n      BEGINSWITH 开头匹配\n      ENDSWITH   结尾匹配\n      LIKE       通配符匹配(*和?)\n    支持 AND / OR 组合多个条件\n\n  maxDepth: 最大搜索层级 (数字，可选)\n    默认16，数字越小搜索越快\n    建议: 简单页面用10~15，复杂页面用16~30\n\n返回值: 对象\n  .found: 是否找到 (布尔值)\n  .x, .y: 元素中心点坐标\n  .width, .height: 元素大小\n  .name: 元素名称\n  .label: 显示文字\n  .value: 值', example: "// 1. 查找包含'Privacy'的元素\nvar el = wda.findElement(\"label CONTAINS 'Privacy'\", 30);\nif(el.found) {\n  wda.tap(el.x, el.y);\n  wda.log(\"元素文字: \" + el.label);\n}\n\n// 2. 查找特定类型的按钮\nvar btn = wda.findElement(\"type == 'Button' AND label == 'Done'\");\n\n// 3. 用通配符匹配\nvar el2 = wda.findElement(\"name LIKE '*follow*'\", 20);" },
+  { label: '🎯 查找元素并点击', type: 'TAP_ELEMENT', desc: '找到符合条件的元素并自动点击它', usage: '一步到位点击隐藏按钮', params: '调用方式: wda.tapElement(predicate, maxDepth?)\n\n输入参数:\n  predicate: 匹配条件 (字符串，必填)\n    写法同"查找页面元素"\n  maxDepth: 最大搜索层级 (数字，可选，默认16)\n\n返回值: 对象\n  .tapped: 是否成功点击 (布尔值)\n  .x, .y: 实际点击的坐标\n  .name, .label, .value: 元素属性', example: "// 点击'Skip'按钮\nvar r = wda.tapElement(\"label == 'Skip'\", 20);\nif(r.tapped) wda.log(\"成功跳过\");\n\n// 点击包含'同意'的按钮\nwda.tapElement(\"label CONTAINS '同意'\");" },
+  { label: '📖 读取元素文字', type: 'GET_ELEMENT_TEXT', desc: '找到元素并读取它内部的文字内容', usage: '读取粉丝数、点赞数等', params: '调用方式: wda.getElementText(predicate, maxDepth?)\n\n输入参数:\n  predicate: 匹配条件 (字符串，必填)\n  maxDepth: 最大搜索层级 (数字，可选，默认16)\n\n返回值: 对象\n  .found: 是否找到 (布尔值)\n  .text: 元素的文字内容\n    优先顺序: label > value > name\n  .name, .label, .value: 各属性原值\n  .x, .y, .width, .height: 位置', example: "// 读取粉丝数\nvar r = wda.getElementText(\"name CONTAINS 'followers'\", 60);\nif(r.found) {\n  wda.log(\"粉丝数: \" + r.text);\n}" },
+  { label: '🏷️ 读取元素属性', type: 'GET_ELEMENT_ATTR', desc: '找到元素并读取它的指定属性值', usage: '判断开关状态、按钮是否可用', params: '调用方式:\n  wda.getElementAttribute(predicate, attributeName, maxDepth?)\n\n输入参数:\n  predicate: 匹配条件 (字符串，必填)\n  attributeName: 要读取的属性名 (字符串，必填)\n    可选属性: name, label, value, type, enabled, visible\n  maxDepth: 最大搜索层级 (数字，可选，默认16)\n\n返回值: 对象\n  .found: 是否找到 (布尔值)\n  .result: 属性的值', example: "// 读取开关是否可点击\nvar r = wda.getElementAttribute(\"label == 'Sync'\", \"enabled\", 20);\nwda.log(\"是否可用: \" + r.result);\n\n// 读取元素类型\nvar r2 = wda.getElementAttribute(\"name == 'tab_home'\", \"type\");\nwda.log(\"类型: \" + r2.result);" },
 
   // ═══════════ 图像操作 ═══════════
   { label: '📸 截取屏幕', type: 'SCREENSHOT', desc: '截图并获取图片数据', usage: '保存或发送截图', params: '调用方式: wda.screenshot()\n\n输入参数: 无\n\n返回值: 对象\n  .base64: 图片的 Base64 编码字符串\n    可用于发送给服务器或保存', example: 'var s = wda.screenshot();\nwda.log("截图大小: " + s.base64.length + " 字符");' },
@@ -3581,7 +3698,7 @@ const actionLibrary = [
   { label: '💬 随机获取评论', type: 'RANDOM_COMMENT', desc: '从服务器随机获取一条指定语言的评论', usage: '自动评论互动', params: '调用方式: wda.getRandomComment(language)\n\n输入参数:\n  language: 语言代号 (字符串，必填)\n\n支持的语言代号:\n  en-US   英语(美国)\n  en-GB   英语(英国)\n  zh-CN   中文\n  es-MX   西班牙语(墨西哥)\n  es-ES   西班牙语(西班牙)\n  pt-BR   葡萄牙语(巴西)\n  de-DE   德语\n  fr-FR   法语\n  ja-JP   日语\n  ko-KR   韩语\n  en-SG   英语(新加坡)\n  ar-SA   阿拉伯语\n  it-IT   意大利语\n  ru-RU   俄语\n\n返回值: 字符串\n  评论内容，如果库存为空则返回空字符串', example: '// 获取英文评论并输入\nvar text = wda.getRandomComment("en-US");\nif(text && text.length > 0) {\n  wda.input(text);\n  wda.log("已输入评论: " + text);\n} else {\n  wda.log("没有获取到评论");\n}' },
   { label: '🏷️ 随机获取标签', type: 'RANDOM_TAG', desc: '从服务器获取一个随机标签', usage: '自动添加话题标签', params: '调用方式: wda.getRandomTag()\n\n输入参数: 无\n  自动使用设备配置的国家和分组\n\n返回值: 字符串\n  标签内容', example: 'var tag = wda.getRandomTag();\nif(tag) wda.input(tag);' },
   { label: '📝 随机获取简介', type: 'RANDOM_BIO', desc: '从服务器获取一段随机个人简介', usage: '自动填写个人资料', params: '调用方式: wda.getRandomBio()\n\n输入参数: 无\n  自动使用设备配置的国家和分组\n\n返回值: 字符串\n  简介内容', example: 'var bio = wda.getRandomBio();\nif(bio) wda.input(bio);' },
-  { label: '👤 获取主账号信息', type: 'MASTER_ACCOUNT_INFO', desc: '获取这台设备本地预设的完整主账号信息字典', usage: '自动登录拉取账密及业务信息', params: '调用方式: wda.getMasterAccountInfo()\n\n输入参数: 无\n\n返回值: 返回主账号信息的 Dictionary 字典对象 (如果没有主号则返回空字典)\n  可读取的属性:\n    .account - 账号文本 (若有自动复制到系统剪切板)\n    .password - 密码文本\n    .email - 绑定的邮箱\n    .email_password - 邮箱存取密码\n    .app_id - App的 Bundle ID\n    .following_count - 关注数\n    .fans_count - 粉丝数\n    .likes_count - 获赞数\n    .add_time - 账号添加时间\n    .update_time - 账号最后更新时间\n    .is_window_opened - 是否开窗 (1/0)\n    .is_following - 是否关注态 (1/0)\n    .is_farming - 是否养号态 (1/0)\n    .country - 账号所属国家\n    .account_type - 账号类型 (TK/FB/IG)', example: 'var master = wda.getMasterAccountInfo();\nif(master.account) {\n  wda.log("正在准备登录主账号: " + master.account);\n  wda.input(master.account);\n  wda.sleep(1);\n  wda.log("输入密码中...");\n  wda.input(master.password);\n  wda.log("账号添加时间: " + (master.add_time || "未知"));\n}' },
+  { label: '👤 获取主账号信息', type: 'MASTER_ACCOUNT_INFO', desc: '获取这台设备本地预设的完整主账号信息字典', usage: '自动登录拉取账密及业务信息', params: '调用方式: wda.getMasterAccountInfo("com.zhiliaoapp.musically","TK")\n\n输入参数: 无\n\n返回值: 返回主账号信息的 Dictionary 字典对象 (如果没有主号则返回空字典)\n  可读取的属性:\n    .account - 账号文本 (若有自动复制到系统剪切板)\n    .password - 密码文本\n    .email - 绑定的邮箱\n    .email_password - 邮箱存取密码\n    .app_id - App的 Bundle ID\n    .following_count - 关注数\n    .fans_count - 粉丝数\n    .likes_count - 获赞数\n    .add_time - 账号添加时间\n    .update_time - 账号最后更新时间\n    .is_window_opened - 是否开窗 (1/0)\n    .is_following - 是否关注态 (1/0)\n    .is_farming - 是否养号态 (1/0)\n    .country - 账号所属国家\n    .account_type - 账号类型 (TK/FB/IG)', example: 'var master = wda.getMasterAccountInfo("com.zhiliaoapp.musically","TK");\nif(master.account) {\n  wda.log("正在准备登录主账号: " + master.account);\n  wda.input(master.account);\n  wda.sleep(1);\n  wda.log("输入密码中...");\n  wda.input(master.password);\n  wda.log("账号添加时间: " + (master.add_time || "未知"));\n}' },
   { label: '🗂️ 下载账号列表', type: 'GET_ACCOUNTS', desc: '从服务器拉取指定平台的全量账号列表并写入设备本地', usage: '多开换号自动化养号的准备工作', params: '调用方式: wda.getAccounts(appType)\n\n输入参数:\n  appType: 字符串类型，"TK", "FB", "IG" 或 "all" (不区分大写)\n\n返回值: 账号字典对象组成的 Array (数组)。可由 length 遍历。\n\n注意事项: 这个动作会自动与本地原有的数据进行智能缝合，【不会覆盖】本地脚本自己跑出来的关注、粉丝、点赞等活体信息。返回的字典参数和 getMasterAccountInfo 一致（包含 .add_time, .update_time 等）。', example: 'var accs = wda.getAccounts("TK");\nfor(var i=0; i<accs.length; i++) {\n  var acc = accs[i];\n  wda.log("找到账号名: " + acc.account + " 储备粉丝: " + (acc.fans_count||0));\n  wda.log("上次更新时间: " + (acc.update_time || "---"));\n}' },
   { label: '📤 提交账号列表', type: 'POST_ACCOUNTS', desc: '将当前手机本地记录的业务统计指标及运行位同步回服务器', usage: '脚本循环结束后上报最新粉丝数据', params: '调用方式: wda.postAccounts()\n\n输入参数: 无\n\n返回值: 布尔值，是否成功发送至服务器', example: '// 往往在脚本将要把App杀除退出的末尾调用\nvar postOk = wda.postAccounts();\nif(postOk) {\n  wda.log("今日数据云端同步完成！");\n} else {\n  wda.log("警告: 云端同步通信异常。");\n}' },
   { label: '📊 更新账号统计', type: 'UPDATE_ACCOUNT_INFO', desc: '更新当前主账号的最新关注数、粉丝数、点赞数(存入本地缓区)', usage: '抓取资料页UI数字进行本地统计校准', params: '调用方式: wda.updateMasterAccountInfo(following, fans, likes)\n\n输入参数:\n  following: 当前主账号实际关注数 (数字类型)\n  fans: 当前主账号实际粉丝数 (数字类型)\n  likes: 当前主账号实际获赞数 (数字类型)\n\n返回值: 布尔值 (是否成功找到主账号发生更新并存入)', example: '// 假设您使用 wda.getElementText 等动作提取到UI上的 120 粉丝 等数值\n// 简单用正则剔除万分号等特殊字符转成纯数字\nvar actualFollowing = 120;\nvar actualFans = 5000;\nvar actualLikes = 32014;\n// 通知系统重写本地这个主号的数据\nwda.updateMasterAccountInfo(actualFollowing, actualFans, actualLikes);\n// 需要将更新上传反馈回服务器控制大屏，可紧接这句\nwda.postAccounts();' },
@@ -5038,12 +5155,12 @@ const handleImageUpload = (event: Event) => {
 
         <!-- 极致纯净的黑色原生屏幕区 -->
         <div class="flex-1 bg-black relative flex justify-center items-center overflow-hidden">
-            <div v-if="!streamUrl" class="flex flex-col items-center justify-center opacity-50">
-               <span class="text-4xl mb-4 text-gray-600">📴</span>
-               <span class="text-gray-500 font-medium tracking-wide text-sm">空闲信道等待推流指令</span>
+            <div v-if="!streamUrl || isScreenOff" class="flex flex-col items-center justify-center opacity-50">
+               <span class="text-4xl mb-4 text-gray-600">{{ isScreenOff ? '🙈' : '📴' }}</span>
+               <span class="text-gray-500 font-medium tracking-wide text-sm">{{ isScreenOff ? '截流护眼模式 (指令畅通)' : '空闲信道等待推流指令' }}</span>
             </div>
             
-            <img ref="imageRef" v-if="streamUrl" :src="streamUrl" @load="syncCanvasSize" class="h-full max-w-full object-contain pointer-events-none absolute" crossorigin="anonymous" />
+            <img ref="imageRef" v-if="streamUrl && !isScreenOff" :src="streamUrl" @load="syncCanvasSize" class="h-full max-w-full object-contain pointer-events-none absolute" crossorigin="anonymous" />
             
             <canvas ref="canvasRef" @mousedown="startDraw" @mousemove="handleMouseMove" @mouseup="endDraw" @mouseleave="endDraw" @dblclick="handleDoubleClickLasso" class="cursor-pointer absolute" style="z-index: 20;"></canvas>
 
@@ -5114,9 +5231,14 @@ const handleImageUpload = (event: Event) => {
                <span class="text-[10px] mt-0.5 font-bold tracking-tighter">锁屏</span>
              </button>
 
-             <!-- 新增：群控与日志控制钩子 -->
+             <!-- 新增：群控、息屏与日志控制钩子 -->
              <div class="h-px bg-gray-800 mx-1 mt-2 mb-1"></div>
              <label class="flex flex-col items-center justify-center w-12 h-10 rounded-xl bg-gray-800 border border-gray-700 hover:bg-gray-700 transition-all cursor-pointer group">
+               <input type="checkbox" v-model="isScreenOff" class="hidden" />
+               <span class="text-sm shadow-md" :class="isScreenOff ? 'text-orange-500' : 'text-gray-500 mb-0.5'">{{ isScreenOff ? '🙈' : '👁️' }}</span>
+               <span class="text-[9px] mt-0.5 font-bold tracking-tighter" :class="isScreenOff ? 'text-orange-400' : 'text-gray-400'">息屏</span>
+             </label>
+             <label class="flex flex-col items-center justify-center w-12 h-10 rounded-xl bg-gray-800 border border-gray-700 hover:bg-gray-700 transition-all cursor-pointer group mt-1">
                <input type="checkbox" v-model="isGroupControl" class="hidden" />
                <span class="text-sm shadow-md" :class="isGroupControl ? 'text-green-500' : 'text-gray-500 mb-0.5'">{{ isGroupControl ? '🟢' : '⚪️' }}</span>
                <span class="text-[9px] mt-0.5 font-bold tracking-tighter" :class="isGroupControl ? 'text-green-400' : 'text-gray-400'">群控</span>
@@ -5875,6 +5997,10 @@ const handleImageUpload = (event: Event) => {
                             <option v-for="t in execTimes" :key="t.id" :value="t.name">{{ t.name }} 点整</option>
                           </select>
                       </div>
+                      <div>
+                          <label class="block text-gray-500 text-[10px] mb-1">🎯 目标运行包名 (逗号分隔多种)</label>
+                          <input v-model="configForm.target_apps" type="text" placeholder="缺省: com.zhiliaoapp.musically, 抖音..." class="w-full bg-gray-950 border border-gray-800 text-gray-300 text-sm px-3 py-2 rounded focus:outline-none focus:border-teal-500 font-mono transition-colors">
+                      </div>
                   </div>
               </div>
               
@@ -5966,17 +6092,14 @@ const handleImageUpload = (event: Event) => {
              <span class="text-xs text-gray-400 shrink-0">按语言过滤:</span>
              <select v-model="commentFilterLang" class="bg-black border border-gray-700 text-gray-200 text-sm px-3 py-2 rounded focus:outline-none focus:border-indigo-500 w-48 transition-colors cursor-pointer">
                <option value="">全球所有语言</option>
-               <option value="zh-CN">🇨🇳 简体中文 (zh-CN)</option>
-               <option value="es-MX">🇲🇽 西班牙语-墨西哥 (es-MX)</option>
-               <option value="pt-BR">🇧🇷 葡萄牙语-巴西 (pt-BR)</option>
-               <option value="de-DE">🇩🇪 德语-德国 (de-DE)</option>
-               <option value="en-SG">🇸🇬 英语-新加坡 (en-SG)</option>
-               <option value="ja-JP">🇯🇵 日语-日本 (ja-JP)</option>
-               <option value="en-US">🇺🇸 英语-美国 (en-US)</option>
-               <option value="es-ES">🇪🇸 西班牙语-西班牙 (es-ES)</option>
-               <option value="en-GB">🇬🇧 英语-英国 (en-GB)</option>
-               <option value="fr-FR">🇫🇷 法语-法国 (fr-FR)</option>
+               <option v-for="lang in commentLanguages" :key="lang.value" :value="lang.value">{{ lang.label }}</option>
              </select>
+             <button @click="addCommentLanguage" class="bg-gray-800 hover:bg-gray-700 border border-gray-600 text-gray-200 px-3 py-2 rounded transition-colors flex items-center justify-center text-xs font-bold">
+                 添加类型
+             </button>
+             <button @click="showCommentBatchImportModal = true" class="bg-indigo-600 hover:bg-indigo-500 border border-indigo-500 text-white px-4 py-2 rounded shadow transition-all text-xs font-bold flex items-center gap-2">
+                ➕ 添加评论
+             </button>
              <button @click="fetchComments" class="bg-gray-800 hover:bg-gray-700 border border-gray-600 text-gray-200 px-3 py-2 rounded transition-colors flex items-center justify-center pointer-events-auto">
                <svg class="w-4 h-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
              </button>
@@ -6007,8 +6130,109 @@ const handleImageUpload = (event: Event) => {
 
       </div>
     </div>
+    
+    <!-- =============== 批量添加评论弹窗 =============== -->
+    <div v-if="showCommentBatchImportModal" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+        <div class="bg-gray-800 border border-gray-700 w-full max-w-2xl rounded-xl shadow-2xl flex flex-col max-h-[90vh]">
+            <div class="px-6 py-4 border-b border-gray-700 flex justify-between items-center bg-gray-800/80 rounded-t-xl">
+                <h3 class="text-lg font-bold text-gray-100 flex items-center gap-2">
+                   <span class="text-indigo-400">📥</span> 批量写入评论库
+                </h3>
+                <button @click="showCommentBatchImportModal=false" class="text-gray-400 hover:text-white outline-none transition-colors">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            <div class="p-6 overflow-auto flex flex-col space-y-4">
+                <div class="flex flex-col gap-1.5">
+                    <label class="text-xs font-bold text-gray-400 uppercase tracking-widest">指派语言类型:</label>
+                    <div class="flex gap-2">
+                        <select v-model="batchImportLang" class="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-white outline-none focus:border-indigo-500 transition-all font-mono">
+                            <option v-for="lang in commentLanguages" :key="lang.value" :value="lang.value">{{ lang.label }}</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="flex flex-col gap-1.5 flex-1">
+                    <label class="text-xs font-bold text-gray-400 uppercase tracking-widest">评论文本堆叠 (一行一条):</label>
+                    <textarea v-model="batchImportContent" rows="12" placeholder="我是评论...&#10;这是第二条评论...&#10;直接换行以自动切割入库！" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-gray-300 outline-none focus:border-indigo-500 font-mono text-sm resize-none custom-scrollbar shadow-inner"></textarea>
+                </div>
+            </div>
+            <div class="px-6 py-4 border-t border-gray-700 flex justify-end space-x-3 bg-gray-800/80 rounded-b-xl">
+                <button @click="showCommentBatchImportModal=false" class="px-5 py-2.5 rounded-lg outline-none text-gray-300 hover:bg-gray-700 transition-colors font-medium border border-transparent">取消</button>
+                <button @click="handleBatchImport" :disabled="isImporting" class="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 outline-none rounded-lg text-white font-medium shadow-[0_4px_10px_rgba(79,70,229,0.3)] transition-all flex items-center gap-2">
+                    <span v-if="isImporting" class="animate-spin text-sm">⌛</span>
+                    <span>写入云端数据库</span>
+                </button>
+            </div>
+        </div>
+    </div>
 
     <!-- =============== TikTok 账号管理 ================= -->
+        <!-- =============== 📈 增长趋势 =============== -->
+        <div v-if="activeTab === '📈 增长趋势'" class="flex flex-1 flex-col overflow-auto p-6 bg-[#0B0F19]">
+            <div class="max-w-7xl mx-auto w-full space-y-4">
+                <div class="flex flex-col md:flex-row justify-between items-center gap-4 bg-gray-900 p-4 rounded-lg border border-gray-800 shadow-md">
+                    <div>
+                        <h2 class="text-xl font-bold text-gray-100 tracking-wide flex items-center gap-2">📈 全账号数据成长度监控</h2>
+                        <p class="text-xs text-gray-500 mt-1">展示近 30 个录入时间点的关注与粉丝增长迷你缩略图。</p>
+                    </div>
+                    <button @click="fetchAccounts" class="bg-teal-800 hover:bg-teal-700 border border-teal-600 text-white px-4 py-2 rounded shadow transition-colors text-xs font-bold">刷新数据</button>
+                </div>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                     <div v-for="tk in accounts" :key="'trend-'+tk.id" class="bg-gray-900/60 border border-gray-800 rounded-xl p-4 shadow-lg hover:border-gray-500 transition-colors">
+                         <div class="flex items-center justify-between mb-3 border-b border-gray-800 pb-2">
+                             <span class="text-sm font-bold text-gray-200 flex items-center whitespace-nowrap overflow-hidden text-ellipsis">
+                                <span v-if="tk.is_primary" class="bg-amber-400 text-black px-1.5 py-0.5 rounded text-[10px] mr-1">🌟 主号</span>
+                                {{ tk.account }}
+                             </span>
+                             <span class="text-[10px] text-gray-500 font-mono ml-2 shrink-0">{{ tk.country || 'N/A' }} | 设备: {{ tk.device_no || '未知' }}</span>
+                         </div>
+                         
+                         <!-- Fans Chart -->
+                         <div class="mb-4">
+                             <div class="flex justify-between items-baseline mb-1">
+                                 <span class="text-[10px] uppercase text-gray-500 font-bold tracking-widest">粉 丝</span>
+                                 <span class="text-xs font-mono text-pink-400 font-bold">{{ tk.fans_count }}</span>
+                             </div>
+                             <div class="flex items-end gap-[2px] h-14 bg-black/40 rounded p-1">
+                                 <template v-if="parseHistory(tk.history).length > 0">
+                                     <div v-for="(h, idx) in parseHistory(tk.history)" :key="'f-'+idx" 
+                                          class="flex-1 bg-pink-500/50 hover:bg-pink-400 rounded-t cursor-pointer transition-all relative group min-w-[2px]"
+                                          :style="{ height: calcHeight(h.fans, maxOf(tk.history, 'fans')) + '%' }">
+                                         <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 hidden group-hover:block bg-black text-white text-[10px] px-1.5 py-0.5 rounded border border-gray-700 z-10 whitespace-nowrap">
+                                             {{ h.date }}: {{ h.fans }}
+                                         </div>
+                                     </div>
+                                 </template>
+                                 <div v-else class="text-gray-600 text-xs w-full text-center py-2 h-full flex items-center justify-center">静等花开</div>
+                             </div>
+                         </div>
+                         
+                         <!-- Likes Chart -->
+                         <div>
+                             <div class="flex justify-between items-baseline mb-1">
+                                 <span class="text-[10px] uppercase text-gray-500 font-bold tracking-widest">点 赞</span>
+                                 <span class="text-xs font-mono text-indigo-400 font-bold">{{ tk.likes_count }}</span>
+                             </div>
+                             <div class="flex items-end gap-[2px] h-14 bg-black/40 rounded p-1">
+                                 <template v-if="parseHistory(tk.history).length > 0">
+                                     <div v-for="(h, idx) in parseHistory(tk.history)" :key="'l-'+idx" 
+                                          class="flex-1 bg-indigo-500/50 hover:bg-indigo-400 rounded-t cursor-pointer transition-all relative group min-w-[2px]"
+                                          :style="{ height: calcHeight(h.likes, maxOf(tk.history, 'likes')) + '%' }">
+                                         <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 hidden group-hover:block bg-black text-white text-[10px] px-1.5 py-0.5 rounded border border-gray-700 z-10 whitespace-nowrap">
+                                             {{ h.date }}: {{ h.likes }}
+                                         </div>
+                                     </div>
+                                 </template>
+                                 <div v-else class="text-gray-600 text-xs w-full text-center py-2 h-full flex items-center justify-center">静等花开</div>
+                             </div>
+                         </div>
+                     </div>
+                </div>
+                <div v-if="accounts.length === 0" class="text-center py-20 text-gray-500 text-lg">暂无数据记录</div>
+            </div>
+        </div>
+
         <!-- =============== 👥 账号管理 =============== -->
         <div v-if="activeTab === '👥 账号管理'" class="flex flex-1 flex-col overflow-auto p-6 bg-[#0B0F19]">
         <div class="max-w-7xl mx-auto w-full space-y-4">
@@ -6136,6 +6360,7 @@ const handleImageUpload = (event: Event) => {
                             <th class="p-4 text-center">ID</th>
                             <th class="p-4 text-left">所属设备</th>
                             <th class="p-4 text-center">类型</th>
+                            <th class="p-4 text-center">App ID</th>
                             <th class="p-4 text-left">账号主体 (Account)</th>
                             <th class="p-4 text-center">国家</th>
                             <th class="p-4 text-center">数据指标</th>
@@ -6146,7 +6371,7 @@ const handleImageUpload = (event: Event) => {
                     </thead>
                     <tbody class="divide-y divide-gray-800/60">
                         <tr v-if="accounts.length === 0">
-                            <td colspan="9" class="p-12 text-center text-gray-500">
+                            <td colspan="10" class="p-12 text-center text-gray-500">
                                 <p class="text-lg font-bold">📭 暂无账号数据</p>
                                 <p class="text-xs mt-1">请先通过批量导入或设置面板添加账号。</p>
                             </td>
@@ -6154,7 +6379,7 @@ const handleImageUpload = (event: Event) => {
                         <template v-for="(grp, gIdx) in groupedAccounts" :key="grp.device_udid">
                             <!-- 设备分组头 -->
                             <tr :class="gIdx > 0 ? 'border-t-2 border-teal-900/60' : ''">
-                                <td colspan="9" class="px-4 py-2.5 bg-gray-900/80">
+                                <td colspan="10" class="px-4 py-2.5 bg-gray-900/80">
                                     <div class="flex items-center gap-3">
                                         <span class="text-teal-400 text-base">📱</span>
                                         <span class="text-teal-300 font-bold text-sm tracking-wide">{{ grp.device_no }}</span>
@@ -6178,9 +6403,10 @@ const handleImageUpload = (event: Event) => {
                                     <span v-else-if="tk.account_type === 'IG'" class="bg-pink-600/10 text-pink-400 border border-pink-600/30 px-1.5 py-0.5 rounded text-[10px] font-bold">Instagram</span>
                                     <span v-else class="bg-gray-600/10 text-gray-400 border border-gray-600/30 px-1.5 py-0.5 rounded text-[10px] font-bold">{{tk.account_type}}</span>
                                 </td>
+                                <td class="p-4 text-center text-gray-400 font-mono text-[10px]">{{ tk.app_id || '---' }}</td>
                                 <td class="p-4 text-gray-200 font-mono font-semibold">
-                                    <span v-if="tk.is_primary" class="text-amber-400 mr-1" title="该类型主账号">⭐</span>
-                                    {{ tk.account }}
+                                    <span v-if="tk.is_primary" class="bg-amber-400 text-amber-900 border border-amber-500 px-1.5 py-0.5 rounded text-[10px] font-bold shadow-sm align-middle whitespace-nowrap mr-1">🌟 主账号</span>
+                                    <span class="align-middle">{{ tk.account }}</span>
                                 </td>
                                 <td class="p-4 text-center text-indigo-300 font-medium">{{ grp.country || '未标记' }}</td>
                                 <td class="p-4 text-center">
@@ -6281,7 +6507,7 @@ const handleImageUpload = (event: Event) => {
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-gray-300 mb-1">Bundle ID (AppID)</label>
-                            <input v-model="editingAccount.app_id" type="text" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-gray-100 outline-none focus:border-indigo-500 transition-all font-mono" placeholder="com.zhiliaoapp.musically">
+                            <input v-model="editingAccount.app_id" type="text" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-gray-100 outline-none focus:border-indigo-500 transition-all font-mono" placeholder="com.ss.iphone.ugc.Ame 或 com.zhiliaoapp.musically">
                         </div>
                     </div>
 
@@ -6493,7 +6719,9 @@ const handleImageUpload = (event: Event) => {
                         </p>
                     </div>
                     <textarea v-model="batchImportText" rows="10"
-                        placeholder="M22|user001|pass123|user001@email.com|email_pass|com.zhiliaoapp.musically|TK
+                        placeholder="M22|user001|pass123|user001@email.com|email_pass|com.ss.iphone.ugc.Ame|TK
+设备编号|账号|密码|邮箱|邮箱密码|App分配包名|账号类型
+（支持包名如: com.ss.iphone.ugc.Ame, com.zhiliaoapp.musically, com.ss.iphone.ugc.Aweme 等...）
 M24|fb_user|fb_pass|user002@email.com||com.facebook.Facebook|FB
 M27|ig_user|ig_pass|||com.burbn.instagram|IG"
                         class="w-full bg-gray-950 border border-gray-700 text-green-300 text-xs p-4 rounded-lg focus:outline-none focus:border-indigo-500 font-mono custom-scrollbar transition-colors leading-relaxed resize-none"></textarea>
@@ -7182,6 +7410,11 @@ M27|ig_user|ig_pass|||com.burbn.instagram|IG"
                             <option value="__CLEAR__" class="text-red-400">🗑️ (清空分组)</option>
                             <option v-for="g in groups" :key="g.id" :value="g.name">{{ g.name }}</option>
                         </select>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-bold text-gray-500 uppercase tracking-widest mb-2">🎯 目标挂载包名(覆盖定准)</label>
+                        <input v-model="batchConfigForm.target_apps" type="text" placeholder="(不修改) 多包名可逗号分割，如 com.ss.iphone.ugc.Ame" class="w-full bg-black border border-gray-800 rounded-xl px-4 py-3 text-sm text-gray-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-all font-mono">
                     </div>
 
                     <div>

@@ -547,8 +547,20 @@ static NSString *hooked_btd_bundleIdentifier(id self, SEL _cmd) {
       // ECLog(@" [TikTok] btd_bundleIdentifier -> %@", spoofed);
       return spoofed;
     }
-    // 默认返回官方 Bundle ID
-    // ECLog(@" [TikTok] btd_bundleIdentifier -> com.zhiliaoapp.musically");
+    
+    // 动态获取：优先获取去除了分身后缀的原始应用包名
+    NSString *inferredOriginal = [[ECDeviceSpoofConfig shared] originalBundleId];
+    if (inferredOriginal && inferredOriginal.length > 0) {
+       return inferredOriginal;
+    }
+
+    // 默认回退：非多开环境下，直接获取它真实的 Bundle Identifier
+    NSString *realDynamicID = [[NSBundle mainBundle] infoDictionary][@"CFBundleIdentifier"];
+    if (realDynamicID && realDynamicID.length > 0) {
+       return realDynamicID;
+    }
+
+    // 终极兜底策略
     return @"com.zhiliaoapp.musically";
 }
 
