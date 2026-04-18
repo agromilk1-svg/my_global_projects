@@ -615,6 +615,21 @@ static NSString *gActiveWDASessionId = nil;
 
 // --- App Management ---
 
+- (BOOL)isAppInstalled:(NSString *)bundleId {
+  if (!bundleId || bundleId.length == 0) return NO;
+  Class LSAppProxyClass = NSClassFromString(@"LSApplicationProxy");
+  if (LSAppProxyClass) {
+    id proxy = [LSAppProxyClass performSelector:@selector(applicationProxyForIdentifier:) withObject:bundleId];
+    if (proxy) {
+      NSNumber *isInstalled = [proxy valueForKey:@"isInstalled"];
+      BOOL result = isInstalled && [isInstalled boolValue];
+      [self log:[NSString stringWithFormat:@"探测应用 [%@] 是否存在: %@", bundleId, result ? @"是" : @"否"]];
+      return result;
+    }
+  }
+  return NO;
+}
+
 - (BOOL)launch:(NSString *)bundleId {
   return [self performWDAAction:@"launch"
                        endpoint:@"/wda/apps/launchUnattached"

@@ -3653,6 +3653,7 @@ const actionLibrary = [
   { label: '🔉 音量减', type: 'VOLUME_DOWN', desc: '按一下音量-键', usage: '调小音量', params: '输入参数: 无\n返回值: 布尔值', example: 'wda.volumeDown();' },
 
   // ═══════════ 应用管理 ═══════════
+  { label: '📱 探测应用', type: 'IS_APP_INSTALLED', desc: '探测某应用是否存在', usage: '判断包是否已安装', params: '调用方式: wda.isAppInstalled(bundleId)\n\n输入参数:\n  bundleId: 目标包名 (字符串，必填)\n\n返回值: 布尔值\n  true = 已安装，false = 未安装', example: 'var ok = wda.isAppInstalled("com.ss.iphone.ugc.Ame");\nif (ok) {\n  wda.log("应用存在！");\n}' },
   { label: '🚀 打开应用', type: 'LAUNCH', desc: '启动指定的应用', usage: '打开目标 App', params: '输入参数:\n  bundleId: 应用的包名 (字符串，必填)\n\n常见包名:\n  TikTok: com.zhiliaoapp.musically\n  Ame: com.ss.iphone.ugc.Ame\n  抖音: com.ss.iphone.ugc.Aweme\n  设置: com.apple.Preferences\n  Safari: com.apple.mobilesafari\n  相册: com.apple.mobileslideshow\n\n返回值: 布尔值\n  true = 启动成功', example: '// 打开 TikTok\nwda.launch("com.zhiliaoapp.musically");\n\n// 打开系统设置\nwda.launch("com.apple.Preferences");' },
   { label: '❌ 关闭应用', type: 'TERMINATE', desc: '强制关闭指定的应用', usage: '关闭后台App', params: '输入参数:\n  bundleId: 应用的包名 (字符串，必填)\n\n返回值: 布尔值\n  true = 关闭成功', example: 'wda.terminate("com.zhiliaoapp.musically");' },
   { label: '🧹 关闭所有应用', type: 'TERMINATE_ALL', desc: '关闭所有第三方后台应用', usage: '释放内存', params: '输入参数: 无\n返回值: 布尔值', example: 'wda.terminateAll();' },

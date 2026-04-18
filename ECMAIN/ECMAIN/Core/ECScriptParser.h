@@ -32,6 +32,7 @@ JSExportAs(swipe, -(BOOL)swipe : (NSNumber *)fromX fromY : (NSNumber *)
 - (BOOL)terminate:(NSString *)bundleId;
 - (BOOL)terminateAll;
 - (BOOL)wipeApp:(NSString *)bundleId;
+- (BOOL)isAppInstalled:(NSString *)bundleId;
 
 // 系统控制
 - (BOOL)airplaneOn;
