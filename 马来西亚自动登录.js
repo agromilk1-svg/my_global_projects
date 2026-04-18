@@ -1,5 +1,9 @@
 
-var appid = "com.ss.iphone.ugc.Ame"
+var appid = "com.zhiliaoapp.musically"
+var ok = wda.isAppInstalled(appid);
+if (!ok) {
+    appid = "com.ss.iphone.ugc.Ame"
+}
 //各种弹窗，点击确认或者取消
 function autoHandleAlert() {
 
