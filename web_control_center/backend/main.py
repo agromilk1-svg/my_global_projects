@@ -1593,23 +1593,14 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
              return {"status": "ok"}
 
         elif req.action_type == "SCRIPT":
-             # [v2028] 脚本分发同步化路由（通道优先级重构）
-             # 核心修复：USB/LAN 直连优先，WS 隧道仅在纯远程模式或直连不可用时兜底
-             # 
-             # 旧逻辑的致命缺陷：无论 connection_mode 是什么，都先走 WS 隧道。
-             # 当 WS 隧道不健康（如 ECMAIN 刚更新重启、隧道对象还残留在字典里但已断裂），
-             # 会白白等 120 秒超时后才降级，导致用户看到 "Script execution timeout over WS tunnel"。
-             # 
-             # 新逻辑：
-             #   USB 模式 → 直接本机 HTTP (dev.script_port/8089) → 失败才降级 WS
-             #   LAN 模式 → 直接局域网 HTTP (wlan_ip:8089) → 失败才降级 WS
-             #   WS 模式  → WS 隧道（纯远程，无 USB/LAN 可用）→ 失败报错
+             # [v2038] 脚本分发级联降级路由（三通道全覆盖）
+             # 核心策略：USB → LAN → WS 依次尝试，任一成功立即返回，全部失败才报错。
+             # 不再根据 connection_mode 排斥某个通道，而是把 mode 仅当做优先级提示。
              
              _script_payload = {"type": "SCRIPT", "payload": req.script_code}
-             _script_delivered = False
              
              # ===== 快速通道 1：USB 直连（本机端口转发，0 跳延迟，最可靠）=====
-             if dev and req.connection_mode == "usb":
+             if dev:
                  try:
                      script_port = getattr(dev, 'script_port', 8089)
                      logging.info(f"[SCRIPT] USB 快速通道下发: 127.0.0.1:{script_port}/task (udid={req.udid})")
@@ -1618,14 +1609,14 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                          json_body=_script_payload, timeout=120.0, force_http=True
                      )
                      if status == 200:
-                         return resp  # 直接透传 iOS 返回的 {"status": "ok", "logs": [...], ...}
+                         return resp
                      else:
                          logging.warning(f"[SCRIPT] USB 通道返回非 200: status={status}, resp={resp}")
                  except Exception as usb_err:
                      logging.error(f"[SCRIPT] USB 通道异常: {usb_err}")
              
              # ===== 快速通道 2：LAN 直连（同一局域网，1 跳延迟）=====
-             if not _script_delivered and wlan_ip and req.connection_mode in ("lan", "usb"):
+             if wlan_ip:
                  try:
                      logging.info(f"[SCRIPT] LAN 快速通道下发: {wlan_ip}:8089/task (udid={req.udid})")
                      status, resp = await _async_wda_request(
@@ -1639,7 +1630,7 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                  except Exception as lan_err:
                      logging.error(f"[SCRIPT] LAN 通道异常: {lan_err}")
              
-             # ===== 兜底通道：WS 隧道（纯远程或直连全部失败后的最后手段）=====
+             # ===== 兜底通道：WS 隧道（纯远程或 USB/LAN 全失败后的最后手段）=====
              _script_ws = ACTIVE_TUNNELS.get(req.udid)
              if not _script_ws:
                  for tk, tw in ACTIVE_TUNNELS.items():
@@ -1663,7 +1654,6 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                          "body": _script_payload
                      })
                      
-                     # 同步透传等待（120秒超时）
                      try:
                          result = await asyncio.wait_for(future, timeout=120.0)
                          return result.get("body", {"status": "success", "detail": "WS Dispatch OK"})
