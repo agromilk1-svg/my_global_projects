@@ -31,6 +31,15 @@
 
   // 方案 1: 尝试使用 FBSSystemService (iOS 13+)
   LAUNCHER_LOG(@"尝试方案 1: FBSSystemService");
+  
+  // 必须先加载 FrontBoardServices 否则 NSClassFromString 会返回 nil
+  void *fbsHandle = dlopen("/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices", RTLD_NOW);
+  if (fbsHandle) {
+      LAUNCHER_LOG(@"成功加载 FrontBoardServices.framework");
+  } else {
+      LAUNCHER_LOG(@"加载 FrontBoardServices.framework 失败: %s", dlerror());
+  }
+  
   Class FBSSystemServiceClass = NSClassFromString(@"FBSSystemService");
   if (FBSSystemServiceClass) {
     id systemService = [FBSSystemServiceClass sharedService];

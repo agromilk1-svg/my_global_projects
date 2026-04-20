@@ -18,6 +18,10 @@ extern BOOL BridgeStart(NSString *config, NSError **error);
 @property(nonatomic, strong) ECHevTunnel *hevTunnel;
 @property(nonatomic, strong) ECUDPBridge *udpBridge;
 @property(nonatomic, strong) ECTun2Proxy *tun2proxy;
+// 代理健康检查
+@property(nonatomic, strong) NSTimer *proxyHealthTimer;
+@property(nonatomic, assign) NSInteger consecutiveProxyFailures;
+@property(nonatomic, copy) NSDictionary *activeConfigDict; // 保存当前配置供健康检查使用
 @end
 
 @implementation PacketTunnelProvider
@@ -533,6 +537,9 @@ extern BOOL BridgeStart(NSString *config, NSError **error);
                            [strongSelf logToFile:@"🚀 tun2proxy Started "
                                                  @"(TCP+UDP via socketpair)"];
 
+                           // 启动代理健康检查
+                           [strongSelf startProxyHealthCheck];
+
                            // Start packet forwarding loop to tun2proxy
                            [strongSelf readPacketsForTun2Proxy];
                            completionHandler(nil);
@@ -572,6 +579,7 @@ extern BOOL BridgeStart(NSString *config, NSError **error);
                            [strongSelf
                                logToFile:@"✅ Mihomo Native TUN Started - "
                                          @"UDP/QUIC should work!"];
+                           [strongSelf startProxyHealthCheck];
                            completionHandler(nil);
                          }
                        });
@@ -580,296 +588,509 @@ extern BOOL BridgeStart(NSString *config, NSError **error);
              }];
 }
 
+// ============================================================================
+// 代理健康检查
+// 每 30 秒探测 Mihomo 本地 SOCKS5 端口是否可用
+// 连续 5 次失败 → 主动调用 cancelTunnelWithError 退出，让主 App 自动重连
+// 注意：VPN 本身对 SSL 透明，SSL 错误是代理节点故障的症状，不是原因
+// ============================================================================
+- (void)startProxyHealthCheck {
+  [self.proxyHealthTimer invalidate];
+  self.consecutiveProxyFailures = 0;
+  __weak typeof(self) weakSelf = self;
+  // 在主线程上安排定时器（Network Extension 的主 Runloop）
+  self.proxyHealthTimer =
+      [NSTimer scheduledTimerWithTimeInterval:30.0
+                                       target:weakSelf
+                                     selector:@selector(runProxyHealthCheck)
+                                     userInfo:nil
+                                      repeats:YES];
+  [self logToFile:@"🩺 [ProxyHealth] 已启动代理健康检查（每 30 秒）"];
+}
+
+- (void)stopProxyHealthCheck {
+  [self.proxyHealthTimer invalidate];
+  self.proxyHealthTimer = nil;
+}
+
+- (void)runProxyHealthCheck {
+  if (!self.isTunnelRunning) return;
+
+  // 直接 TCP 连接测试 Mihomo 本地 SOCKS5 端口（127.0.0.1:7890）
+  // 只检测端口是否 accept，不发送任何数据，不触发代理转发
+  dispatch_async(
+      dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        BOOL alive = [self _checkLocalPort:7890];
+        dispatch_async(dispatch_get_main_queue(), ^{
+          if (!self.isTunnelRunning) return;
+
+          if (alive) {
+            if (self.consecutiveProxyFailures > 0) {
+              [self logToFile:
+                        [NSString stringWithFormat:
+                             @"🩺 [ProxyHealth] ✅ Mihomo 恢复正常（之前连续失败 "
+                             @"%ld 次）",
+                             (long)self.consecutiveProxyFailures]];
+            }
+            self.consecutiveProxyFailures = 0;
+          } else {
+            self.consecutiveProxyFailures++;
+            [self logToFile:
+                      [NSString
+                          stringWithFormat:
+                              @"🩺 [ProxyHealth] ⚠️ Mihomo 端口不响应（连续第 "
+                              @"%ld 次）",
+                              (long)self.consecutiveProxyFailures]];
+
+            // 连续 5 次失败（约 150 秒）→ 主动退出，让主 App 重连
+            if (self.consecutiveProxyFailures >= 5) {
+              [self logToFile:@"🩺 [ProxyHealth] ❌ 代理连续失败 5 次，主动终止 "
+                              @"Tunnel，触发主 App 自动重连..."];
+              [self stopProxyHealthCheck];
+              self.isTunnelRunning = NO;
+              NSError *healthErr = [NSError
+                  errorWithDomain:@"com.ecmain.tunnel"
+                             code:1001
+                         userInfo:@{
+                           NSLocalizedDescriptionKey :
+                               @"代理节点连续 5 次无响应，主动重启 VPN"
+                         }];
+              [self cancelTunnelWithError:healthErr];
+            }
+          }
+        });
+      });
+}
+
+// 快速 TCP connect 探测本地端口是否 listening（不发数据，立即关闭）
+- (BOOL)_checkLocalPort:(NSInteger)port {
+  struct sockaddr_in addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons((uint16_t)port);
+  inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if (sock < 0) return NO;
+
+  // 设置 3 秒超时
+  struct timeval tv = {.tv_sec = 3, .tv_usec = 0};
+  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+  int result = connect(sock, (struct sockaddr *)&addr, sizeof(addr));
+  close(sock);
+  return (result == 0);
+}
+
 - (void)appendProxyConfigForNode:(NSDictionary *)dict
-                        withName:(NSString *)name
-                     dialerProxy:(NSString *)dialerProxy
-                          toYAML:(NSMutableString *)yaml {
-  NSString *type = dict[@"type"] ?: @"Shadowsocks";
+                         withName:(NSString *)name
+                      dialerProxy:(NSString *)dialerProxy
+                           toYAML:(NSMutableString *)yaml {
+  NSString *type   = dict[@"type"] ?: @"Shadowsocks";
   NSString *server = dict[@"server"] ?: @"";
-  NSString *port = dict[@"port"] ?: @"";
+  // port: 始终写整数（Mihomo 不接受字符串 port）
+  NSInteger port   = [dict[@"port"] integerValue];
 
   [yaml appendString:[NSString stringWithFormat:@"  - name: %@\n", name]];
   [yaml appendString:[NSString stringWithFormat:@"    server: %@\n", server]];
-  [yaml appendString:[NSString stringWithFormat:@"    port: %@\n", port]];
+  [yaml appendString:[NSString stringWithFormat:@"    port: %ld\n", (long)port]];
 
-  // 全局注入 TCP Fast Open (TFO) 降低握手延迟 (类似 Shadowrocket 提速秘诀)
-  BOOL tfoEnabled = (dict[@"tfo"] != nil) ? [dict[@"tfo"] boolValue] : YES;
-  if (tfoEnabled) {
-    [yaml appendString:@"    tfo: true\n"];
-  }
+  // TFO: 对 QUIC 类协议（Hysteria/TUIC）和 Reality 关闭，其余默认开启
+  BOOL isTFOUnsafe = [type isEqualToString:@"Hysteria"]  ||
+                     [type isEqualToString:@"Hysteria2"] ||
+                     [type isEqualToString:@"Tuic"]      ||
+                     [type isEqualToString:@"WireGuard"];
+  BOOL tfoEnabled = isTFOUnsafe ? NO
+      : (dict[@"tfo"] != nil ? [dict[@"tfo"] boolValue] : YES);
+  if (tfoEnabled) [yaml appendString:@"    tfo: true\n"];
 
-  if (dialerProxy.length > 0) {
-    [yaml appendString:[NSString stringWithFormat:@"    dialer-proxy: %@\n",
-                                                  dialerProxy]];
-  }
+  if (dialerProxy.length > 0)
+    [yaml appendString:[NSString stringWithFormat:@"    dialer-proxy: %@\n", dialerProxy]];
 
+  // skip-cert-verify: 全局支持，所有 TLS 协议都读取此字段
+  BOOL skipCert = dict[@"skip-cert-verify"] ? [dict[@"skip-cert-verify"] boolValue] : NO;
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Shadowsocks
+  // ──────────────────────────────────────────────────────────────────────────
   if ([type isEqualToString:@"Shadowsocks"]) {
     [yaml appendString:@"    type: ss\n"];
-    [yaml appendString:[NSString
-                           stringWithFormat:@"    cipher: %@\n",
-                                            dict[@"cipher"] ?: @"aes-256-gcm"]];
+    [yaml appendString:[NSString stringWithFormat:@"    cipher: %@\n",
+                                                  dict[@"cipher"] ?: @"aes-256-gcm"]];
     [yaml appendString:[NSString stringWithFormat:@"    password: \"%@\"\n",
                                                   dict[@"password"] ?: @""]];
+
+    // Plugin 处理（plugin-opts 支持 key=value 和 key: value 两种格式）
     if ([dict[@"plugin"] length] > 0) {
-      [yaml appendString:[NSString stringWithFormat:@"    plugin: %@\n",
-                                                    dict[@"plugin"]]];
-      // 解析 plugin-opts 字符串，生成标准 YAML 多行格式
+      [yaml appendString:[NSString stringWithFormat:@"    plugin: %@\n", dict[@"plugin"]]];
       NSString *optsStr = dict[@"plugin-opts"] ?: @"";
-      // 清理花括号（兼容旧格式）
+      // 清理花括号
       optsStr = [optsStr stringByReplacingOccurrencesOfString:@"{" withString:@""];
       optsStr = [optsStr stringByReplacingOccurrencesOfString:@"}" withString:@""];
-      optsStr = [optsStr stringByTrimmingCharactersInSet:
-          [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-      
+      optsStr = [optsStr stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
       if (optsStr.length > 0) {
         [yaml appendString:@"    plugin-opts:\n"];
-        // 按逗号分割 key: value 对
-        NSArray *parts = [optsStr componentsSeparatedByString:@","];
+        // 支持分号和逗号两种分隔符（兼容 shadowrocket/quantumult 导出格式）
+        NSArray *parts = [optsStr componentsSeparatedByCharactersInSet:
+            [NSCharacterSet characterSetWithCharactersInString:@";,"]];
         for (NSString *part in parts) {
           NSString *trimmed = [part stringByTrimmingCharactersInSet:
               [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-          if (trimmed.length > 0) {
-            [yaml appendString:[NSString stringWithFormat:@"      %@\n", trimmed]];
-          }
+          if (trimmed.length == 0) continue;
+          // 兼容 "key=value" 格式，转为 "key: value"
+          NSString *converted = [trimmed stringByReplacingOccurrencesOfString:@"="
+                                                                    withString:@": "
+                                                                       options:0
+                                                                         range:NSMakeRange(0, [trimmed length])];
+          // 防止重复转换（已经是 "key: value" 格式的不处理）
+          if ([trimmed containsString:@": "]) converted = trimmed;
+          [yaml appendString:[NSString stringWithFormat:@"      %@\n", converted]];
         }
+        if (skipCert) [yaml appendString:@"      skip-cert-verify: true\n"];
       }
     } else if ([dict[@"obfs"] length] > 0) {
-      // 回退: 从 obfs/obfs-param 字段自动生成 plugin 配置
       [yaml appendString:@"    plugin: obfs\n"];
       [yaml appendString:@"    plugin-opts:\n"];
-      [yaml appendString:[NSString stringWithFormat:@"      mode: %@\n",
-                                                    dict[@"obfs"]]];
-      
-      // Mihomo 的 simple-obfs 插件严格要求必须有 host 参数
+      [yaml appendString:[NSString stringWithFormat:@"      mode: %@\n", dict[@"obfs"]]];
       NSString *obfsHost = dict[@"obfs-param"] ?: @"";
-      if (obfsHost.length == 0) {
-        obfsHost = @"bing.com"; // 默认兜底混淆域名
-      }
+      if (obfsHost.length == 0) obfsHost = @"bing.com";
       [yaml appendString:[NSString stringWithFormat:@"      host: %@\n", obfsHost]];
     } else if ([dict[@"ws-path"] length] > 0) {
-      // 智能识别: 存在 ws-path 意味着必须走 v2ray-plugin (WebSocket 传输)
       [yaml appendString:@"    plugin: v2ray-plugin\n"];
       [yaml appendString:@"    plugin-opts:\n"];
       [yaml appendString:@"      mode: websocket\n"];
       [yaml appendString:[NSString stringWithFormat:@"      path: %@\n", dict[@"ws-path"]]];
-      if ([dict[@"ws-host"] length] > 0) {
+      if ([dict[@"ws-host"] length] > 0)
         [yaml appendString:[NSString stringWithFormat:@"      host: %@\n", dict[@"ws-host"]]];
-      }
       if ([dict[@"tls"] boolValue]) {
         [yaml appendString:@"      tls: true\n"];
+        if (skipCert) [yaml appendString:@"      skip-cert-verify: true\n"];
       }
     }
-    // Respect 'udp' setting, default to true
-    BOOL udpEnabled = (dict[@"udp"] != nil) ? [dict[@"udp"] boolValue] : YES;
-    [yaml appendString:[NSString
-                           stringWithFormat:@"    udp: %@\n",
-                                            udpEnabled ? @"true" : @"false"]];
+
+    BOOL udpOn = dict[@"udp"] ? [dict[@"udp"] boolValue] : YES;
+    [yaml appendString:[NSString stringWithFormat:@"    udp: %@\n", udpOn ? @"true" : @"false"]];
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // ShadowsocksR
+  // ──────────────────────────────────────────────────────────────────────────
   } else if ([type isEqualToString:@"ShadowsocksR"]) {
     [yaml appendString:@"    type: ssr\n"];
-    [yaml appendString:[NSString
-                           stringWithFormat:@"    cipher: %@\n",
-                                            dict[@"cipher"] ?: @"aes-256-cfb"]];
+    [yaml appendString:[NSString stringWithFormat:@"    cipher: %@\n",
+                                                  dict[@"cipher"] ?: @"aes-256-cfb"]];
     [yaml appendString:[NSString stringWithFormat:@"    password: \"%@\"\n",
                                                   dict[@"password"] ?: @""]];
-    [yaml appendString:[NSString
-                           stringWithFormat:@"    protocol: %@\n",
-                                            dict[@"protocol"] ?: @"origin"]];
-    if ([dict[@"protocol-param"] length] > 0) {
+    [yaml appendString:[NSString stringWithFormat:@"    protocol: %@\n",
+                                                  dict[@"protocol"] ?: @"origin"]];
+    if ([dict[@"protocol-param"] length] > 0)
       [yaml appendString:[NSString stringWithFormat:@"    protocol-param: %@\n",
                                                     dict[@"protocol-param"]]];
-    }
     [yaml appendString:[NSString stringWithFormat:@"    obfs: %@\n",
                                                   dict[@"obfs"] ?: @"plain"]];
-    if ([dict[@"obfs-param"] length] > 0) {
+    if ([dict[@"obfs-param"] length] > 0)
       [yaml appendString:[NSString stringWithFormat:@"    obfs-param: %@\n",
                                                     dict[@"obfs-param"]]];
-    }
-    // Respect 'udp' setting, default to true
-    BOOL udpEnabled = (dict[@"udp"] != nil) ? [dict[@"udp"] boolValue] : YES;
-    [yaml appendString:[NSString
-                           stringWithFormat:@"    udp: %@\n",
-                                            udpEnabled ? @"true" : @"false"]];
+    BOOL udpOn = dict[@"udp"] ? [dict[@"udp"] boolValue] : YES;
+    [yaml appendString:[NSString stringWithFormat:@"    udp: %@\n", udpOn ? @"true" : @"false"]];
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // VMess — Fix: alterId 整数，servername，grpc/h2 传输层
+  // ──────────────────────────────────────────────────────────────────────────
   } else if ([type isEqualToString:@"VMess"]) {
     [yaml appendString:@"    type: vmess\n"];
-    [yaml appendString:[NSString stringWithFormat:@"    uuid: %@\n",
-                                                  dict[@"uuid"] ?: @""]];
-    [yaml appendString:[NSString stringWithFormat:@"    alterId: %@\n",
-                                                  dict[@"alterId"] ?: @"0"]];
+    [yaml appendString:[NSString stringWithFormat:@"    uuid: %@\n", dict[@"uuid"] ?: @""]];
+    // alterId 必须为整数
+    [yaml appendString:[NSString stringWithFormat:@"    alterId: %ld\n",
+                                                  (long)[dict[@"alterId"] integerValue]]];
     [yaml appendString:[NSString stringWithFormat:@"    cipher: %@\n",
                                                   dict[@"cipher"] ?: @"auto"]];
-    if ([dict[@"tls"] boolValue])
+    BOOL udpOn = dict[@"udp"] ? [dict[@"udp"] boolValue] : YES;
+    [yaml appendString:[NSString stringWithFormat:@"    udp: %@\n", udpOn ? @"true" : @"false"]];
+    if ([dict[@"tls"] boolValue]) {
       [yaml appendString:@"    tls: true\n"];
-    // Respect 'udp' setting, default to true
-    BOOL udpEnabled = (dict[@"udp"] != nil) ? [dict[@"udp"] boolValue] : YES;
-    [yaml appendString:[NSString
-                           stringWithFormat:@"    udp: %@\n",
-                                            udpEnabled ? @"true" : @"false"]];
-    if ([dict[@"network"] length] > 0)
-      [yaml appendString:[NSString stringWithFormat:@"    network: %@\n",
-                                                    dict[@"network"]]];
-    if ([dict[@"ws-path"] length] > 0 || [dict[@"ws-host"] length] > 0) {
+      if ([dict[@"servername"] length] > 0)
+        [yaml appendString:[NSString stringWithFormat:@"    servername: %@\n", dict[@"servername"]]];
+      if (skipCert)
+        [yaml appendString:@"    skip-cert-verify: true\n"];
+    }
+    NSString *network = dict[@"network"] ?: @"";
+    if (network.length > 0)
+      [yaml appendString:[NSString stringWithFormat:@"    network: %@\n", network]];
+    if ([network isEqualToString:@"ws"]) {
       [yaml appendString:@"    ws-opts:\n"];
       if ([dict[@"ws-path"] length] > 0)
-        [yaml appendString:[NSString stringWithFormat:@"      path: %@\n",
-                                                      dict[@"ws-path"]]];
+        [yaml appendString:[NSString stringWithFormat:@"      path: %@\n", dict[@"ws-path"]]];
       if ([dict[@"ws-host"] length] > 0)
-        [yaml appendString:[NSString stringWithFormat:
-                                         @"      headers:\n        Host: %@\n",
-                                         dict[@"ws-host"]]];
+        [yaml appendString:[NSString stringWithFormat:@"      headers:\n        Host: %@\n",
+                                                      dict[@"ws-host"]]];
+    } else if ([network isEqualToString:@"grpc"]) {
+      [yaml appendString:@"    grpc-opts:\n"];
+      NSString *svcName = dict[@"grpc-service-name"] ?: dict[@"serviceName"] ?: @"";
+      [yaml appendString:[NSString stringWithFormat:@"      grpc-service-name: %@\n", svcName]];
+    } else if ([network isEqualToString:@"h2"]) {
+      [yaml appendString:@"    h2-opts:\n"];
+      if ([dict[@"h2-path"] length] > 0)
+        [yaml appendString:[NSString stringWithFormat:@"      path: [\"%@\"]\n", dict[@"h2-path"]]];
+      if ([dict[@"h2-host"] length] > 0)
+        [yaml appendString:[NSString stringWithFormat:@"      host: [%@]\n", dict[@"h2-host"]]];
     }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // VLESS — Fix: Reality 自动设 tls, grpc 传输层
+  // ──────────────────────────────────────────────────────────────────────────
   } else if ([type isEqualToString:@"VLESS"]) {
     [yaml appendString:@"    type: vless\n"];
-    [yaml appendString:[NSString stringWithFormat:@"    uuid: %@\n",
-                                                  dict[@"uuid"] ?: @""]];
+    [yaml appendString:[NSString stringWithFormat:@"    uuid: %@\n", dict[@"uuid"] ?: @""]];
     if ([dict[@"flow"] length] > 0)
-      [yaml appendString:[NSString stringWithFormat:@"    flow: %@\n",
-                                                    dict[@"flow"]]];
-    // Respect 'udp' setting, default to true
-    BOOL udpEnabled = (dict[@"udp"] != nil) ? [dict[@"udp"] boolValue] : YES;
-    [yaml appendString:[NSString
-                           stringWithFormat:@"    udp: %@\n",
-                                            udpEnabled ? @"true" : @"false"]];
-    if ([dict[@"tls"] boolValue])
-      [yaml appendString:@"    tls: true\n"];
-    if ([dict[@"network"] length] > 0)
-      [yaml appendString:[NSString stringWithFormat:@"    network: %@\n",
-                                                    dict[@"network"]]];
-    // Reuse WS logic if network is ws, simplified for now
-    if ([dict[@"network"] isEqualToString:@"ws"] &&
-        ([dict[@"ws-path"] length] > 0 || [dict[@"ws-host"] length] > 0)) {
+      [yaml appendString:[NSString stringWithFormat:@"    flow: %@\n", dict[@"flow"]]];
+    BOOL udpOn = dict[@"udp"] ? [dict[@"udp"] boolValue] : YES;
+    [yaml appendString:[NSString stringWithFormat:@"    udp: %@\n", udpOn ? @"true" : @"false"]];
+
+    // Reality 强制开启 TLS
+    NSDictionary *realityOpts = dict[@"reality-opts"];
+    BOOL hasReality = realityOpts && [realityOpts isKindOfClass:[NSDictionary class]];
+    BOOL tlsOn = [dict[@"tls"] boolValue] || hasReality;
+    if (tlsOn) [yaml appendString:@"    tls: true\n"];
+    if ([dict[@"servername"] length] > 0)
+      [yaml appendString:[NSString stringWithFormat:@"    servername: %@\n", dict[@"servername"]]];
+    if ([dict[@"client-fingerprint"] length] > 0)
+      [yaml appendString:[NSString stringWithFormat:@"    client-fingerprint: %@\n",
+                                                    dict[@"client-fingerprint"]]];
+    if (!hasReality && skipCert)
+      [yaml appendString:@"    skip-cert-verify: true\n"];
+    if (hasReality) {
+      [yaml appendString:@"    reality-opts:\n"];
+      if ([realityOpts[@"public-key"] length] > 0)
+        [yaml appendString:[NSString stringWithFormat:@"      public-key: %@\n",
+                                                      realityOpts[@"public-key"]]];
+      if ([realityOpts[@"short-id"] length] > 0)
+        [yaml appendString:[NSString stringWithFormat:@"      short-id: %@\n",
+                                                      realityOpts[@"short-id"]]];
+    }
+
+    NSString *network = dict[@"network"] ?: @"";
+    if (network.length > 0)
+      [yaml appendString:[NSString stringWithFormat:@"    network: %@\n", network]];
+    if ([network isEqualToString:@"ws"]) {
       [yaml appendString:@"    ws-opts:\n"];
       if ([dict[@"ws-path"] length] > 0)
-        [yaml appendString:[NSString stringWithFormat:@"      path: %@\n",
-                                                      dict[@"ws-path"]]];
+        [yaml appendString:[NSString stringWithFormat:@"      path: %@\n", dict[@"ws-path"]]];
       if ([dict[@"ws-host"] length] > 0)
-        [yaml appendString:[NSString stringWithFormat:
-                                         @"      headers:\n        Host: %@\n",
-                                         dict[@"ws-host"]]];
+        [yaml appendString:[NSString stringWithFormat:@"      headers:\n        Host: %@\n",
+                                                      dict[@"ws-host"]]];
+    } else if ([network isEqualToString:@"grpc"]) {
+      [yaml appendString:@"    grpc-opts:\n"];
+      NSString *svcName = dict[@"grpc-service-name"] ?: dict[@"serviceName"] ?: @"";
+      [yaml appendString:[NSString stringWithFormat:@"      grpc-service-name: %@\n", svcName]];
     }
 
-    // New VLESS Reality & Fingerprint Support
-    if ([dict[@"servername"] length] > 0) {
-      [yaml appendString:[NSString stringWithFormat:@"    servername: %@\n",
-                                                    dict[@"servername"]]];
-    }
-
-    if ([dict[@"client-fingerprint"] length] > 0) {
-      [yaml appendString:[NSString
-                             stringWithFormat:@"    client-fingerprint: %@\n",
-                                              dict[@"client-fingerprint"]]];
-    }
-
-    NSDictionary *realityOpts = dict[@"reality-opts"];
-    if (realityOpts && [realityOpts isKindOfClass:[NSDictionary class]]) {
-      [yaml appendString:@"    reality-opts:\n"];
-      if ([realityOpts[@"public-key"] length] > 0) {
-        [yaml appendString:[NSString
-                               stringWithFormat:@"      public-key: %@\n",
-                                                realityOpts[@"public-key"]]];
-      }
-      if ([realityOpts[@"short-id"] length] > 0) {
-        [yaml
-            appendString:[NSString stringWithFormat:@"      short-id: %@\n",
-                                                    realityOpts[@"short-id"]]];
-      }
-    }
+  // ──────────────────────────────────────────────────────────────────────────
+  // Trojan — Fix: tls 显式声明, ws-opts 支持
+  // ──────────────────────────────────────────────────────────────────────────
   } else if ([type isEqualToString:@"Trojan"]) {
     [yaml appendString:@"    type: trojan\n"];
     [yaml appendString:[NSString stringWithFormat:@"    password: \"%@\"\n",
                                                   dict[@"password"] ?: @""]];
+    // Trojan 强制 TLS（协议设计层面不可关闭）
+    [yaml appendString:@"    tls: true\n"];
     if ([dict[@"sni"] length] > 0)
-      [yaml appendString:[NSString
-                             stringWithFormat:@"    sni: %@\n", dict[@"sni"]]];
-    if ([dict[@"network"] length] > 0)
-      [yaml appendString:[NSString stringWithFormat:@"    network: %@\n",
-                                                    dict[@"network"]]];
-    // BUILD #415: Add missing UDP support for Trojan (Crucial for TikTok/QUIC)
-    BOOL udpEnabled = (dict[@"udp"] != nil) ? [dict[@"udp"] boolValue] : YES;
-    [yaml appendString:[NSString
-                           stringWithFormat:@"    udp: %@\n",
-                                            udpEnabled ? @"true" : @"false"]];
+      [yaml appendString:[NSString stringWithFormat:@"    sni: %@\n", dict[@"sni"]]];
+    if (skipCert)
+      [yaml appendString:@"    skip-cert-verify: true\n"];
+    NSString *network = dict[@"network"] ?: @"";
+    if (network.length > 0)
+      [yaml appendString:[NSString stringWithFormat:@"    network: %@\n", network]];
+    if ([network isEqualToString:@"ws"]) {
+      [yaml appendString:@"    ws-opts:\n"];
+      if ([dict[@"ws-path"] length] > 0)
+        [yaml appendString:[NSString stringWithFormat:@"      path: %@\n", dict[@"ws-path"]]];
+      if ([dict[@"ws-host"] length] > 0)
+        [yaml appendString:[NSString stringWithFormat:@"      headers:\n        Host: %@\n",
+                                                      dict[@"ws-host"]]];
+    } else if ([network isEqualToString:@"grpc"]) {
+      [yaml appendString:@"    grpc-opts:\n"];
+      NSString *svcName = dict[@"grpc-service-name"] ?: dict[@"serviceName"] ?: @"";
+      [yaml appendString:[NSString stringWithFormat:@"      grpc-service-name: %@\n", svcName]];
+    }
+    BOOL udpOn = dict[@"udp"] ? [dict[@"udp"] boolValue] : YES;
+    [yaml appendString:[NSString stringWithFormat:@"    udp: %@\n", udpOn ? @"true" : @"false"]];
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // Hysteria v1 — Fix: protocol, skip-cert-verify, up/down 单位
+  // ──────────────────────────────────────────────────────────────────────────
   } else if ([type isEqualToString:@"Hysteria"]) {
     [yaml appendString:@"    type: hysteria\n"];
     [yaml appendString:[NSString stringWithFormat:@"    auth_str: \"%@\"\n",
                                                   dict[@"password"] ?: @""]];
+    // protocol: 默认 udp，可选 wechat-video/faketcp
+    NSString *proto = dict[@"protocol"] ?: @"udp";
+    [yaml appendString:[NSString stringWithFormat:@"    protocol: %@\n", proto]];
     if ([dict[@"sni"] length] > 0)
-      [yaml appendString:[NSString
-                             stringWithFormat:@"    sni: %@\n", dict[@"sni"]]];
-    [yaml appendString:[NSString stringWithFormat:@"    up: %@\n",
-                                                  dict[@"up"] ?: @"100"]];
-    [yaml appendString:[NSString stringWithFormat:@"    down: %@\n",
-                                                  dict[@"down"] ?: @"100"]];
+      [yaml appendString:[NSString stringWithFormat:@"    sni: %@\n", dict[@"sni"]]];
+    if (skipCert)
+      [yaml appendString:@"    skip-cert-verify: true\n"];
+    // up/down: 带单位（若已含 Mbps 则直接用，否则追加）
+    NSString *up   = dict[@"up"]   ?: @"100";
+    NSString *down = dict[@"down"] ?: @"100";
+    if (![up containsString:@"Mbps"] && ![up containsString:@"Kbps"])
+      up = [up stringByAppendingString:@" Mbps"];
+    if (![down containsString:@"Mbps"] && ![down containsString:@"Kbps"])
+      down = [down stringByAppendingString:@" Mbps"];
+    [yaml appendString:[NSString stringWithFormat:@"    up: \"%@\"\n", up]];
+    [yaml appendString:[NSString stringWithFormat:@"    down: \"%@\"\n", down]];
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Hysteria v2 — Fix: skip-cert-verify, obfs, up/down
+  // ──────────────────────────────────────────────────────────────────────────
   } else if ([type isEqualToString:@"Hysteria2"]) {
     [yaml appendString:@"    type: hysteria2\n"];
     [yaml appendString:[NSString stringWithFormat:@"    password: \"%@\"\n",
                                                   dict[@"password"] ?: @""]];
     if ([dict[@"sni"] length] > 0)
-      [yaml appendString:[NSString
-                             stringWithFormat:@"    sni: %@\n", dict[@"sni"]]];
+      [yaml appendString:[NSString stringWithFormat:@"    sni: %@\n", dict[@"sni"]]];
+    if (skipCert)
+      [yaml appendString:@"    skip-cert-verify: true\n"];
+    // 混淆（salamander）
+    if ([dict[@"obfs"] length] > 0) {
+      [yaml appendString:@"    obfs:\n"];
+      [yaml appendString:[NSString stringWithFormat:@"      type: %@\n", dict[@"obfs"]]];
+      if ([dict[@"obfs-password"] length] > 0)
+        [yaml appendString:[NSString stringWithFormat:@"      password: \"%@\"\n",
+                                                      dict[@"obfs-password"]]];
+    }
+    // 带宽声明（提升 Hysteria2 QUIC 拥塞窗口上限）
+    if ([dict[@"up"] length] > 0 || [dict[@"down"] length] > 0) {
+      NSString *up   = dict[@"up"]   ?: @"100";
+      NSString *down = dict[@"down"] ?: @"100";
+      [yaml appendString:@"    bandwidth:\n"];
+      [yaml appendString:[NSString stringWithFormat:@"      up: %@\n", up]];
+      [yaml appendString:[NSString stringWithFormat:@"      down: %@\n", down]];
+    }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // WireGuard — Fix: peers 结构完整化
+  // ──────────────────────────────────────────────────────────────────────────
   } else if ([type isEqualToString:@"WireGuard"]) {
     [yaml appendString:@"    type: wireguard\n"];
-    [yaml appendString:[NSString stringWithFormat:@"    ip: %@\n",
-                                                  dict[@"ip"] ?: @""]];
     [yaml appendString:[NSString stringWithFormat:@"    private-key: %@\n",
                                                   dict[@"private-key"] ?: @""]];
-    [yaml appendString:[NSString stringWithFormat:@"    public-key: %@\n",
-                                                  dict[@"public-key"] ?: @""]];
+    // 本地隧道地址
+    NSString *ip = dict[@"ip"] ?: @"";
+    if (ip.length > 0)
+      [yaml appendString:[NSString stringWithFormat:@"    ip: %@\n", ip]];
+    if ([dict[@"ipv6"] length] > 0)
+      [yaml appendString:[NSString stringWithFormat:@"    ipv6: %@\n", dict[@"ipv6"]]];
     if ([dict[@"mtu"] integerValue] > 0)
-      [yaml appendString:[NSString
-                             stringWithFormat:@"    mtu: %@\n", dict[@"mtu"]]];
+      [yaml appendString:[NSString stringWithFormat:@"    mtu: %ld\n",
+                                                    (long)[dict[@"mtu"] integerValue]]];
+    // peers 列表（必须项）
+    [yaml appendString:@"    peers:\n"];
+    NSArray *peers = dict[@"peers"];
+    if (peers && [peers isKindOfClass:[NSArray class]] && peers.count > 0) {
+      for (NSDictionary *peer in peers) {
+        [yaml appendString:[NSString stringWithFormat:@"      - public-key: %@\n",
+                                                      peer[@"public-key"] ?: dict[@"public-key"] ?: @""]];
+        NSString *endpoint = peer[@"server"] ?
+            [NSString stringWithFormat:@"%@:%@", peer[@"server"], peer[@"port"] ?: @"51820"] :
+            [NSString stringWithFormat:@"%@:%ld", server, (long)port];
+        [yaml appendString:[NSString stringWithFormat:@"        endpoint: %@\n", endpoint]];
+        [yaml appendString:@"        allowed-ips:\n"];
+        NSArray *allowedIPs = peer[@"allowed-ips"];
+        if (!allowedIPs || ![allowedIPs isKindOfClass:[NSArray class]] || allowedIPs.count == 0) {
+          NSString *ipv4all = @"0.0.0.0/0";
+          NSString *ipv6all = @"::/0";
+          allowedIPs = @[ipv4all, ipv6all];
+        }
+        for (NSString *cidr in allowedIPs)
+          [yaml appendString:[NSString stringWithFormat:@"          - %@\n", cidr]];
+      }
+    } else {
+      // 单节点兜底
+      [yaml appendString:[NSString stringWithFormat:@"      - public-key: %@\n",
+                                                    dict[@"public-key"] ?: @""]];
+      [yaml appendString:[NSString stringWithFormat:@"        endpoint: %@:%ld\n",
+                                                    server, (long)port]];
+      [yaml appendString:@"        allowed-ips:\n          - 0.0.0.0/0\n          - ::/0\n"];
+    }
     [yaml appendString:@"    udp: true\n"];
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // TUIC v5 — Fix: alpn 必填, sni/skip-cert-verify, 字段名修正
+  // ──────────────────────────────────────────────────────────────────────────
   } else if ([type isEqualToString:@"Tuic"]) {
     [yaml appendString:@"    type: tuic\n"];
     [yaml appendString:[NSString stringWithFormat:@"    uuid: %@\n",
                                                   dict[@"uuid"] ?: @""]];
     [yaml appendString:[NSString stringWithFormat:@"    password: \"%@\"\n",
                                                   dict[@"password"] ?: @""]];
-    if ([dict[@"congestion_controller"] length] > 0)
-      [yaml
-          appendString:[NSString
-                           stringWithFormat:@"    congestion-controller: %@\n",
-                                            dict[@"congestion_controller"]]];
+    // sni
+    if ([dict[@"sni"] length] > 0)
+      [yaml appendString:[NSString stringWithFormat:@"    sni: %@\n", dict[@"sni"]]];
+    if (skipCert)
+      [yaml appendString:@"    skip-cert-verify: true\n"];
+    // alpn 必填（TUIC 走 QUIC，h3 是标准 ALPN）
+    NSArray *alpn = dict[@"alpn"];
+    if (alpn && [alpn isKindOfClass:[NSArray class]] && alpn.count > 0) {
+      [yaml appendString:@"    alpn:\n"];
+      for (NSString *a in alpn)
+        [yaml appendString:[NSString stringWithFormat:@"      - %@\n", a]];
+    } else {
+      [yaml appendString:@"    alpn:\n      - h3\n"];
+    }
+    // congestion-controller: 兼容连字符和下划线两种键名
+    NSString *cc = dict[@"congestion-controller"] ?: dict[@"congestion_controller"] ?: @"";
+    if (cc.length > 0)
+      [yaml appendString:[NSString stringWithFormat:@"    congestion-controller: %@\n", cc]];
+    [yaml appendString:@"    udp-relay-mode: native\n"];
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // SOCKS5 — ✅ 无 Bug
+  // ──────────────────────────────────────────────────────────────────────────
   } else if ([type isEqualToString:@"Socks5"]) {
     [yaml appendString:@"    type: socks5\n"];
     if ([dict[@"user"] length] > 0)
-      [yaml appendString:[NSString stringWithFormat:@"    username: \"%@\"\n",
-                                                    dict[@"user"]]];
+      [yaml appendString:[NSString stringWithFormat:@"    username: \"%@\"\n", dict[@"user"]]];
     if ([dict[@"password"] length] > 0)
-      [yaml appendString:[NSString stringWithFormat:@"    password: \"%@\"\n",
-                                                    dict[@"password"]]];
+      [yaml appendString:[NSString stringWithFormat:@"    password: \"%@\"\n", dict[@"password"]]];
     [yaml appendString:@"    udp: true\n"];
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Snell — Fix: obfs-opts 块
+  // ──────────────────────────────────────────────────────────────────────────
   } else if ([type isEqualToString:@"Snell"]) {
     [yaml appendString:@"    type: snell\n"];
-    [yaml appendString:[NSString stringWithFormat:@"    psk: %@\n",
-                                                  dict[@"psk"] ?: @""]];
-    [yaml appendString:[NSString stringWithFormat:@"    version: %@\n",
-                                                  dict[@"version"] ?: @"2"]];
-  } else if ([type isEqualToString:@"HTTP"] ||
-             [type isEqualToString:@"HTTPS"]) {
+    [yaml appendString:[NSString stringWithFormat:@"    psk: %@\n", dict[@"psk"] ?: @""]];
+    [yaml appendString:[NSString stringWithFormat:@"    version: %ld\n",
+                                                  (long)([dict[@"version"] integerValue] ?: 4)]];
+    if ([dict[@"obfs"] length] > 0) {
+      [yaml appendString:@"    obfs-opts:\n"];
+      [yaml appendString:[NSString stringWithFormat:@"      mode: %@\n", dict[@"obfs"]]];
+      if ([dict[@"obfs-host"] length] > 0)
+        [yaml appendString:[NSString stringWithFormat:@"      host: %@\n", dict[@"obfs-host"]]];
+    }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // HTTP / HTTPS — Fix: username 加引号
+  // ──────────────────────────────────────────────────────────────────────────
+  } else if ([type isEqualToString:@"HTTP"] || [type isEqualToString:@"HTTPS"]) {
     [yaml appendString:@"    type: http\n"];
-
-    // TLS Logic
-    BOOL isHttpsType = [type isEqualToString:@"HTTPS"];
-    BOOL tlsEnabled = isHttpsType;
-    if (dict[@"tls"]) {
-      tlsEnabled = [dict[@"tls"] boolValue];
-    }
-    if (tlsEnabled) {
+    BOOL tlsOn = [type isEqualToString:@"HTTPS"] || [dict[@"tls"] boolValue];
+    if (tlsOn) {
       [yaml appendString:@"    tls: true\n"];
+      if (skipCert) [yaml appendString:@"    skip-cert-verify: true\n"];
     }
-
+    // username 和 password 都加引号（防止特殊字符破坏 YAML）
     if ([dict[@"user"] length] > 0)
-      [yaml appendString:[NSString stringWithFormat:@"    username: %@\n",
-                                                    dict[@"user"]]];
+      [yaml appendString:[NSString stringWithFormat:@"    username: \"%@\"\n", dict[@"user"]]];
     if ([dict[@"password"] length] > 0)
-      [yaml appendString:[NSString stringWithFormat:@"    password: \"%@\"\n",
-                                                    dict[@"password"]]];
+      [yaml appendString:[NSString stringWithFormat:@"    password: \"%@\"\n", dict[@"password"]]];
     if ([dict[@"sni"] length] > 0)
-      [yaml appendString:[NSString
-                             stringWithFormat:@"    sni: %@\n", dict[@"sni"]]];
+      [yaml appendString:[NSString stringWithFormat:@"    sni: %@\n", dict[@"sni"]]];
   }
 }
+
+
 
 - (NSString *)generateClashConfigFrom:(NSDictionary *)dict
                             withTunFD:(int)tunFD {
@@ -1185,7 +1406,85 @@ extern BOOL BridgeStart(NSString *config, NSError **error);
 
 - (void)stopTunnelWithReason:(NEProviderStopReason)reason
            completionHandler:(void (^)(void))completionHandler {
-  [self logToFile:@"Stopping tunnel..."];
+  // 将 reason 枚举转换为可读字符串
+  NSDictionary *reasonNames = @{
+    @(NEProviderStopReasonNone)                   : @"None (正常停止)",
+    @(NEProviderStopReasonUserInitiated)           : @"UserInitiated (用户手动关闭)",
+    @(NEProviderStopReasonProviderFailed)          : @"ProviderFailed (Tunnel扩展崩溃)",
+    @(NEProviderStopReasonNoNetworkAvailable)      : @"NoNetworkAvailable (网络不可用/断网)",
+    @(NEProviderStopReasonUnrecoverableNetworkChange): @"UnrecoverableNetworkChange (网络切换，如WiFi→4G)",
+    @(NEProviderStopReasonProviderDisabled)        : @"ProviderDisabled (VPN配置被禁用)",
+    @(NEProviderStopReasonAuthenticationCanceled)  : @"AuthenticationCanceled (认证被取消)",
+    @(NEProviderStopReasonConfigurationFailed)     : @"ConfigurationFailed (配置错误)",
+    @(NEProviderStopReasonIdleTimeout)             : @"IdleTimeout (空闲超时)",
+    @(NEProviderStopReasonConfigurationDisabled)   : @"ConfigurationDisabled (配置被禁用)",
+    @(NEProviderStopReasonConfigurationRemoved)    : @"ConfigurationRemoved (配置被删除)",
+    @(NEProviderStopReasonSuperceded)              : @"Superceded (被新VPN配置取代)",
+    @(NEProviderStopReasonUserLogout)              : @"UserLogout (用户退出登录)",
+    @(NEProviderStopReasonUserSwitch)              : @"UserSwitch (用户切换)",
+    @(NEProviderStopReasonConnectionFailed)        : @"ConnectionFailed (连接失败)",
+    @(NEProviderStopReasonSleep)                   : @"Sleep (设备进入睡眠)",
+    @(NEProviderStopReasonAppUpdate)               : @"AppUpdate (应用更新)",
+  };
+  NSString *reasonStr = reasonNames[@(reason)]
+      ?: [NSString stringWithFormat:@"Unknown (code=%ld)", (long)reason];
+
+  [self logToFile:[NSString stringWithFormat:@"🛑 Stopping tunnel — Reason: %@", reasonStr]];
+
+  // 将 Stop Reason 写入多个位置（按可靠性排序）
+  // 先组装日志字符串
+  NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+  fmt.dateFormat = @"yyyy-MM-dd HH:mm:ss.SSS Z";
+  NSString *ts = [fmt stringFromDate:[NSDate date]];
+  NSMutableString *log = [NSMutableString string];
+  [log appendString:@"====== VPN DISCONNECT LOG (Tunnel) ======\n"];
+  [log appendFormat:@"Time            : %@\n", ts];
+  [log appendFormat:@"Stop Reason     : %@\n", reasonStr];
+  [log appendFormat:@"Reason Code     : %ld\n", (long)reason];
+  [log appendFormat:@"Tunnel Running  : %@\n", self.isTunnelRunning ? @"YES" : @"NO"];
+  [log appendString:@"=========================================\n"];
+
+  // 方案 1： NSUserDefaults App Group（最可靠，不受 no-container 影响）
+  NSUserDefaults *groupDefaults =
+      [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
+  if (groupDefaults) {
+    [groupDefaults setObject:reasonStr forKey:@"TunnelLastStopReason"];
+    [groupDefaults setObject:ts forKey:@"TunnelLastStopTime"];
+    [groupDefaults setObject:log forKey:@"TunnelLastStopLog"];
+    [groupDefaults synchronize];
+    [self logToFile:@"✅ Tunnel 断开原因已写入 NSUserDefaults (App Group)"];
+  }
+
+  // 方案 2： 直接写入 /var/mobile/Media/（Tunnel 有 no-sandbox，可以尝试）
+  NSError *writeErr2 = nil;
+  BOOL ok2 = [log writeToFile:@"/var/mobile/Media/vpn_disconnect.log"
+                   atomically:YES
+                     encoding:NSUTF8StringEncoding
+                        error:&writeErr2];
+  if (ok2) {
+    [self logToFile:@"✅ Tunnel 断开日志已写入 /var/mobile/Media/vpn_disconnect.log"];
+  } else {
+    [self logToFile:[NSString stringWithFormat:
+                         @"⚠️ Tunnel 无法写 /var/mobile/Media/: %@",
+                         writeErr2.localizedDescription]];
+  }
+
+  // 方案 3： App Group 共享目录（如果 containerURL 可用）
+  NSURL *groupURL = [[NSFileManager defaultManager]
+      containerURLForSecurityApplicationGroupIdentifier:@"group.com.ecmain.shared"];
+  if (groupURL) {
+    NSString *sharedLogPath = [[groupURL path]
+        stringByAppendingPathComponent:@"tunnel_disconnect.log"];
+    NSError *writeErr3 = nil;
+    [log writeToFile:sharedLogPath atomically:YES
+            encoding:NSUTF8StringEncoding error:&writeErr3];
+    if (!writeErr3) {
+      [self logToFile:[NSString stringWithFormat:
+                           @"✅ Tunnel 断开日志已写入 App Group: %@", sharedLogPath]];
+    }
+  }
+  // Stop proxy health check timer first
+  [self stopProxyHealthCheck];
 
   // Stop tun2proxy if active
   if (self.tun2proxy) {

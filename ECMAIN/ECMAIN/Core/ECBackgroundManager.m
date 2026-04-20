@@ -22,6 +22,8 @@
 #import <arpa/inet.h>
 #import <dlfcn.h>
 #import <ifaddrs.h>
+#import <SystemConfiguration/SystemConfiguration.h>
+#include <notify.h>
 
 // 自动更新防重入标志
 static BOOL _isUpdating = NO;
@@ -52,6 +54,9 @@ static BOOL _isUpdating = NO;
 
 @implementation ECBackgroundManager {
   BOOL _isAudioActive;
+  dispatch_block_t _pendingAudioRestartBlock; // 延迟抢占音频保活的 pending block
+  BOOL _isScreenOff;        // 屏幕是否熄灭（Darwin 通知驱动）
+  BOOL _keepAliveRunning;   // 当前静音保活是否已经启动
   BOOL _isPiPActive;
   NSURLSessionWebSocketTask *_webSocketTask;
   BOOL _isTunnelConnected;
@@ -65,6 +70,9 @@ static BOOL _isUpdating = NO;
   NSTimeInterval _lastHeartbeatTime; // 上次心跳发送时间戳，用于超时补发
   BOOL _isStreamPushing; // [v1762] 方案B：是否正在主动推送 10089 原生帧
   NSTimeInterval _lastStreamPushTime; // [v1762] 上一帧推送时间戳（用于帧率控制）
+  BOOL _userStoppedVPN;          // 用户主动停止 VPN，不触发自动重连
+  NSInteger _vpnAutoReconnectCount; // VPN 自动重连计数（连接成功后清零）
+  CFAbsoluteTime _lastVPNDisconnectTime; // 防重复：最后一次 Disconnected 通知时间戳
 }
 
 
@@ -93,19 +101,21 @@ static BOOL _isUpdating = NO;
 
     [self setupVPN];
 
-    // 麦克风保活默认强制开启，不再提供用户开关
-    dispatch_async(dispatch_get_main_queue(), ^{
-      [self toggleMicrophoneKeepAlive:YES];
-    });
+    // 智能屏幕感知保活：
+    // - 屏幕亮时：ECMAIN 天然存活，无需保活
+    // - 屏幕熄灭时：启动轻量 Playback+MixWithOthers 静音保活，不占麦克风
+    _isScreenOff = NO;
+    _keepAliveRunning = NO;
+    [self _registerScreenStateNotifications];
 
-    // 监听后台/息屏事件
+    // 监听后台/息屏事件（仅用于状态校验，不再主动启动保活）
     [[NSNotificationCenter defaultCenter]
         addObserver:self
            selector:@selector(ensureBackgroundNetworkAlive)
                name:UIApplicationDidEnterBackgroundNotification
              object:nil];
 
-    // 【保活加固】监听音频会话中断事件（电话/Siri/闹钟结束后自动恢复录音）
+    // 【保活加固】监听音频会话中断事件
     [[NSNotificationCenter defaultCenter]
         addObserver:self
            selector:@selector(_handleAudioInterruption:)
@@ -131,24 +141,17 @@ static BOOL _isUpdating = NO;
   NSLog(@"[ECBackground] 🔄 进入后台/息屏，全面检查保活链...");
 
   dispatch_async(dispatch_get_main_queue(), ^{
-    // 检查 1：麦克风录音保活
-    if (!self->_isAudioActive || !self.audioRecorder || !self.audioRecorder.isRecording) {
-      NSLog(@"[ECBackground] ⚠️ 麦克风录音已失效，正在重启...");
-      [self toggleMicrophoneKeepAlive:YES];
-      NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-      [defaults setBool:YES forKey:@"EC_AUTO_MIC_ALIVE"];
-      [defaults synchronize];
+    // 进入后台时，不论屏幕亮灭都需要保活。
+    // 原因：即使屏幕亮着（如 TikTok 在前台），ECMAIN 在后台同样会被 iOS 挂起，
+    // 必须通过 audio 后台模式保持存活。
+    if (self->_pendingAudioRestartBlock) {
+      // 已主动让出 AudioSession 给前台 App，等 120s 定时器到期后自动恢复，不重复调度
+      NSLog(@"[ECBackground] ⏳ 后台自检：已让出期，等待 120s 定时器...");
+    } else if (!self->_keepAliveRunning) {
+      NSLog(@"[ECBackground] 🔔 后台自检：保活未运行，立即启动...");
+      [self _startBackgroundKeepAlive];
     } else {
-      NSLog(@"[ECBackground] ✅ 麦克风录音保活正常");
-    }
-
-    // 检查 2：ECKeepAlive 静音播放是否还在运行
-    AVAudioPlayer *silentPlayer = [[ECKeepAlive sharedInstance] valueForKey:@"audioPlayer"];
-    if (!silentPlayer || !silentPlayer.isPlaying) {
-      NSLog(@"[ECBackground] ⚠️ 静音播放已停止，正在重启...");
-      [[ECKeepAlive sharedInstance] start];
-    } else {
-      NSLog(@"[ECBackground] ✅ 静音音频播放保活正常");
+      NSLog(@"[ECBackground] ✅ 后台自检：静音保活正常运行");
     }
   });
 }
@@ -159,31 +162,63 @@ static BOOL _isUpdating = NO;
   NSUInteger type = [notification.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
 
   if (type == AVAudioSessionInterruptionTypeBegan) {
-    NSLog(@"[ECBackground] ⚠️ 音频会话被中断（可能来自电话/Siri/闹钟）");
-  } else if (type == AVAudioSessionInterruptionTypeEnded) {
-    NSLog(@"[ECBackground] 🔄 音频中断结束，自动恢复保活...");
+    // 其他 App（如 TikTok）抢占了音频路由
+    // 策略：主动让出 AudioSession，避免与前台 App 死锁，防止导致其崩溃
+    NSLog(@"[ECBackground] ⚠️ 音频会话被中断 — 主动让出 AudioSession（让前台 App 优先使用）");
 
-    // 恢复 AudioSession
-    [[AVAudioSession sharedInstance] setActive:YES error:nil];
+    // 取消之前排队的延迟抢占（防止重复调度）
+    if (_pendingAudioRestartBlock) {
+      _pendingAudioRestartBlock = nil;
+    }
 
-    // 恢复麦克风录音
     dispatch_async(dispatch_get_main_queue(), ^{
-      if (self.audioRecorder && !self.audioRecorder.isRecording) {
-        [self.audioRecorder record];
-        NSLog(@"[ECBackground] ✅ 麦克风录音已恢复");
-      } else if (!self.audioRecorder) {
-        // 录音器被销毁了，完全重建
-        [self toggleMicrophoneKeepAlive:YES];
-        NSLog(@"[ECBackground] ✅ 麦克风录音器已重建");
+      // 停止静音保活，释放 AudioSession 给前台 App
+      do {   AVAudioPlayer *_kap = [[ECKeepAlive sharedInstance] valueForKey:@"audioPlayer"];   if (_kap && _kap.isPlaying) { [_kap pause]; } } while(0);
+      NSError *deactivateErr = nil;
+      [[AVAudioSession sharedInstance]
+          setActive:NO
+        withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation
+              error:&deactivateErr];
+      if (deactivateErr) {
+        NSLog(@"[ECBackground] ⚠️ 释放 AudioSession 时出错: %@", deactivateErr.localizedDescription);
+      } else {
+        NSLog(@"[ECBackground] ✅ AudioSession 已释放，前台 App 可顺利使用");
       }
-
-      // 同时恢复 ECKeepAlive 静音播放
-      AVAudioPlayer *silentPlayer = [[ECKeepAlive sharedInstance] valueForKey:@"audioPlayer"];
-      if (silentPlayer && !silentPlayer.isPlaying) {
-        [silentPlayer play];
-        NSLog(@"[ECBackground] ✅ 静音播放已恢复");
-      }
+      self->_isAudioActive = NO;
+      self->_keepAliveRunning = NO;
     });
+
+  } else if (type == AVAudioSessionInterruptionTypeEnded) {
+    // 前台 App 归还了音频路由（如 TikTok 退到后台）
+    // 策略：等待 2 分钟后再抢占，给前台 App 充足的退出缓冲时间
+    NSLog(@"[ECBackground] 🔔 音频中断结束 — 将在 120 秒后恢复保活（避免与前台 App 争抢）");
+
+    // 取消上一次可能残留的延迟任务
+    if (_pendingAudioRestartBlock) {
+      _pendingAudioRestartBlock = nil;
+    }
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_block_t restartBlock = dispatch_block_create(0, ^{
+      __strong typeof(weakSelf) strongSelf = weakSelf;
+      if (!strongSelf) return;
+      // 如果 block 已被取消（外部置 nil），则不执行
+      if (!strongSelf->_pendingAudioRestartBlock) return;
+      strongSelf->_pendingAudioRestartBlock = nil;
+
+      NSLog(@"[ECBackground] 🔄 120秒等待结束，检查是否需要恢复保活...");
+      dispatch_async(dispatch_get_main_queue(), ^{
+        // 只要 ECMAIN 仍在后台（通过 _keepAliveRunning=NO 且还没回前台判断），就恢复保活
+        // 不依赖屏幕状态——屏幕亮 + ECMAIN 在后台同样需要保活
+        [strongSelf _startBackgroundKeepAlive];
+      });
+    });
+
+    _pendingAudioRestartBlock = restartBlock;
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(120.0 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(),
+        restartBlock);
   }
 }
 
@@ -201,27 +236,18 @@ static BOOL _isUpdating = NO;
   NSLog(@"[ECBackground] 🔍 切回前台，执行全链路保活自检...");
 
   dispatch_async(dispatch_get_main_queue(), ^{
-    // 自检 1：麦克风录音
-    if (!self->_isAudioActive || !self.audioRecorder || !self.audioRecorder.isRecording) {
-      NSLog(@"[ECBackground] ⚠️ [自检] 麦克风录音失效，重启中...");
-      [self toggleMicrophoneKeepAlive:YES];
-    }
+    // 1. ECMAIN 回到前台 — 停止音频保活，释放 AudioSession
+    NSLog(@"[ECBackground] 💡 [自检] ECMAIN 回到前台，停止保活");
+    [self _stopBackgroundKeepAlive];
 
-    // 自检 2：静音播放
-    AVAudioPlayer *silentPlayer = [[ECKeepAlive sharedInstance] valueForKey:@"audioPlayer"];
-    if (!silentPlayer || !silentPlayer.isPlaying) {
-      NSLog(@"[ECBackground] ⚠️ [自检] 静音播放失效，重启中...");
-      [[ECKeepAlive sharedInstance] start];
-    }
-
-    // 自检 3：心跳超时补发
+    // 2. 心跳超时补发
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if (now - self->_lastHeartbeatTime > 120.0) {
       NSLog(@"[ECBackground] ⚠️ [自检] 心跳已超过 120 秒未发送，立即补发！");
       [self sendHeartbeat:nil];
     }
 
-    // 自检 4：WebSocket 隧道
+    // 3. WebSocket 隧道自检
     if (!self->_isTunnelConnected || !self->_webSocketTask) {
       NSLog(@"[ECBackground] ⚠️ [自检] WebSocket 隧道断开，重连中...");
       [self startTunnel];
@@ -510,17 +536,203 @@ static BOOL _isUpdating = NO;
 }
 
 - (void)stopVPN {
-  NSLog(@"[ECBackground] Stopping VPN...");
+  NSLog(@"[ECBackground] Stopping VPN (user initiated)...");
+  _userStoppedVPN = YES;          // 标记为用户主动停止，不触发自动重连
+  _vpnAutoReconnectCount = 0;     // 重置重连计数
   [self.vpnManager.connection stopVPNTunnel];
-  // Auto-stop logic REMOVED as per user request
 }
 
 - (void)vpnStatusDidChange:(NSNotification *)notification {
   NEVPNConnection *connection = self.vpnManager.connection;
-  NSLog(@"[ECBackground] VPN Status Changed: %ld", (long)connection.status);
+  NEVPNStatus currentStatus = connection.status;
+  NSLog(@"[ECBackground] VPN Status Changed: %ld", (long)currentStatus);
 
-  if (connection.status == NEVPNStatusDisconnected) {
-    NSLog(@"[ECBackground] VPN Disconnected.");
+  if (currentStatus == NEVPNStatusConnected) {
+    _vpnAutoReconnectCount = 0;
+    _userStoppedVPN = NO;
+    _lastVPNDisconnectTime = 0; // 重置防重复计时
+    NSLog(@"[ECBackground] ✅ VPN 已连接，重置重连计数");
+    [[ECLogManager sharedManager] log:@"[ECBackground] ✅ VPN 连接成功"];
+  }
+
+  if (currentStatus == NEVPNStatusDisconnected) {
+    // 防重复：iOS 在 VPN 断开序列中会连续发送多次 Disconnected 通知
+    // 用 500ms 窗口去重，只处理第一次
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (now - _lastVPNDisconnectTime < 0.5) {
+      NSLog(@"[ECBackground] VPN Disconnected 通知已忽略（0.5s 内重复，时间差: %.3fs）",
+            now - _lastVPNDisconnectTime);
+      return;
+    }
+    _lastVPNDisconnectTime = now;
+
+    NSLog(@"[ECBackground] VPN Disconnected — Writing disconnect log...");
+    [self _writeVPNDisconnectLog];
+
+    // 自动重连：仅在非用户主动停止、且重连次数未超限时触发
+    if (!_userStoppedVPN) {
+      static const NSInteger kMaxAutoReconnect = 5;
+      if (_vpnAutoReconnectCount < kMaxAutoReconnect) {
+        _vpnAutoReconnectCount++;
+        NSTimeInterval delay = 5.0 * _vpnAutoReconnectCount; // 5s, 10s, 15s...
+        NSLog(@"[ECBackground] VPN 意外断开，%0.fs 后自动重连 (第 %ld/%ld 次)",
+              delay, (long)_vpnAutoReconnectCount, (long)kMaxAutoReconnect);
+        [[ECLogManager sharedManager]
+            log:[NSString stringWithFormat:
+                     @"[ECBackground] VPN 意外断开，%.0fs 后自动重连 (%ld/%ld)",
+                     delay, (long)_vpnAutoReconnectCount, (long)kMaxAutoReconnect]];
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+            dispatch_get_main_queue(), ^{
+              if (!self->_userStoppedVPN &&
+                  self.vpnManager.connection.status == NEVPNStatusDisconnected) {
+                [[ECLogManager sharedManager]
+                    log:@"[ECBackground] 🔄 执行自动重连 VPN..."];
+                [self startVPN];
+              }
+            });
+      } else {
+        NSLog(@"[ECBackground] ⚠️ VPN 已达最大自动重连次数 (%ld)，停止重连",
+              (long)kMaxAutoReconnect);
+        [[ECLogManager sharedManager]
+            log:@"[ECBackground] ⚠️ VPN 已达最大重连次数，请手动重启"];
+      }
+    } else {
+      NSLog(@"[ECBackground] VPN 用户主动停止，不自动重连");
+    }
+  }
+}
+
+// 覆盖写入 VPN 断开诊断日志到 /var/mobile/Media/vpn_disconnect.log
+- (void)_writeVPNDisconnectLog {
+  NEVPNConnection *connection = self.vpnManager.connection;
+  NETunnelProviderManager *manager = self.vpnManager;
+
+  // 1. 时间戳
+  NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+  fmt.dateFormat = @"yyyy-MM-dd HH:mm:ss.SSS Z";
+  NSString *ts = [fmt stringFromDate:[NSDate date]];
+
+  // 2. 状态码描述
+  NSDictionary *statusNames = @{
+    @(NEVPNStatusInvalid)       : @"Invalid",
+    @(NEVPNStatusDisconnected)  : @"Disconnected",
+    @(NEVPNStatusConnecting)    : @"Connecting",
+    @(NEVPNStatusConnected)     : @"Connected",
+    @(NEVPNStatusReasserting)   : @"Reasserting",
+    @(NEVPNStatusDisconnecting) : @"Disconnecting",
+  };
+  NSString *statusStr = statusNames[@(connection.status)] ?: @"Unknown";
+
+  // 3. VPN 配置摘要
+  NEVPNProtocol *proto = manager.protocolConfiguration;
+  NSString *server     = proto.serverAddress ?: @"(nil)";
+  NSString *provBundle = @"(not tunnel provider)";
+  NSString *proxyConfig = @"(nil)";
+  if ([proto isKindOfClass:[NETunnelProviderProtocol class]]) {
+    NETunnelProviderProtocol *tp = (NETunnelProviderProtocol *)proto;
+    provBundle = tp.providerBundleIdentifier ?: @"(nil)";
+    NSDictionary *cfg = tp.providerConfiguration;
+    if (cfg) {
+      NSMutableDictionary *summary = [NSMutableDictionary dictionary];
+      for (NSString *key in @[@"type", @"server", @"port", @"proxy_through_id",
+                              @"url", @"proxies", @"networkType"]) {
+        if (cfg[key]) summary[key] = cfg[key];
+      }
+      proxyConfig = summary.description;
+    }
+  }
+
+  // 4. SharedDefaults VPNConfig 摘要
+  NSUserDefaults *sharedDefaults =
+      [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
+  NSDictionary *vpnCfg = [sharedDefaults dictionaryForKey:@"VPNConfig"];
+  NSString *vpnCfgSummary = vpnCfg ? vpnCfg.description : @"(nil)";
+
+  // 5. 当前网络状态 (SCNetworkReachability)
+  NSString *networkStatus = @"unknown";
+  struct sockaddr_in zeroAddr;
+  bzero(&zeroAddr, sizeof(zeroAddr));
+  zeroAddr.sin_len    = sizeof(zeroAddr);
+  zeroAddr.sin_family = AF_INET;
+  SCNetworkReachabilityRef reachRef =
+      SCNetworkReachabilityCreateWithAddress(NULL, (struct sockaddr *)&zeroAddr);
+  if (reachRef) {
+    SCNetworkReachabilityFlags flags = 0;
+    if (SCNetworkReachabilityGetFlags(reachRef, &flags)) {
+      BOOL reachable  = (flags & kSCNetworkReachabilityFlagsReachable) != 0;
+      BOOL needsConn  = (flags & kSCNetworkReachabilityFlagsConnectionRequired) != 0;
+      BOOL isCellular = (flags & kSCNetworkReachabilityFlagsIsWWAN) != 0;
+      if (reachable && !needsConn) {
+        networkStatus = isCellular ? @"Cellular" : @"WiFi";
+      } else if (!reachable) {
+        networkStatus = @"No Network";
+      } else {
+        networkStatus = @"Reconnecting";
+      }
+    }
+    CFRelease(reachRef);
+  }
+
+  // 6. 组装日志
+  NSMutableString *log = [NSMutableString string];
+
+  // 读取 Tunnel 侧写入的断开原因：优先 NSUserDefaults，备用文件
+  NSString *tunnelStopReason = @"(系统强制 teardown — Tunnel crash 或节点全挂)";
+  NSUserDefaults *groupUD = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.ecmain.shared"];
+  NSString *udStopReason = [groupUD stringForKey:@"TunnelLastStopReason"];
+  NSString *udStopTime   = [groupUD stringForKey:@"TunnelLastStopTime"];
+  if (udStopReason.length > 0) {
+    tunnelStopReason = udStopTime.length > 0
+        ? [NSString stringWithFormat:@"%@ (at %@)", udStopReason, udStopTime]
+        : udStopReason;
+  } else {
+    // 备用：从 App Group 文件读取
+    NSURL *groupURL = [[NSFileManager defaultManager]
+        containerURLForSecurityApplicationGroupIdentifier:@"group.com.ecmain.shared"];
+    if (groupURL) {
+      NSString *tunnelLogPath = [[groupURL path] stringByAppendingPathComponent:@"tunnel_disconnect.log"];
+      NSString *tunnelLog = [NSString stringWithContentsOfFile:tunnelLogPath
+                                                      encoding:NSUTF8StringEncoding
+                                                         error:nil];
+      if (tunnelLog.length > 0) {
+        for (NSString *line in [tunnelLog componentsSeparatedByString:@"\n"]) {
+          if ([line hasPrefix:@"Stop Reason"]) {
+            NSArray *parts = [line componentsSeparatedByString:@": "];
+            if (parts.count >= 2)
+              tunnelStopReason = [[parts subarrayWithRange:NSMakeRange(1, parts.count-1)]
+                                  componentsJoinedByString:@": "];
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  [log appendString:@"====== VPN DISCONNECT LOG (Main App) ======\n"];
+  [log appendFormat:@"Time            : %@\n", ts];
+  [log appendFormat:@"Status          : %@ (%ld)\n", statusStr, (long)connection.status];
+  [log appendFormat:@"Network         : %@\n", networkStatus];
+  [log appendFormat:@"VPN Server      : %@\n", server];
+  [log appendFormat:@"Tunnel Provider : %@\n", provBundle];
+  [log appendFormat:@"Stop Reason     : %@\n", tunnelStopReason];
+  [log appendFormat:@"Proto Config    : %@\n", proxyConfig];
+  [log appendFormat:@"Shared VPNConfig: %@\n", vpnCfgSummary];
+  [log appendFormat:@"Manager Enabled : %@\n", manager.enabled ? @"YES" : @"NO"];
+  [log appendString:@"==========================================\n"];
+
+  // 7. 覆盖写入（atomically 保证写完后再替换，不会读到半截文件）
+  NSString *logPath = @"/var/mobile/Media/vpn_disconnect.log";
+  NSError *writeError = nil;
+  BOOL ok = [log writeToFile:logPath
+                  atomically:YES
+                    encoding:NSUTF8StringEncoding
+                       error:&writeError];
+  if (ok) {
+    NSLog(@"[ECBackground] ✅ VPN断开日志已写入: %@", logPath);
+  } else {
+    NSLog(@"[ECBackground] ❌ VPN断开日志写入失败: %@",
+          writeError.localizedDescription);
   }
 }
 
@@ -543,74 +755,147 @@ static BOOL _isUpdating = NO;
 
 #pragma mark - Microphone Keep-Alive
 
+// ============================================================
+// 屏幕感知智能保活 — 核心设计原则：
+//   1. 屏幕亮时：ECMAIN 天然存活，ECKeepAlive 不工作
+//   2. 屏幕熄灭时：启动轻量 Playback+MixWithOthers 静音保活
+//   3. 完全不占用麦克风，彻底消除与 TikTok 等 App 的音频冲突
+//   4. 中断时主动让出，TikTok 退后台后等 2 分钟再抢占
+// ============================================================
+
+// 注册 Darwin 系统级屏幕状态通知（TrollStore 权限可用）
+- (void)_registerScreenStateNotifications {
+  // Darwin 通知是进程间低级通知，不受后台限制，100% 可靠接收
+  // com.apple.springboard.hasBlankedScreen = 屏幕熄灭/点亮
+  CFNotificationCenterRef darwinCenter = CFNotificationCenterGetDarwinNotifyCenter();
+
+  CFNotificationCenterAddObserver(
+      darwinCenter,
+      (__bridge void *)self,
+      _screenDidBlankCallback,
+      CFSTR("com.apple.springboard.hasBlankedScreen"),
+      NULL,
+      CFNotificationSuspensionBehaviorCoalesce);
+
+  // 也监听锁屏事件（锁屏 ≠ 熄屏，但锁屏同样需要保活）
+  CFNotificationCenterAddObserver(
+      darwinCenter,
+      (__bridge void *)self,
+      _screenDidBlankCallback,
+      CFSTR("com.apple.springboard.lockstate"),
+      NULL,
+      CFNotificationSuspensionBehaviorCoalesce);
+
+  NSLog(@"[ECBackground] 📡 已注册 Darwin 屏幕状态通知");
+}
+
+// Darwin 回调（C 函数）
+static void _screenDidBlankCallback(CFNotificationCenterRef center,
+                                    void *observer,
+                                    CFStringRef name,
+                                    const void *object,
+                                    CFDictionaryRef userInfo) {
+  ECBackgroundManager *self = (__bridge ECBackgroundManager *)observer;
+  NSString *notifName = (__bridge NSString *)name;
+
+  // 通过 notify_get_state 检查屏幕真实状态，比单看通知名更准确
+  uint64_t state = 0;
+  int token = 0;
+  notify_register_check("com.apple.springboard.hasBlankedScreen", &token);
+  notify_get_state(token, &state);
+  notify_cancel(token);
+
+  BOOL screenIsNowOff = (state == 1);
+  NSLog(@"[ECBackground] 📱 屏幕状态变化 (%@): %@",
+        notifName, screenIsNowOff ? @"熄灭" : @"点亮");
+
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (screenIsNowOff && !self->_isScreenOff) {
+      // 屏幕刚熄灭：辅助触发保活（UIApplicationDidEnterBackground 是主触发）
+      self->_isScreenOff = YES;
+      [self _startBackgroundKeepAlive];
+    } else if (!screenIsNowOff && self->_isScreenOff) {
+      // 屏幕点亮：不停止保活！
+      // 屏幕亮 ≠ ECMAIN 在前台，TikTok 可能仍在前台，ECMAIN 仍需保活
+      // 停止保活的唯一时机是 UIApplicationWillEnterForegroundNotification
+      self->_isScreenOff = NO;
+      NSLog(@"[ECBackground] ☀️ 屏幕点亮，保活继续（ECMAIN 可能仍在后台）");
+    }
+  });
+}
+
+// 后台保活（统一入口：无论屏幕亮灭，只要 ECMAIN 在后台就启动）
+// 使用 Playback+MixWithOthers：
+//   ✅ 不占麦克风，TikTok 可自由录音
+//   ✅ 可与任何 App 的音频会话共存
+//   ✅ 满足 audio 后台模式要求，进程不被挂起
+- (void)_startBackgroundKeepAlive {
+  if (_keepAliveRunning) return;
+  if (_pendingAudioRestartBlock) {
+    NSLog(@"[ECBackground] ⏳ 已让出期，等 120s 定时器完成后再启动");
+    return;
+  }
+
+  NSLog(@"[ECBackground] 🛡️ 启动后台静音保活（Playback+MixWithOthers，不占麦克风）");
+
+  AVAudioSession *session = [AVAudioSession sharedInstance];
+  NSError *error = nil;
+
+  // ⭐ 关键：使用 Playback + MixWithOthers，完全不占麦克风
+  // TikTok 或任何 App 都可以自由使用 PlayAndRecord，不会冲突
+  [session setCategory:AVAudioSessionCategoryPlayback
+           withOptions:AVAudioSessionCategoryOptionMixWithOthers
+                 error:&error];
+  if (error) {
+    NSLog(@"[ECBackground] ⚠️ setCategory 失败: %@", error.localizedDescription);
+  }
+
+  [session setActive:YES error:&error];
+  if (error) {
+    NSLog(@"[ECBackground] ⚠️ setActive 失败: %@", error.localizedDescription);
+  }
+
+  // 启动 ECKeepAlive 静音播放（只播放无声音频，保持进程活跃）
+  [[ECKeepAlive sharedInstance] start];
+
+  _isAudioActive = YES;
+  _keepAliveRunning = YES;
+  NSLog(@"[ECBackground] ✅ 静音保活已启动（Playback模式，零冲突）");
+}
+
+// 停止后台保活（仅在 ECMAIN 回到前台时调用）
+- (void)_stopBackgroundKeepAlive {
+  if (!_keepAliveRunning) return;
+
+  NSLog(@"[ECBackground] ☀️ ECMAIN 回到前台 — 停止静音保活（前台天然存活）");
+
+  // 取消待执行的延迟抢占
+  if (_pendingAudioRestartBlock) {
+    _pendingAudioRestartBlock = nil;
+  }
+
+  // 停止 ECKeepAlive 静音播放
+  do {   AVAudioPlayer *_kap = [[ECKeepAlive sharedInstance] valueForKey:@"audioPlayer"];   if (_kap && _kap.isPlaying) { [_kap pause]; } } while(0);
+
+  // 释放 AudioSession，还给其他 App
+  NSError *error = nil;
+  [[AVAudioSession sharedInstance]
+      setActive:NO
+    withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation
+          error:&error];
+
+  _isAudioActive = NO;
+  _keepAliveRunning = NO;
+  NSLog(@"[ECBackground] ✅ 静音保活已停止，AudioSession 已释放");
+}
+
+// 旧接口保留兼容（内部调用统一走新逻辑）
 - (void)toggleMicrophoneKeepAlive:(BOOL)enabled {
   if (enabled) {
-    if (self.audioRecorder && self.audioRecorder.isRecording) {
-      return;
-    }
-
-    NSLog(@"[ECBackground] Starting Microphone Keep-Alive...");
-
-    AVAudioSession *session = [AVAudioSession sharedInstance];
-    NSError *error = nil;
-
-    // Use PlayAndRecord to allow background persistence
-    [session setCategory:AVAudioSessionCategoryPlayAndRecord
-             withOptions:AVAudioSessionCategoryOptionMixWithOthers |
-                         AVAudioSessionCategoryOptionAllowBluetooth |
-                         AVAudioSessionCategoryOptionDefaultToSpeaker
-                   error:&error];
-    if (error)
-      NSLog(@"[ECBackground] AudioSession Error 1: %@", error);
-
-    [session setActive:YES error:&error];
-    if (error)
-      NSLog(@"[ECBackground] AudioSession Error 2: %@", error);
-
-    // Record to a temp file
-    NSString *tempDir = NSTemporaryDirectory();
-    NSString *soundFilePath =
-        [tempDir stringByAppendingPathComponent:@"keepalive.caf"];
-    NSURL *soundFileURL = [NSURL fileURLWithPath:soundFilePath];
-
-    NSDictionary *recordSettings = @{
-      AVFormatIDKey : @(kAudioFormatAppleIMA4),
-      AVSampleRateKey : @44100.0f,
-      AVNumberOfChannelsKey : @1,
-      AVEncoderBitDepthHintKey : @16,
-      AVEncoderAudioQualityKey : @(AVAudioQualityLow)
-    };
-
-    self.audioRecorder = [[AVAudioRecorder alloc] initWithURL:soundFileURL
-                                                     settings:recordSettings
-                                                        error:&error];
-    if (error) {
-      NSLog(@"[ECBackground] Recorder Init Error: %@", error);
-      return;
-    }
-
-    [self.audioRecorder prepareToRecord];
-    BOOL success = [self.audioRecorder record];
-
-    if (success) {
-      _isAudioActive = YES;
-      NSLog(@"[ECBackground] 🎙️ Microphone Keep-Alive STARTED (Recording)");
-    } else {
-      NSLog(@"[ECBackground] ❌ Failed to start recording");
-    }
-
+    // 只要 ECMAIN 在后台就需要保活，不区分屏幕亮灭
+    [self _startBackgroundKeepAlive];
   } else {
-    if (self.audioRecorder) {
-      [self.audioRecorder stop];
-      self.audioRecorder = nil;
-    }
-
-    // 禁用：绝对不要在这里调用 [[AVAudioSession sharedInstance] setActive:NO]
-    // 因为 ECKeepAlive 的静音播放器与本模块共享同一个底层的 AVAudioSession。
-    // 如果关闭录音并 deactivate session，静音播放将被系统直接硬切断，应用在后台会瞬间死亡！
-
-    _isAudioActive = NO;
-    NSLog(@"[ECBackground] 🛑 Microphone Keep-Alive STOPPED");
+    [self _stopBackgroundKeepAlive];
   }
 }
 
@@ -1654,11 +1939,16 @@ static BOOL _isStreamingActive = NO;
           }] resume];
       }
 
-      // 每次心跳时顺带检查音频保活是否还活着
+      // 每次心跳时检查后台保活是否还活着
       dispatch_async(dispatch_get_main_queue(), ^{
-        if (!strongSelf->_isAudioActive || !strongSelf.audioRecorder || !strongSelf.audioRecorder.isRecording) {
-          NSLog(@"[ECBackground] ⚠️ 心跳周期检测到麦克风保活失效，自动重启...");
-          [strongSelf toggleMicrophoneKeepAlive:YES];
+        // 只在后台状态（_keepAliveRunning 应为 YES）时自检
+        // 前台状态 _keepAliveRunning=NO 是正常现象，不需要重启
+        UIApplicationState appState = [UIApplication sharedApplication].applicationState;
+        BOOL isInBackground = (appState == UIApplicationStateBackground ||
+                               appState == UIApplicationStateInactive);
+        if (isInBackground && !strongSelf->_keepAliveRunning && !strongSelf->_pendingAudioRestartBlock) {
+          NSLog(@"[ECBackground] ⚠️ 心跳周期检测到后台保活失效，自动重启...");
+          [strongSelf _startBackgroundKeepAlive];
         }
       });
 

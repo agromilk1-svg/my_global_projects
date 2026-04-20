@@ -304,25 +304,37 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
 }
 
 - (NSString *)getOutputFromHelper:(NSArray *)args {
-  NSMutableString *cmd =
-      [NSMutableString stringWithFormat:@"\"%@\"", rootHelperPath()];
-  for (NSString *arg in args) {
-    [cmd appendFormat:@" \"%@\"", arg];
+  NSString *stdOut = nil;
+  NSString *stdErr = nil;
+
+  NSString *helperPath = rootHelperPath();
+
+  // 1. 检查辅助工具路径是否存在
+  if (![[NSFileManager defaultManager] fileExistsAtPath:helperPath]) {
+    NSString *err =
+        [NSString stringWithFormat:@"❌ Helper 缺失: %@", helperPath];
+    ECLog(@"%@", err);
+    return err;
   }
 
-  FILE *fp = popen([cmd UTF8String], "r");
-  if (!fp)
-    return nil;
+  int ret = spawnRoot(helperPath, args, &stdOut, &stdErr);
 
-  char buffer[1024];
   NSMutableString *output = [NSMutableString string];
-  while (fgets(buffer, sizeof(buffer), fp) != NULL) {
-    NSString *s = [NSString stringWithUTF8String:buffer];
-    if (s)
-      [output appendString:s];
+  if (stdOut)
+    [output appendString:stdOut];
+  if (stdErr) {
+    if (output.length > 0)
+      [output appendString:@"\n"];
+    [output appendString:stdErr];
   }
 
-  pclose(fp);
+  // 2. 如果输出为空但返回码非0，补全信息
+  if (output.length == 0 && ret != 0) {
+    [output appendFormat:@"❌ spawnRoot 失败，代码: %d (无输出捕获)", ret];
+  }
+
+  ECLog(@"[Helper] spawnRoot 返回: %d. 输出: %@", ret, output);
+
   return output;
 }
 
@@ -632,7 +644,7 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
         [NSError errorWithDomain:@"ECAppInjector"
                             code:5
                         userInfo:@{
-                          NSLocalizedDescriptionKey : @"重签失败 (check logs)"
+                          NSLocalizedDescriptionKey : [NSString stringWithFormat:@"重签失败: %@", output]
                         }];
   }
   return NO;
@@ -917,14 +929,14 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
 
   if (injectSuccess) { // Just simpler logic structure to match original flow
                        // where next step is marker creation
-    // NOTE: We do NOT resign other binaries in the bundle.
-    // The Frameworks, dylibs, and App Extensions have ORIGINAL valid
-    // signatures. Only the main binary was modified (load command injected +
-    // resigned). Attempting to resign unmodified binaries with ldid BREAKS
-    // their signatures.
-    //
-    // [self resignAllBundleBinaries:appPath teamID:teamID]; // DISABLED -
-    // Causes crash!
+
+    // ── loose .dylib 签名策略 ────────────────────────────────────────────────
+    // 注意: 不要在这里预签名 Frameworks/ 下的 loose .dylib！
+    // 原因: "分身安装(System)" 能正常工作说明 TrollStore CTLoop 可以正确处理
+    //       原始 App Store 签名的 dylib。
+    // 预签名（sign-binary ad-hoc）会破坏 App Store CodeDirectory 的结构，
+    // 导致 CTLoop 二次 bypass 时产生 sliceOffset=0x0 的无效签名。
+    // 正确做法: 保留原始 App Store 签名，由 CTLoop 在安装时做一次 bypass 即可。
 
     // 7. 创建注入标记
     // touch-file replacement (Use Helper for Root Permission)
@@ -966,7 +978,31 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
   return NO;
 }
 
-/// 内置的 Mach-O 注入实现（备选方案）
+/// Post-install fix: 对已安装 bundle 的 Frameworks/ loose .dylib 做最终重签
+/// TrollStore CTLoop 二次 bypass 后 libswiftCompatibilityPacks.dylib 等签名会损坏
+/// 调用此方法可覆盖 CTLoop 产生的错误签名
+- (void)fixLooseDylibSignaturesForInstalledBundle:(NSString *)installedAppBundlePath {
+  NSString *fwDir = [installedAppBundlePath stringByAppendingPathComponent:@"Frameworks"];
+  NSArray *fwContents = [[NSFileManager defaultManager]
+      contentsOfDirectoryAtPath:fwDir error:nil];
+  if (!fwContents) {
+    ECLog(@"[FixLooseDylib] Frameworks 目录不存在或无法读取: %@", fwDir);
+    return;
+  }
+  for (NSString *item in fwContents) {
+    if (![item hasSuffix:@".dylib"]) continue;
+    NSString *dylibFullPath = [fwDir stringByAppendingPathComponent:item];
+    ECLog(@"[FixLooseDylib] 最终重签 (post-install, no TeamID): %@", item);
+    // 不传 TeamID → sign-binary 走 ad-hoc+CT bypass 路径
+    // 这样可以清除 CTLoop 留下的错误签名结构
+    int fixRet = spawnRoot(rootHelperPath(),
+        @[@"sign-binary", dylibFullPath], nil, nil);
+    ECLog(@"[FixLooseDylib] sign-binary ret=%d for %@", fixRet, item);
+  }
+  ECLog(@"[FixLooseDylib] ✅ 修复完成: %@", installedAppBundlePath);
+}
+
+
 - (BOOL)injectLoadCommandIntoBinary:(NSString *)binaryPath
                           dylibPath:(NSString *)dylibPath
                               error:(NSError **)error {
@@ -1504,49 +1540,35 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
   }
   ECLog(@"[ProcessBinary] ✅ Main binary signed with CT bypass");
 
-  // 4. Sign dylib with ldid + CoreTrust Bypass (CRITICAL!)
-  // The dylib MUST be signed with ldid before CoreTrust bypass can be applied.
-  // Previously we only called ct-bypass, which fails because the dylib is
-  // unsigned.
-  ECLog(@"[ProcessBinary] Signing dylib: %@", dylibPath);
-
-  // Strategy 1: strict signing with TeamID (tries to inject TeamID entitlement)
-  NSMutableArray *dylibSignArgs =
-      [NSMutableArray arrayWithObjects:@"sign-binary", dylibPath, nil];
-
-  // FIX: Do NOT inject TeamID into the dylib.
-  // Using a specific TeamID entitlement on a dylib without matching
-  // provisioning profile or application-identifier might cause amfid to reject
-  // it, leading to a crash. We use pure ad-hoc signing for the injected dylib.
-
-  if (teamID)
-    [dylibSignArgs addObject:teamID];
+  // 4. Sign injected dylib with pure ad-hoc (NO TeamID, NO CT bypass pre-applied)
+  // 策略: 让 CTLoop 在安装时对 dylib 做唯一一次 CT bypass。
+  // sign-binary 总是做 ldid+CT bypass，CTLoop 再做一次就产生无效签名。
+  // sign-adhoc-only 只做 ldid ad-hoc，产生标准 SHA256 CD，
+  // CTLoop 从这个干净的 ad-hoc 签名做一次 CT bypass 即可正常加载。
+  ECLog(@"[ProcessBinary] Signing dylib (sign-adhoc-only, no CT pre-bypass): %@", dylibPath);
 
   NSString *dylibSignOut, *dylibSignErr;
-  int dylibSignRet =
-      spawnRoot(rootHelperPath(), dylibSignArgs, &dylibSignOut, &dylibSignErr);
-  ECLog(@"[ProcessBinary] dylib strict sign ret=%d", dylibSignRet);
+  int dylibSignRet = spawnRoot(rootHelperPath(),
+      @[@"sign-adhoc-only", dylibPath], &dylibSignOut, &dylibSignErr);
+  ECLog(@"[ProcessBinary] sign-adhoc-only ret=%d", dylibSignRet);
 
   if (dylibSignRet != 0) {
-    ECLog(@"[ProcessBinary] ⚠️ Strict dylib signing failed. Output: %@",
+    ECLog(@"[ProcessBinary] ⚠️ Dylib ad-hoc-only signing failed: %@, trying sign-binary fallback",
           dylibSignErr);
-
-    // Strategy 2: Fallback to simple ad-hoc signing (no TeamID injected)
-    ECLog(
-        @"[ProcessBinary] 🔄 Attempting fallback ad-hoc signing for dylib...");
-    dylibSignArgs =
-        [NSMutableArray arrayWithObjects:@"sign-binary", dylibPath, nil];
-    int fallbackRet = spawnRoot(rootHelperPath(), dylibSignArgs, &dylibSignOut,
-                                &dylibSignErr);
-    ECLog(@"[ProcessBinary] dylib fallback sign ret=%d", fallbackRet);
-
-    if (fallbackRet != 0) {
-      ECLog(@"[ProcessBinary] ❌ Fallback dylib signing also failed: %@",
-            dylibSignErr);
+    // Fallback: sign-binary without TeamID（仍可能有二次 bypass 问题，但至少签了）
+    int fallbackRet = spawnRoot(rootHelperPath(),
+        @[@"sign-binary", dylibPath], &dylibSignOut, &dylibSignErr);
+    ECLog(@"[ProcessBinary] sign-binary fallback ret=%d", fallbackRet);
+    if (fallbackRet == 0) {
+      ECLog(@"[ProcessBinary] ✅ Fallback sign-binary succeeded");
     } else {
-      ECLog(@"[ProcessBinary] ✅ Fallback dylib signing succeeded!");
+      ECLog(@"[ProcessBinary] ❌ Both signing methods failed for dylib");
     }
+  } else {
+    ECLog(@"[ProcessBinary] ✅ Dylib signed (CTLoop will do CT bypass on install)");
   }
+
+
 
   // [Fix] 5. Embed configuration file into the App Bundle
   // This ensures that even if the app sandbox is cleared (reinstall), the dylib

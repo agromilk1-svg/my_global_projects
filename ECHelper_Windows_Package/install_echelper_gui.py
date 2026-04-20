@@ -31,8 +31,43 @@ except ImportError:
 # [关键修复] 针对 PyInstaller 打包环境的多进程拦截
 # 当使用 subprocess 调用 sys.executable 且附带 "-m tidevice" 时，实际上是再次运行了当前程序的 .exe
 # 为防止其继续往下执行触发 GUI 单例锁(socket bind 报错退出)，必须在这里直接拦截并转发给 tidevice 处理
-if getattr(sys, 'frozen', False) and len(sys.argv) >= 3 and sys.argv[1] == "-m" and sys.argv[2] == "tidevice":
+if len(sys.argv) >= 3 and sys.argv[1] == "-m" and sys.argv[2] == "tidevice":
     if HAS_TIDEVICE:
+        # [动态修复] 针对 tidevice 无法拉起通过漏洞底层安装的无沙盒特权 App 的问题
+        # 我们在这里拦截 tidevice 的运行并注入底层 Hook
+        try:
+            import tidevice._device as td
+            # 1. 允许直接指定 bundle_id 跳过 User 类型枚举
+            td.Device._fnmatch_find_bundle_id = lambda self, b: b
+            
+            # 2. 欺骗系统，将该底核进程所在的容器环境强制定向到公用的媒体子系统
+            orig_lookup = td.Installation.lookup
+            def patched_lookup(self, bundle_id):
+                info = orig_lookup(self, bundle_id)
+                if info and bundle_id == "com.apple.accessibility.ecwda":
+                    info['Container'] = '/var/mobile/Media'
+                return info
+            td.Installation.lookup = patched_lookup
+            
+            # 3. 将其试图进行的内部文件推送强制降级为公用 AFC (直接操作媒体盘)
+            orig_app_sync = td.Device.app_sync
+            def patched_app_sync(self, bundle_id, command="VendDocuments"):
+                if bundle_id == "com.apple.accessibility.ecwda":
+                    import tidevice._sync as tdsync
+                    conn = self.start_service("com.apple.afc")
+                    afc = tdsync.Sync(conn)
+                    try:
+                        afc.listdir("/tmp")
+                    except Exception:
+                        afc.mkdir("/tmp")
+                    return afc
+                return orig_app_sync(self, bundle_id, command)
+            td.Device.app_sync = patched_app_sync
+        except Exception as e:
+            import logging
+            logging.error(f"Failed to inject ecwda patches: {e}")
+            pass
+
         # 重写 sys.argv 欺骗 click/argparse，让其认为我们直接在命令行调用了 tidevice
         sys.argv = ["tidevice"] + sys.argv[3:]
         sys.exit(tidevice_cli_main())
@@ -56,7 +91,8 @@ def tidevice_exec(args_list, wait=False, background=True, tries=2):
             env['PYTHONPATH'] = sys._MEIPASS + os.pathsep + env.get('PYTHONPATH', '')
         cmd = [sys.executable, "-m", "tidevice"] + list(args_list)
     else:
-        cmd = [sys.executable, "-m", "tidevice"] + list(args_list)
+        # 在源码环境下，我们将指令重新引回本身脚本以触发上方的 "-m tidevice" 拦截，应用补丁
+        cmd = [sys.executable, os.path.abspath(__file__), "-m", "tidevice"] + list(args_list)
     
     last_res = None
     for i in range(tries):
@@ -412,69 +448,84 @@ class InstallerThread(QThread):
 
 class LaunchEcwdaThread(QThread):
     log_signal = pyqtSignal(str)
-    finished_signal = pyqtSignal(bool) # Changed to bool to indicate success/failure
+    finished_signal = pyqtSignal(bool)
+
+    BUNDLE_ID = "com.apple.accessibility.ecwda"
 
     def __init__(self, udids):
         super().__init__()
         self.udids = udids
 
     def run(self):
-        self.log_signal.emit(f"🚀 准备为 {len(self.udids)} 台设备启动 ECWDA 底核...")
-        
+        self.log_signal.emit(f"🚀 准备为 {len(self.udids)} 台设备启动 ECWDA...")
+
         if not HAS_TIDEVICE:
             self.log_signal.emit("❌ 运行环境中缺失内置驱动库，请检查安装！")
             self.finished_signal.emit(False)
             return
 
+        # ── 清理旧的 tidevice 残留进程 ────────────────────────────────────────
         try:
-            # 清理旧残留不需要 tidevice
-            p_kill_cmd = ["taskkill", "/F", "/IM", "tidevice.exe"] if platform.system() == "Windows" else ["pkill", "-f", "tidevice"]
-            import subprocess
+            p_kill_cmd = (["taskkill", "/F", "/IM", "tidevice.exe"]
+                         if platform.system() == "Windows" else ["pkill", "-f", "tidevice"])
             subprocess.run(p_kill_cmd, capture_output=True)
             self.log_signal.emit("✅ 旧残留守护进程已清场")
         except Exception:
             pass
-            
+
         time.sleep(1)
-        
+
+        all_ok = True
         try:
             for i, udid in enumerate(self.udids):
-                self.log_signal.emit(f"🚀 发送穿透启动指令 (UDID: {udid[:8]})...")
-                
-                # 为每台设备分配递增的 PC 端口映射
-                current_pc_10088 = 10088 + i * 10
-                current_pc_10089 = 10089 + i * 10
-                current_pc_8089 = 8089 + i * 10
-                
-                # 第 0 步：镜像探测 (绝命前摇)
-                auto_mount_developer_image(udid, self.log_signal.emit)
-                
-                # 第 1 步：仅建立基础 WDA 通信端口转发
-                self.log_signal.emit(f"   🔗 [{udid[:8]}] 正在直接建立 USB 端口转发隧道...")
-                for local_p, remote_p in [(current_pc_10088, 10088), (current_pc_10089, 10089)]:
+                short = udid[:8]
+                self.log_signal.emit(f"\n🔧 [{short}] 设备 {i+1}/{len(self.udids)} 开始处理")
+
+                wda_port  = 10088 + i * 10
+                wda_port2 = 10089 + i * 10
+
+                # ── 第 1 步：挂载 Developer 镜像（必须成功，否则 testmanagerd 无法命令 xctest）──
+                self.log_signal.emit(f"   💿 [{short}] 正在检查并挂载 Developer 镜像...")
+                img_ok = auto_mount_developer_image(udid, self.log_signal.emit)
+                if not img_ok:
+                    self.log_signal.emit(
+                        f"   ❌ [{short}] Developer 镜像挂载失败！"
+                        f"无法启动 WDA，跳过此设备。\n"
+                        f"      请确认 device-support 目录下是否存在匹配 iOS 版本的"
+                        f" DeveloperDiskImage.dmg 及签名文件。"
+                    )
+                    all_ok = False
+                    continue  # 跳过该设备，不要尝试搭建 relay
+
+                # ── 第 2 步：建立 USB 端口转发通道（relay）──────────────────
+                self.log_signal.emit(
+                    f"   🔗 [{short}] 建立 USB 端口转发: "
+                    f"PC {wda_port} → 手机 10088 / PC {wda_port2} → 手机 10089"
+                )
+                for local_p, remote_p in [(wda_port, 10088), (wda_port2, 10089)]:
                     tidevice_exec(["-u", udid, "relay", str(local_p), str(remote_p)], wait=False)
-                
-                self.log_signal.emit(f"   ✅ [{udid[:8]}] 转发链已就位: PC:{current_pc_10088}及{current_pc_10089} -> 手机:10088/10089")
-                
-                # 等待端口转发生效
-                time.sleep(2)
-                
-                # 第 2 步：原生的底层 CLI 强行启动 XCTest
-                self.log_signal.emit(f"   🔄 [{udid[:8]}] 尝试强行通过 tidevice CLI 拉起 WDA 底层...")
-                # 注意：拉起 WDA 此类守护进程不能用普通的 app launch，必须用 xctest 专线或分离后台！
-                # 同时为了防沉迷，我们依然暗中释放一个 8089 HTTP 哨卡以备有些修改版 ECWDA 使用
-                tidevice_exec(["-u", udid, "relay", "8089", "8089"], wait=False)
-                
-                import urllib.request
-                try:
-                    urllib.request.urlopen("http://127.0.0.1:8089/start-wda", timeout=1)
-                except: pass
-                
-                res = tidevice_exec(["-u", udid, "xctest", "-B", "com.apple.accessibility.ecwda"], wait=False)
-                self.log_signal.emit(f"   ✅ [{udid[:8]}] 后台拉起信号已投递 (若失败请看手机端是否死锁！)")
-            
-            self.log_signal.emit("\n🎉 所有设备驱动已就位！")
-            self.finished_signal.emit(True)
+                time.sleep(1)  # 等待 relay 进程就绪
+
+                # ── 第 3 步：通过 xctest 启动 WDA（WDA 必须以 XCTest runner 方式运行）──
+                self.log_signal.emit(
+                    f"   ▶️  [{short}] 通过 tidevice xctest 启动 WDA "
+                    f"(bundle: {self.BUNDLE_ID})..."
+                )
+                tidevice_exec(
+                    ["-u", udid, "xctest", "-B", self.BUNDLE_ID],
+                    wait=False
+                )
+                self.log_signal.emit(
+                    f"   ✅ [{short}] xctest 指令已发出，WDA 进程通常需要 5～15 秒内在手机端就绪。"
+                    f"\n      手机端可在屏幕上看到 ecwda 应用首页启动。"
+                    f"\n      PC 可通过 http://127.0.0.1:{wda_port}/status 确认 WDA 状态。"
+                )
+
+            result_str = "🎉 所有设备 ECWDA 启动指令已发出！" if all_ok else \
+                         "⚠️  部分设备 Developer 镜像挂载失败，已跳过。"
+            self.log_signal.emit(f"\n{result_str}")
+            self.finished_signal.emit(all_ok)
+
         except Exception as e:
             err_msg = traceback.format_exc()
             logging.error(f"启动 ECWDA 崩溃:\n{err_msg}")
@@ -498,36 +549,36 @@ class WatchdogThread(QThread):
         self._running = False
 
     def _check_wda(self, port, timeout=3):
-        """检测 WDA 是否在指定端口响应"""
-        import socket as sock_mod
+        """通过 HTTP 探测 WDA 是否在线。不使用 TCP connect，防止 relay 进程造成假阳性。"""
+        import urllib.request, json
         try:
-            s = sock_mod.socket(sock_mod.AF_INET, sock_mod.SOCK_STREAM)
-            s.settimeout(timeout)
-            s.connect(("127.0.0.1", port))
-            s.sendall(b"GET /status HTTP/1.0\r\n\r\n")
-            data = s.recv(1024)
-            s.close()
-            return len(data) > 0
+            resp = urllib.request.urlopen(f"http://127.0.0.1:{port}/status", timeout=timeout)
+            if resp.status != 200:
+                return False
+            data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            return isinstance(data, dict) and any(k in data for k in ("sessionId", "status", "value"))
         except Exception:
             return False
 
     def _launch_and_relay(self, udid, port_base):
-        """直接使用命令行原生拉起 WDA 并建立独立的端口映射"""
-        
-        self.log_signal.emit(f"   🚀 [{udid[:8]}] 发起看护者 WDA 拉起指令...")
-        # 同样切换为专用的防阻塞模式机制
-        tidevice_exec(["-u", udid, "relay", "8089", "8089"], wait=False)
-        
-        import urllib.request
-        try:
-            urllib.request.urlopen("http://127.0.0.1:8089/start-wda", timeout=1)
-        except: pass
-            
-        tidevice_exec(["-u", udid, "xctest", "-B", self.wda_bundle], wait=False)
+        """
+        看护者重新拉起 WDA。
+        正确顺序： Developer 镜像挂载 → relay 复活 → xctest
+        """
+        short = udid[:8]
+        self.log_signal.emit(f"   🔁 [{short}] 看护者：重新拉起 WDA...")
 
-        # relay 异步执行（仅建立 WDA 必要的端口组合）
+        # 挂载 Developer 镜像（看护场景不阻塞，失败也继续尝试 xctest）
+        auto_mount_developer_image(udid, self.log_signal.emit)
+
+        # 复活 relay 端口转发
         for local_p, remote_p in [(port_base, 10088), (port_base + 1, 10089)]:
             tidevice_exec(["-u", udid, "relay", str(local_p), str(remote_p)], wait=False)
+        time.sleep(0.5)
+
+        # 重新通过 xctest 启动 WDA
+        tidevice_exec(["-u", udid, "xctest", "-B", self.wda_bundle], wait=False)
+        self.log_signal.emit(f"   ✅ [{short}] xctest 启动指令已重新派发。")
 
     def run(self):
         self.log_signal.emit("🛡️ WDA 常驻看护已启动！")
@@ -578,7 +629,10 @@ class ECHelperGUI(QMainWindow):
         self.setWindowTitle("ECHelper - 一键安装控制台")
         self.resize(800, 800)
         self.init_ui()
-        self.start_monitoring()
+        # [重要] 延迟到 Qt 事件循环启动后再开始监控，防止 pymobiledevice3 与 Qt
+        # C 扩展在初始化阶段并发操作同一内存对象造成 double free 崩溃
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(600, self.start_monitoring)
 
     def init_ui(self):
         main_widget = QWidget()
@@ -918,12 +972,33 @@ class ECHelperGUI(QMainWindow):
         self.launch_thread.finished_signal.connect(self.on_launch_finished)
         self.launch_thread.start()
 
-    def on_launch_finished(self):
+    def on_launch_finished(self, success):
         """ECWDA 启动线程结束回调 -- 一定在主线程被执行"""
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(100)
         self.launch_btn.setEnabled(True)
-        self.launch_btn.setText("🚀 启动 ECWDA")
+        if success:
+            self.launch_btn.setText("✅ ECWDA 已就位")
+            self.launch_btn.setStyleSheet("""
+                QPushButton { background-color: #2ed573; color: white; border-radius: 8px; }
+                QPushButton:hover { background-color: #26de81; }
+            """)
+        else:
+            self.launch_btn.setText("❌ 启动失败，点击重试")
+            self.launch_btn.setStyleSheet("""
+                QPushButton { background-color: #ff4757; color: white; border-radius: 8px; }
+                QPushButton:hover { background-color: #ff6b81; }
+            """)
+        # 3 秒后恢复默认按钮文字和样式，允许重试
+        import threading
+        def _reset():
+            time.sleep(3)
+            self.launch_btn.setText("🚀 启动 ECWDA")
+            self.launch_btn.setStyleSheet("""
+                QPushButton { background-color: #3742fa; color: white; border-radius: 8px; }
+                QPushButton:hover { background-color: #5352ed; }
+            """)
+        threading.Thread(target=_reset, daemon=True).start()
 
     def toggle_watchdog(self):
         """切换常驻看护状态"""

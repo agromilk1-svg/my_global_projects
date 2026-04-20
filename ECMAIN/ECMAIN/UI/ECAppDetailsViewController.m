@@ -226,11 +226,20 @@
   NSArray *groups = self.entitlements[@"com.apple.security.application-groups"];
   if (groups && groups.count > 0) {
     NSMutableArray *groupRows = [NSMutableArray new];
-    for (NSString *g in groups) {
-      [groupRows addObject:@{@"text" : g}];
+    for (NSString *groupID in groups) {
+      // 通过系统 API 解析出 App Group 共享容器的真实路径（含 UUID）
+      NSURL *containerURL = [[NSFileManager defaultManager]
+          containerURLForSecurityApplicationGroupIdentifier:groupID];
+      NSString *containerPath = containerURL ? containerURL.path : @"(无法获取路径)";
+
+      [groupRows addObject:@{
+        @"title"    : groupID,
+        @"detail"   : containerPath,
+        @"subtitle" : @YES,
+        @"action"   : containerURL ? @"browse" : @""
+      }];
     }
-    [sections
-        addObject:@{@"title" : @"App Groups (共享容器)", @"rows" : groupRows}];
+    [sections addObject:@{@"title" : @"App Groups (共享容器)", @"rows" : groupRows}];
   }
 
   // --- Section 7: URL Schemes ---

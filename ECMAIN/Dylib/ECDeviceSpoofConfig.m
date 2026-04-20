@@ -120,10 +120,10 @@ static void ECConfigLog(NSString *format, ...) {
       return [bundleId substringWithRange:[match1 rangeAtIndex:1]];
     }
 
-    // 格式 2: com.zhiliaoapp.musically8 -> 8 (数字直接跟在名称后)
-    // 匹配: 最后一个组件以字母结尾+数字的情况，例如 musically8, musically9
+    // 格式 2: com.zhiliaoapp.musically8 → 8  /  com.ss.iphone.ugc.Ame9996 → 9996
+    // 匹配: 最后一个组件以字母结尾+数字的情况
     NSRegularExpression *regex2 = [NSRegularExpression
-        regularExpressionWithPattern:@"\\.([a-zA-Z]+)(\\d+)$"
+        regularExpressionWithPattern:@"\\.([a-zA-Z]{3,})(\\d+)$"
                              options:0
                                error:nil];
     NSTextCheckingResult *match2 =
@@ -135,14 +135,14 @@ static void ECConfigLog(NSString *format, ...) {
           [bundleId substringWithRange:[match2 rangeAtIndex:1]];
       NSString *cloneNum =
           [bundleId substringWithRange:[match2 rangeAtIndex:2]];
-      // 确保基础名称是已知的应用名（如 musically）而不是其他包含数字的名称
-      NSArray *knownBases = @[ @"musically", @"tiktok", @"douyin" ];
-      for (NSString *known in knownBases) {
-        if ([[baseName lowercaseString] isEqualToString:known]) {
-          ECConfigLog(@" 检测到克隆 Bundle ID: %@ -> cloneId=%@", bundleId,
-                      cloneNum);
-          return cloneNum;
-        }
+
+      // 策略 A: 基础名 ≥ 3 字母 + 任意数字后缀 → 直接认定为克隆
+      // 原理: 正常 app bundle ID 末尾不会跟数字；
+      //       凡是 xxxApp1 / xxxApp9996 这类格式，均为克隆。
+      if (baseName.length >= 3) {
+        ECConfigLog(@" [A] 检测到克隆 Bundle ID: %@ -> cloneId=%@",
+                    bundleId, cloneNum);
+        return cloneNum;
       }
     }
   }

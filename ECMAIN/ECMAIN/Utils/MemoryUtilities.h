@@ -4,6 +4,19 @@
 #import <mach-o/loader.h>
 #import <mach/mach.h>
 
+#pragma mark - Decrypt Export Log
+
+// 脱壳导出日志路径
+#define DECRYPT_EXPORT_LOG_PATH @"/var/mobile/Media/ecmain_decrypt_export.log"
+
+// 写入脱壳日志到文件（线程安全）
+void ECDecryptLog(NSString *format, ...) NS_FORMAT_FUNCTION(1, 2);
+
+// 清空脱壳日志文件（在每次脱壳开始前调用）
+void ECDecryptLogClear(void);
+
+#pragma mark - Main Image Info
+
 typedef struct MainImageInfo {
   uint64_t loadAddress; // main executable Mach-O header address
   NSString *path;       // main executable path
@@ -14,6 +27,10 @@ NSString *NSStringFromMainImageInfo(MainImageInfo_t info);
 
 MainImageInfo_t imageInfoForPIDWithRetry(const char *sourcePath, vm_map_t task,
                                          pid_t pid);
+
+// 通过扫描 VM Region 查找主二进制加载地址 (无需 dyld 初始化，适用于挂起状态的进程)
+// 返回 0 表示未找到
+uint64_t findMainBinaryLoadAddressByVMScan(vm_map_t task);
 
 // foundEncryption: 输出参数，表示是否找到 LC_ENCRYPTION_INFO 命令
 //   - YES: 找到加密命令（检查 encryptionInfo->cryptid 判断是否真正加密）

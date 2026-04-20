@@ -1983,6 +1983,7 @@ extern NSString *rootHelperPath(void);
                    void (^writeLog)(NSString *) = ^(NSString *msg) {
                      [[ECLogManager sharedManager]
                          log:@"[TrollStore脱壳] %@", msg];
+                     ECDecryptLog(@"[TrollStore脱壳] %@", msg);
                    };
 
                    // 更新进度的 block
@@ -1991,6 +1992,9 @@ extern NSString *rootHelperPath(void);
                        progressAlert.message = msg;
                      });
                    };
+
+                   // 清空日志文件
+                   ECDecryptLogClear();
 
                    writeLog(@"========== TrollStore 脱壳开始 ==========");
                    writeLog([NSString stringWithFormat:@"目标应用: %@ (%@)",
@@ -2594,106 +2598,24 @@ extern NSString *rootHelperPath(void);
                                                                                          completion:
                                                                                              nil];
 
-                                                                          // 自动启动所有扩展
-                                                                          __block int
-                                                                              launchedCount =
-                                                                                  0;
-                                                                          __block int totalCount =
-                                                                              (int)encryptedExtNames
-                                                                                  .count;
-
-                                                                          for (
-                                                                              NSString
-                                                                                  *extBundleId in
-                                                                                      encryptedExtNames) {
-                                                                            // 注意：这里 encryptedExtNames 存的是文件名 (e.g., Share.appex)
-                                                                            // 我们需要完整的 Bundle ID。
-                                                                            // 从之前的逻辑看，我们有 extPath，可以读取 Info.plist 获取 Bundle ID。
-                                                                            // 由于这里只有文件名，我们需要重新构建路径读取。
-                                                                            NSString *plugInsPath =
-                                                                                [app.bundlePath
-                                                                                    stringByAppendingPathComponent:
-                                                                                        @"PlugIns"];
-                                                                            NSString *extPath =
-                                                                                [plugInsPath
-                                                                                    stringByAppendingPathComponent:
-                                                                                        extBundleId];
-                                                                            NSDictionary
-                                                                                *extInfo = [NSDictionary
-                                                                                    dictionaryWithContentsOfFile:
-                                                                                        [extPath
-                                                                                            stringByAppendingPathComponent:
-                                                                                                @"Info.plist"]];
-                                                                            NSString *realBundleID =
-                                                                                extInfo
-                                                                                    [@"CFBundleIdentifier"];
-
-                                                                            if (realBundleID) {
-                                                                              [self
-                                                                                  launchAppExtensionWithBundleIdentifier:
-                                                                                      realBundleID
-                                                                                                              completion:^(
-                                                                                                                  BOOL
-                                                                                                                      success) {
-                                                                                                                dispatch_async(dispatch_get_main_queue(), ^{
-                                                                                                                  launchedCount++;
-                                                                                                                  if (success) {
-                                                                                                                    writeLog([NSString
-                                                                                                                        stringWithFormat:
-                                                                                                                            @"已启动扩展: %@",
-                                                                                                                            realBundleID]);
-                                                                                                                  } else {
-                                                                                                                    writeLog([NSString
-                                                                                                                        stringWithFormat:
-                                                                                                                            @"启动扩展失败: %@",
-                                                                                                                            realBundleID]);
-                                                                                                                  }
-
-                                                                                                                  if (launchedCount >=
-                                                                                                                      totalCount) {
-                                                                                                                    // 所有尝试完成，等待一点时间让进程完全初始化
-                                                                                                                    dispatch_after(
-                                                                                                                        dispatch_time(
-                                                                                                                            DISPATCH_TIME_NOW,
-                                                                                                                            (int64_t)(3.0 *
-                                                                                                                                      NSEC_PER_SEC)),
-                                                                                                                        dispatch_get_main_queue(),
-                                                                                                                        ^{
-                                                                                                                          [autoAlert
-                                                                                                                              dismissViewControllerAnimated:
-                                                                                                                                  YES
-                                                                                                                                                 completion:^{
-                                                                                                                                                   [self
-                                                                                                                                                       continueDecryptExtensions];
-                                                                                                                                                 }];
-                                                                                                                        });
-                                                                                                                  }
-                                                                                                                });
-                                                                                                              }];
-                                                                            } else {
-                                                                              // 无法获取 Bundle ID，跳过
-                                                                              launchedCount++;
-                                                                              if (launchedCount >=
-                                                                                  totalCount) {
-                                                                                dispatch_after(
-                                                                                    dispatch_time(
-                                                                                        DISPATCH_TIME_NOW,
-                                                                                        (int64_t)(3.0 *
-                                                                                                  NSEC_PER_SEC)),
-                                                                                    dispatch_get_main_queue(),
-                                                                                    ^{
-                                                                                      [autoAlert
-                                                                                          dismissViewControllerAnimated:
-                                                                                              YES
-                                                                                                             completion:^{
-                                                                                                               [self
-                                                                                                                   continueDecryptExtensions];
-                                                                                                             }];
-                                                                                    });
-                                                                              }
-                                                                            }
-                                                                          }
-                                                                        }];
+                                                                           // 使用递归顺序启动扩展，避免并发冲突
+                                                                           [self launchExtensionsSequentially:encryptedExtNames
+                                                                                                      atIndex:0
+                                                                                                          app:app
+                                                                                                    autoAlert:autoAlert
+                                                                                                launchedCount:0
+                                                                                                   totalCount:(int)encryptedExtNames.count
+                                                                                                   completion:^{
+                                                                                                     writeLog(@"所有扩展启动尝试完成，切换回主程序并脱壳...");
+                                                                                                     // 切换回 ecmain 前台，确保脱壳操作在前台环境中执行
+                                                                                                     [ECAppLauncher wakeScreenAndBringMainAppToFront];
+                                                                                                     // 稍作延迟等待 ecmain 回到前台 (iOS 切换应用需要约1s)
+                                                                                                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                                                                                                         dispatch_get_main_queue(), ^{
+                                                                                                           [self continueDecryptExtensions];
+                                                                                                         });
+                                                                                                   }];
+                                                                         }];
                                     });
                      return; // 返回，等待异步操作
                    }
@@ -2788,18 +2710,176 @@ extern NSString *rootHelperPath(void);
 - (void)launchAppExtensionWithBundleIdentifier:(NSString *)bundleId
                                     completion:
                                         (void (^)(BOOL success))completion {
-  // DISABLED: NSExtension private API is unstable and causes crashes
-  // when calling beginExtensionRequestWithInputItems:completion:.
-  // The crash occurs in -[EXConcreteExtension
-  // makeExtensionContextAndXPCConnectionForRequest:error:] because
-  // NSExtensionItem requires certain internal fields to be set.
-  //
-  // Instead, we rely on the user to manually trigger extensions (e.g., use
-  // the app's share sheet, widget, or other UI) before running the decrypt
-  // phase.
-  NSLog(@"[launchAppExtensionWithBundleIdentifier] Skipping auto-launch for %@ "
-        @"(NSExtension API disabled due to stability issues)",
-        bundleId);
+  void (^writeLog)(NSString *) = ^(NSString *msg) {
+    ECDecryptLog(@"[NSExtension] %@", msg);
+  };
+
+  writeLog([NSString stringWithFormat:@"正在尝试唤醒扩展: %@", bundleId]);
+
+  NSError *error = nil;
+  NSExtension *extension =
+      [NSExtension extensionWithIdentifier:bundleId error:&error];
+  if (error || !extension) {
+    writeLog([NSString stringWithFormat:@"❌ 找不到扩展对象: %@ (%@)", bundleId,
+                                        error.localizedDescription]);
+    if (completion)
+      completion(NO);
+    return;
+  }
+
+  @try {
+    // 根据苹果官方文档，如果没有需要传递的 inputItems，必须传入 nil 而非空数组 @[] 或空的 NSExtensionItem，
+    // 否则在部分特定类型的扩展（如 iMessage 扩展 TikTokMessageExtension）内部处理序列化时
+    // 会抛出 `*** -[__NSDictionaryM setObject:forKey:]: key cannot be nil` 异常导致主应用崩溃。
+    [extension beginExtensionRequestWithInputItems:nil
+                                        completion:^(
+                                            NSUUID *requestIdentifier,
+                                            NSError *launchError) {
+                                          if (launchError) {
+                                            writeLog([NSString
+                                                stringWithFormat:
+                                                    @"❌ 启动请求失败: %@ (%@)",
+                                                    bundleId,
+                                                    launchError.localizedDescription]);
+                                          } else {
+                                            writeLog([NSString
+                                                stringWithFormat:@"✅ 成功发送启动请求: %@",
+                                                                 bundleId]);
+                                          }
+                                          if (completion)
+                                            completion(launchError == nil);
+                                        }];
+  } @catch (NSException *exception) {
+    writeLog([NSString stringWithFormat:@"⚠️ 启动时发生异常: %@", exception.reason]);
+    if (completion)
+      completion(NO);
+  }
+}
+
+// 安全启动不兼容的扩展（iMessage、Widget 等）
+// 策略：三层降级: PKHostPlugIn -> NSExtension._plugIn -> posix_spawn 直接拉起扩展可执行文件
+- (void)launchUnsafeExtensionWithBundleIdentifier:(NSString *)bundleId
+                                        extensionBinaryPath:(NSString *)extBinaryPath
+                                        completion:
+                                            (void (^)(BOOL success))completion {
+  void (^writeLog)(NSString *) = ^(NSString *msg) {
+    [[ECLogManager sharedManager] log:@"[NSExtension-Safe] %@", msg];
+    ECDecryptLog(@"[NSExtension-Safe] %@", msg);
+  };
+
+  writeLog([NSString stringWithFormat:@"尝试安全启动不兼容扩展: %@", bundleId]);
+
+  // 方案 1: PKHostPlugIn
+  Class PKHostPlugInClass = NSClassFromString(@"PKHostPlugIn");
+  if (PKHostPlugInClass) {
+    SEL createSel = NSSelectorFromString(@"hostPlugInWithIdentifier:error:");
+    if ([PKHostPlugInClass respondsToSelector:createSel]) {
+      NSError *pkError = nil;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+      NSMethodSignature *sig = [PKHostPlugInClass methodSignatureForSelector:createSel];
+      NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+      [inv setTarget:PKHostPlugInClass];
+      [inv setSelector:createSel];
+      [inv setArgument:&bundleId atIndex:2];
+      [inv setArgument:&pkError atIndex:3];
+      [inv invoke];
+      __unsafe_unretained id plugIn = nil;
+      [inv getReturnValue:&plugIn];
+#pragma clang diagnostic pop
+      if (plugIn && !pkError) {
+        SEL beginSel = NSSelectorFromString(@"beginUsing");
+        if ([plugIn respondsToSelector:beginSel]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+          [plugIn performSelector:beginSel];
+#pragma clang diagnostic pop
+          writeLog([NSString stringWithFormat:@"✅ PKHostPlugIn 启动成功: %@", bundleId]);
+          dispatch_after(
+              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+              dispatch_get_main_queue(), ^{
+                SEL endSel = NSSelectorFromString(@"endUsing");
+                if ([plugIn respondsToSelector:endSel]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                  [plugIn performSelector:endSel];
+#pragma clang diagnostic pop
+                }
+                if (completion) completion(YES);
+              });
+          return;
+        }
+      }
+    }
+  }
+
+  // 方案 2: NSExtension._plugIn
+  NSError *error = nil;
+  NSExtension *extension = [NSExtension extensionWithIdentifier:bundleId error:&error];
+  if (extension) {
+    SEL plugInSel = NSSelectorFromString(@"_plugIn");
+    if ([extension respondsToSelector:plugInSel]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+      id internalPlugIn = [extension performSelector:plugInSel];
+#pragma clang diagnostic pop
+      if (internalPlugIn) {
+        SEL beginSel = NSSelectorFromString(@"beginUsing");
+        if ([internalPlugIn respondsToSelector:beginSel]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+          [internalPlugIn performSelector:beginSel];
+#pragma clang diagnostic pop
+          writeLog([NSString stringWithFormat:@"✅ _plugIn.beginUsing 成功: %@", bundleId]);
+          dispatch_after(
+              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+              dispatch_get_main_queue(), ^{
+                SEL endSel = NSSelectorFromString(@"endUsing");
+                if ([internalPlugIn respondsToSelector:endSel]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                  [internalPlugIn performSelector:endSel];
+#pragma clang diagnostic pop
+                }
+                if (completion) completion(YES);
+              });
+          return;
+        }
+      }
+    }
+  }
+
+  // 方案 3 (最后保障): posix_spawn 直接拉起扩展进稌
+  // 原理: 硬点启动扩展可执行文件，让 iOS 系统赋予进稌委码后再证明自身，不依赖 Extension Host 协议
+  if (extBinaryPath && [[NSFileManager defaultManager] fileExistsAtPath:extBinaryPath]) {
+    writeLog([NSString stringWithFormat:@"方案 3: posix_spawn 直接启动: %@", extBinaryPath.lastPathComponent]);
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+      pid_t extPid = 0;
+      const char *argv[] = {extBinaryPath.UTF8String, NULL};
+      const char *envp[] = {"HOME=/var/mobile", NULL};
+      posix_spawnattr_t attr;
+      posix_spawnattr_init(&attr);
+      // 不使用 SUSPENDED 方式，让扩展进稌正常运行几秒让系统完成委托初始化
+      int spawnRet = posix_spawn(&extPid, extBinaryPath.UTF8String, NULL, &attr, (char *const *)argv, (char *const *)envp);
+      posix_spawnattr_destroy(&attr);
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if (spawnRet == 0 && extPid > 0) {
+          writeLog([NSString stringWithFormat:@"✅ posix_spawn 扩展成功, PID=%d: %@", extPid, bundleId]);
+          // 让扩展进稌运行 2 秒再回调
+          dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+              dispatch_get_main_queue(), ^{
+                if (completion) completion(YES);
+              });
+        } else {
+          writeLog([NSString stringWithFormat:@"⚠️ posix_spawn 失败 (ret=%d): %@", spawnRet, bundleId]);
+          if (completion) completion(NO);
+        }
+      });
+    });
+    return;
+  }
+
+  writeLog([NSString stringWithFormat:@"⚠️ 所有方案均失败: %@，将跳过该扩展脱壳", bundleId]);
   if (completion)
     completion(NO);
 }
@@ -2856,6 +2936,7 @@ extern NSString *rootHelperPath(void);
 
         void (^writeLog)(NSString *) = ^(NSString *msg) {
           [[ECLogManager sharedManager] log:@"[扩展脱壳] %@", msg];
+          ECDecryptLog(@"[扩展脱壳] %@", msg);
         };
 
         void (^updateProgress)(NSString *) = ^(NSString *msg) {
@@ -2966,6 +3047,7 @@ extern NSString *rootHelperPath(void);
 
     void (^writeLog)(NSString *) = ^(NSString *msg) {
       [[ECLogManager sharedManager] log:@"[打包] %@", msg];
+      ECDecryptLog(@"[打包] %@", msg);
     };
 
     // 删除 SC_Info
@@ -3003,23 +3085,9 @@ extern NSString *rootHelperPath(void);
         // 这里可以再确认一下
         writeLog(@"✅ Team ID 已保存到配置");
       } else {
-        writeLog(@"⚠️ 无法提取 Team ID -> 切换到重签模式 (Resign Mode)");
-        writeLog(@"此应用可能使用了特殊签名。正在重新签名以修复...");
-
-        // 使用伪造的 Team ID (TEAMSPOOF1)
-        NSString *fakeTeamID = @"TEAMSPOOF1";
-        NSError *resignError = nil;
-        if ([[ECAppInjector sharedInstance] resignBinary:binaryPath
-                                              withTeamID:fakeTeamID
-                                                   error:&resignError]) {
-          writeLog([NSString
-              stringWithFormat:@"✅ 重签成功! 使用新 Team ID: %@", fakeTeamID]);
-          writeLog(@"后续注入将自动使用此 ID。");
-        } else {
-          writeLog(
-              [NSString stringWithFormat:@"❌ 重签失败: %@",
-                                         resignError.localizedDescription]);
-        }
+        // 脱壳导出流程不需要重签，跳过重签直接打包
+        // 原因: sign-binary 在大体积二进制上会耗时20+秒且经常失败, 而导出 IPA 本身不需要重签
+        writeLog(@"⚠️ Team ID 提取失败, 跳过重签直接打包 (脱壳导出 IPA 不需要重签)");
       }
     }
 
@@ -3129,10 +3197,12 @@ extern NSString *rootHelperPath(void);
     NSString *decryptedPath =
         [sharedDumpDir stringByAppendingPathComponent:@"decrypted.bin"];
 
-    // 日志辅助宏 - 使用 ECLogManager 以便在仪表盘显示
     void (^writeLog)(NSString *) = ^(NSString *msg) {
       [[ECLogManager sharedManager] log:@"[脱壳] %@", msg];
+      ECDecryptLog(@"[脱壳] %@", msg);
     };
+
+    ECDecryptLogClear();
 
     writeLog(@"========== 越狱脱壳开始 (task_for_pid 方式) ==========");
     writeLog([NSString stringWithFormat:@"目标应用: %@ (%@)", app.displayName,
@@ -5451,4 +5521,164 @@ extern NSString *rootHelperPath(void);
   [self presentViewController:alert animated:YES completion:nil];
 }
 
+
+- (void)launchExtensionsSequentially:(NSArray<NSString *> *)names
+                                    atIndex:(NSInteger)index
+                                        app:(id)app
+                                  autoAlert:(UIAlertController *)autoAlert
+                              launchedCount:(int)launchedCount
+                                 totalCount:(int)totalCount
+                                 completion:(void (^)(void))completion {
+  void (^writeLog)(NSString *) = ^(NSString *msg) {
+    [[ECLogManager sharedManager]
+        log:@"[NSExtensionSeq] %@", msg];
+    ECDecryptLog(@"[NSExtensionSeq] %@", msg);
+  };
+
+  if (index >= names.count) {
+    // 所有扩展已处理，等待最终稳定时间
+    writeLog(@"所有扩展启动序列已发出，等待 5 秒确保进程稳定...");
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+          [autoAlert dismissViewControllerAnimated:YES
+                                        completion:^{
+                                          if (completion)
+                                            completion();
+                                        }];
+        });
+    return;
+  }
+
+  NSString *extFileName = names[index];
+  NSString *plugInsPath =
+      [[app bundlePath] stringByAppendingPathComponent:@"PlugIns"];
+  NSString *extPath =
+      [plugInsPath stringByAppendingPathComponent:extFileName];
+  NSDictionary *extInfo = [NSDictionary
+      dictionaryWithContentsOfFile:[extPath
+                                       stringByAppendingPathComponent:
+                                           @"Info.plist"]];
+  NSString *realBundleID = extInfo[@"CFBundleIdentifier"];
+
+  if (!realBundleID) {
+    writeLog(
+        [NSString stringWithFormat:@"无法获取扩展 Bundle ID: %@", extFileName]);
+    [self launchExtensionsSequentially:names
+                               atIndex:index + 1
+                                   app:app
+                             autoAlert:autoAlert
+                         launchedCount:launchedCount + 1
+                            totalCount:totalCount
+                            completion:completion];
+    return;
+  }
+
+  // 检查扩展类型 — 某些类型（iMessage、Widget 等）无法被第三方 app 作为 host 启动，
+  // 调用 beginExtensionRequestWithInputItems: 会导致框架内部异步抛出
+  // NSInvalidArgumentException (key cannot be nil) 崩溃。
+  NSDictionary *nsExtension = extInfo[@"NSExtension"];
+  NSString *extensionPointID = nsExtension[@"NSExtensionPointIdentifier"];
+
+  // 这些扩展类型需要特定宿主 app，第三方 app 无法安全启动
+  static NSSet *unsafeExtensionPoints = nil;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    unsafeExtensionPoints = [NSSet setWithArray:@[
+      @"com.apple.message-payload-provider",     // iMessage
+      @"com.apple.messages.MSMessageExtension",  // iMessage (旧)
+      @"com.apple.widgetkit-extension",          // WidgetKit
+      @"com.apple.widget-extension",             // Today Widget
+      @"com.apple.broadcast-services-upload",    // Broadcast Upload
+      @"com.apple.broadcast-services-setupui",   // Broadcast Setup UI
+      @"com.apple.intents-service",              // Intents (Siri)
+      @"com.apple.intents-ui-service",           // Intents UI
+    ]];
+  });
+
+  BOOL isUnsafe = extensionPointID &&
+                  [unsafeExtensionPoints containsObject:extensionPointID];
+
+  if (isUnsafe) {
+    // 计算扩展实际二进制路径 (用于 posix_spawn 回退方案)
+    NSString *extExecName = extInfo[@"CFBundleExecutable"] ?: [extFileName stringByDeletingPathExtension];
+    NSString *extBinaryPath = [extPath stringByAppendingPathComponent:extExecName];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:extBinaryPath]) {
+      extBinaryPath = nil;
+    }
+    writeLog([NSString stringWithFormat:
+        @"[%ld/%ld] 不兼容扩展，使用安全启动: %@ (type: %@)",
+        (long)index + 1, (long)totalCount, extFileName, extensionPointID]);
+    [self launchUnsafeExtensionWithBundleIdentifier:realBundleID
+                                extensionBinaryPath:extBinaryPath
+                                         completion:^(BOOL success) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if (success) {
+          writeLog([NSString stringWithFormat:@"安全启动成功: %@", realBundleID]);
+        } else {
+          writeLog([NSString stringWithFormat:@"安全启动失败: %@，将跳过该扩展脱壳",
+                                              realBundleID]);
+        }
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+            dispatch_get_main_queue(), ^{
+              [self launchExtensionsSequentially:names
+                                       atIndex:index + 1
+                                           app:app
+                                     autoAlert:autoAlert
+                                 launchedCount:launchedCount + (success ? 1 : 0)
+                                    totalCount:totalCount
+                                    completion:completion];
+            });
+      });
+    }];
+    return;
+  }
+
+  writeLog([NSString stringWithFormat:@"[%ld/%ld] 正在启动扩展: %@ (%@)...",
+                                      (long)index + 1, (long)totalCount,
+                                      extFileName, realBundleID]);
+
+  [self launchAppExtensionWithBundleIdentifier:realBundleID
+                                    completion:^(BOOL success) {
+                                      dispatch_async(
+                                          dispatch_get_main_queue(), ^{
+                                            if (success) {
+                                              writeLog([NSString
+                                                  stringWithFormat:
+                                                      @"成功启动扩展: %@",
+                                                      realBundleID]);
+                                            } else {
+                                              writeLog([NSString
+                                                  stringWithFormat:
+                                                      @"启动扩展失败: %@",
+                                                      realBundleID]);
+                                            }
+
+                                            // 成功或失败都继续下一个，但延迟 1.5 秒确保系统进程服务不拥堵
+                                            dispatch_after(
+                                                dispatch_time(DISPATCH_TIME_NOW,
+                                                              (int64_t)(1.5 *
+                                                                        NSEC_PER_SEC)),
+                                                dispatch_get_main_queue(), ^{
+                                                  [self
+                                                      launchExtensionsSequentially:
+                                                          names
+                                                                           atIndex:
+                                                                               index +
+                                                                               1
+                                                                               app:app
+                                                                         autoAlert:
+                                                                             autoAlert
+                                                                     launchedCount:
+                                                                         launchedCount +
+                                                                         1
+                                                                        totalCount:
+                                                                            totalCount
+                                                                        completion:
+                                                                            completion];
+                                                });
+                                          });
+                                    }];
+}
 @end

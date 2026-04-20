@@ -892,6 +892,8 @@
     @"iPhone14,3" : @"iPhone 13 Pro Max",
     @"iPhone14,4" : @"iPhone 13 mini",
     @"iPhone14,5" : @"iPhone 13",
+    @"iPhone14,7" : @"iPhone 14",
+    @"iPhone14,8" : @"iPhone 14 Plus",
     @"iPhone15,2" : @"iPhone 14 Pro",
     @"iPhone15,3" : @"iPhone 14 Pro Max",
     @"iPhone15,4" : @"iPhone 15",
@@ -904,6 +906,90 @@
     @"iPhone17,4" : @"iPhone 16 Plus",
   };
   return models[model] ?: model;
+}
+
+/**
+ * 根据 machineModel 自动联动屏幕参数。
+ * 必须在用户设置 machineModel 后调用，确保屏幕分辨环/scale/原生分辨率
+ * 与声称机型完全一致。
+ * 不一致会导致滑块验证码坐标系错位、特征矩阵异常，从而触发验证失败。
+ */
+- (void)applyScreenParamsForMachineModel:(NSString *)machineModel {
+  /**
+   * 机型屏幕参数表
+   * 格式: machineModel -> @{ scale, width(pt), height(pt), nativeW, nativeH }
+   * 注意: width/height 是逻辑点(Points)，nativeW/nativeH 是物理像素(Pixels)
+   */
+  NSDictionary *screenDB = @{
+    // iPhone SE 2/3 (4.7") - 2x
+    @"iPhone12,8" : @{ @"scale":@"2.0", @"w":@"375", @"h":@"667", @"nw":@"750",  @"nh":@"1334" },
+    @"iPhone14,6" : @{ @"scale":@"2.0", @"w":@"375", @"h":@"667", @"nw":@"750",  @"nh":@"1334" },
+    // iPhone 12 mini / 13 mini (5.4") - 3x
+    @"iPhone13,1" : @{ @"scale":@"3.0", @"w":@"375", @"h":@"812", @"nw":@"1080", @"nh":@"2340" },
+    @"iPhone14,4" : @{ @"scale":@"3.0", @"w":@"375", @"h":@"812", @"nw":@"1080", @"nh":@"2340" },
+    // iPhone 12 (6.1") - 3x
+    @"iPhone13,2" : @{ @"scale":@"3.0", @"w":@"390", @"h":@"844", @"nw":@"1170", @"nh":@"2532" },
+    // iPhone 12 Pro (6.1") - 3x
+    @"iPhone13,3" : @{ @"scale":@"3.0", @"w":@"390", @"h":@"844", @"nw":@"1170", @"nh":@"2532" },
+    // iPhone 12 Pro Max (6.7") - 3x
+    @"iPhone13,4" : @{ @"scale":@"3.0", @"w":@"428", @"h":@"926", @"nw":@"1284", @"nh":@"2778" },
+    // iPhone 13 (6.1") - 3x
+    @"iPhone14,5" : @{ @"scale":@"3.0", @"w":@"390", @"h":@"844", @"nw":@"1170", @"nh":@"2532" },
+    // iPhone 13 Pro (6.1") - 3x
+    @"iPhone14,2" : @{ @"scale":@"3.0", @"w":@"390", @"h":@"844", @"nw":@"1170", @"nh":@"2532" },
+    // iPhone 13 Pro Max (6.7") - 3x
+    @"iPhone14,3" : @{ @"scale":@"3.0", @"w":@"428", @"h":@"926", @"nw":@"1284", @"nh":@"2778" },
+    // iPhone 14 (6.1") - 3x
+    @"iPhone14,7" : @{ @"scale":@"3.0", @"w":@"390", @"h":@"844", @"nw":@"1170", @"nh":@"2532" },
+    // iPhone 14 Plus (6.7") - 3x
+    @"iPhone14,8" : @{ @"scale":@"3.0", @"w":@"428", @"h":@"926", @"nw":@"1284", @"nh":@"2778" },
+    // iPhone 14 Pro (6.12") - 3x
+    @"iPhone15,2" : @{ @"scale":@"3.0", @"w":@"393", @"h":@"852", @"nw":@"1179", @"nh":@"2556" },
+    // iPhone 14 Pro Max (6.69") - 3x
+    @"iPhone15,3" : @{ @"scale":@"3.0", @"w":@"430", @"h":@"932", @"nw":@"1290", @"nh":@"2796" },
+    // iPhone 15 (6.12") - 3x
+    @"iPhone15,4" : @{ @"scale":@"3.0", @"w":@"393", @"h":@"852", @"nw":@"1179", @"nh":@"2556" },
+    // iPhone 15 Plus (6.69") - 3x
+    @"iPhone15,5" : @{ @"scale":@"3.0", @"w":@"430", @"h":@"932", @"nw":@"1290", @"nh":@"2796" },
+    // iPhone 15 Pro (6.12") - 3x
+    @"iPhone16,1" : @{ @"scale":@"3.0", @"w":@"393", @"h":@"852", @"nw":@"1179", @"nh":@"2556" },
+    // iPhone 15 Pro Max (6.69") - 3x
+    @"iPhone16,2" : @{ @"scale":@"3.0", @"w":@"430", @"h":@"932", @"nw":@"1290", @"nh":@"2796" },
+    // iPhone 16 (6.12") - 3x
+    @"iPhone17,3" : @{ @"scale":@"3.0", @"w":@"393", @"h":@"852", @"nw":@"1179", @"nh":@"2556" },
+    // iPhone 16 Plus (6.69") - 3x
+    @"iPhone17,4" : @{ @"scale":@"3.0", @"w":@"430", @"h":@"932", @"nw":@"1290", @"nh":@"2796" },
+    // iPhone 16 Pro (6.3") - 3x
+    @"iPhone17,1" : @{ @"scale":@"3.0", @"w":@"402", @"h":@"874", @"nw":@"1206", @"nh":@"2622" },
+    // iPhone 16 Pro Max (6.9") - 3x
+    @"iPhone17,2" : @{ @"scale":@"3.0", @"w":@"440", @"h":@"956", @"nw":@"1320", @"nh":@"2868" },
+  };
+
+  NSDictionary *params = screenDB[machineModel];
+  if (!params) {
+    NSLog(@"[ECDeviceInfoManager] ⚠️ 无法找到机型 %@ 的屏幕参数，跳过联动更新", machineModel);
+    return;
+  }
+
+  NSString *nativeBoundsStr = [NSString stringWithFormat:@"%@x%@", params[@"nw"], params[@"nh"]];
+
+  NSDictionary *updates = @{
+    @"screenScale"   : params[@"scale"],
+    @"screenWidth"   : params[@"w"],
+    @"screenHeight"  : params[@"h"],
+    @"nativeBounds"  : nativeBoundsStr,
+  };
+
+  for (NSString *key in updates) {
+    ECDeviceInfoItem *item = self.allItems[key];
+    if (item) {
+      item.currentValue = updates[key];
+      item.isModified = YES;
+    }
+  }
+
+  NSLog(@"[ECDeviceInfoManager] ✅ 屏幕参数已自动联动: %@ -> scale=%@ bounds=%@x%@ native=%@",
+        machineModel, params[@"scale"], params[@"w"], params[@"h"], nativeBoundsStr);
 }
 
 - (int)getCPUCores {

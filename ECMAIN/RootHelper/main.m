@@ -3809,7 +3809,24 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
       } else {
         ret = 1;
       }
+    } else if ([cmd isEqualToString:@"sign-adhoc-only"]) {
+      // Usage: sign-adhoc-only <binary_path>
+      // Sign a binary with pure ad-hoc signature (ldid), NO CoreTrust bypass.
+      // 用途: 为注入的外挂 dylib 做 ad-hoc 签名，使其有合法签名结构但不预做 CT bypass。
+      // 这样 TrollStore CTLoop 在安装时能做唯一一次正确的 CT bypass。
+      if (argc >= 3) {
+        NSString *binaryPath = [NSString stringWithUTF8String:argv[2]];
+        NSLog(@"[sign-adhoc-only] Pure ad-hoc signing: %@", binaryPath);
+        // signAdhoc with nil entitlements → ldid -s (pure ad-hoc, no TeamID)
+        int signRet = signAdhoc(binaryPath, nil);
+        NSLog(@"[sign-adhoc-only] signAdhoc ret=%d", signRet);
+        ret = signRet;
+      } else {
+        NSLog(@"Usage: sign-adhoc-only <binary_path>");
+        ret = 1;
+      }
     } else if ([cmd isEqualToString:@"ct-bypass"]) {
+
       // Usage: ct-bypass <binary_path>
       // Apply CoreTrust bypass to a binary (for post-injection signing)
       if (argc >= 3) {

@@ -56,6 +56,24 @@ static NSString *g_cachedDeviceID = nil;
 static NSString *g_cachedInstallID = nil;
 static NSString *g_cachedIDFV = nil;
 
+// === 真实设备信息缓存 (Hook 安装前捕获) ===
+static CGFloat g_realScreenWidth = 0;
+static CGFloat g_realScreenHeight = 0;
+static CGFloat g_realScreenScale = 0;
+static CGFloat g_realNativeWidth = 0;
+static CGFloat g_realNativeHeight = 0;
+static NSInteger g_realMaxFPS = 0;
+static NSString *g_realMachineModel = nil;
+static NSString *g_realSystemVersion = nil;
+static NSString *g_realDeviceModel = nil;
+static NSString *g_realDeviceName = nil;
+static NSString *g_realLocaleId = nil;
+static NSString *g_realLanguageCode = nil;
+static NSString *g_realCountryCode = nil;
+static NSString *g_realTimezone = nil;
+static NSString *g_realPreferredLang = nil;
+static NSString *g_realCurrencyCode = nil;
+
 // ============================================================================
 // __NSCFLocale Hook - 使用显式 IMP 存储避免跨类 swizzle 问题
 // ============================================================================
@@ -195,8 +213,8 @@ static void ECLog(NSString *format, ...) {
   NSString *logMsg = [[NSString alloc] initWithFormat:format arguments:args];
   va_end(args);
 
-  // 同时输出到 NSLog
-  NSLog(@"[ECDeviceSpoof] %@", logMsg);
+  // 同时输出到 NSLog （加入 ecwg 前缀方便控制台过滤）
+  NSLog(@"[ecwg][ECDeviceSpoof] %@", logMsg);
 
 #if EC_FILE_LOG_ENABLED
   // 文件日志已禁用，不创建任何日志目录和文件
@@ -947,12 +965,123 @@ static void setupTikTokHooks(void) {
 
     // ============================================================================
     // AAAASingularity 混淆安全框架绕过
+    // 策略：枚举类所有方法，对返回 BOOL 的方法批量 hook
+    //   - 看起来像 "check/detect/isXxx/enabled" → 返回 NO（检测不到）
+    //   - 看起来像 "pass/allow/valid/safe"       → 返回 YES（通过）
     // ============================================================================
-    // Dotg12dbcAfge 是混淆后的类名
     Class singularityClass = NSClassFromString(@"Dotg12dbcAfge");
     if (singularityClass) {
-      ECLog(@"🛡️ [Security] Found AAAASingularity (Dotg12dbcAfge)");
-      // 方法枚举已移除（减少内存压力）
+      ECLog(@"🛡️ [Security] Found AAAASingularity (Dotg12dbcAfge), installing bulk bypasses...");
+
+      // --- 枚举实例方法 ---
+      unsigned int instCount = 0;
+      Method *instMethods = class_copyMethodList(singularityClass, &instCount);
+      int hookedInst = 0;
+      for (unsigned int mi = 0; mi < instCount; mi++) {
+        Method m = instMethods[mi];
+        const char *retType = method_copyReturnType(m);
+        // 只处理返回 BOOL (char 'c' 或 unsigned char 'C') 的方法
+        if (retType && (retType[0] == 'c' || retType[0] == 'C' || retType[0] == 'B')) {
+          SEL sel = method_getName(m);
+          NSString *selName = NSStringFromSelector(sel);
+          
+          // 【修复 1】：黑名单机制。必须要跳过系统原生 NSObject 协议的基础判断方法。
+          // 原本这里会盲目 Hook isEqual: 等方法，全部被强制返回 YES，
+          // 直接导致 NSArray、NSDictionary 等内部寻址操作死锁和崩溃 (EXC_BAD_ACCESS)。
+          NSArray *blacklistedMethods = @[
+            @"isEqual:", 
+            @"isKindOfClass:", 
+            @"isMemberOfClass:", 
+            @"isProxy", 
+            @"hash", 
+            @"description", 
+            @"debugDescription"
+          ];
+          if ([blacklistedMethods containsObject:selName]) {
+            free((void *)retType);
+            continue; // 遇基类防崩溃方法，跳过 Hook 安全通过
+          }
+
+          // 判断方向：返回 NO（检测类）或 YES（通过类）
+          BOOL returnNO = NO;
+          NSArray *detectKeywords = @[@"check", @"detect", @"jailbreak",
+                                      @"root", @"hook", @"inject",
+                                      @"tamper", @"debug", @"enabled",
+                                      @"enable", @"active", @"running",
+                                      @"risk", @"danger"];
+          for (NSString *kw in detectKeywords) {
+            if ([[selName lowercaseString] containsString:kw]) {
+              returnNO = YES;
+              break;
+            }
+          }
+          BOOL finalVal = !returnNO; // 检测类 → NO，其他 → YES
+          IMP newImp = imp_implementationWithBlock(^BOOL(id _s) {
+            return finalVal;
+          });
+          method_setImplementation(m, newImp);
+          hookedInst++;
+        }
+        free((void *)retType);
+      }
+      free(instMethods);
+
+      // --- 枚举类方法 ---
+      Class metaClass = object_getClass(singularityClass);
+      unsigned int classCount = 0;
+      Method *classMethods = class_copyMethodList(metaClass, &classCount);
+      int hookedClass = 0;
+      for (unsigned int mi = 0; mi < classCount; mi++) {
+        Method m = classMethods[mi];
+        const char *retType = method_copyReturnType(m);
+        if (retType && (retType[0] == 'c' || retType[0] == 'C' || retType[0] == 'B')) {
+          SEL sel = method_getName(m);
+          NSString *selName = NSStringFromSelector(sel);
+          
+          NSArray *blacklistedMethods = @[
+            @"isEqual:", @"isKindOfClass:", @"isMemberOfClass:", 
+            @"isProxy", @"hash", @"description", @"debugDescription"
+          ];
+          if ([blacklistedMethods containsObject:selName]) {
+            free((void *)retType);
+            continue;
+          }
+
+          IMP newImp = imp_implementationWithBlock(^BOOL(id _s) { return NO; });
+          method_setImplementation(m, newImp);
+          hookedClass++;
+        }
+        free((void *)retType);
+      }
+      free(classMethods);
+
+      ECLog(@"✅ [AAAASingularity] Hooked %d instance + %d class methods",
+            hookedInst, hookedClass);
+    }
+
+    // --- XCTest 框架检测绕过 ---
+    // AAAASingularity 会扫描已加载的 dylib 镜像列表，发现 XCTest 就触发终止
+    // 通过 hook _dyld_image_count / _dyld_get_image_name 过滤掉 XCTest 条目
+    {
+      // 对 NSBundle 注入一个 hook，让 bundleWithIdentifier: 对 XCTest 返回 nil
+      Class nsBundleClass = [NSBundle class];
+      SEL bundleWithIdSel = @selector(bundleWithIdentifier:);
+      Method bundleWithIdMethod = class_getClassMethod(nsBundleClass, bundleWithIdSel);
+      if (bundleWithIdMethod) {
+        IMP origBundleWithId = method_getImplementation(bundleWithIdMethod);
+        IMP newImp = imp_implementationWithBlock(^NSBundle *(id _cls, NSString *identifier) {
+          // 隐藏 XCTest 相关 bundle，防止 AAAASingularity 通过 bundle 探测
+          if (identifier &&
+              ([identifier containsString:@"XCTest"] ||
+               [identifier containsString:@"xctest"] ||
+               [identifier containsString:@"Testing"])) {
+            return nil;
+          }
+          return ((NSBundle *(*)(id, SEL, NSString *))origBundleWithId)(_cls, bundleWithIdSel, identifier);
+        });
+        method_setImplementation(bundleWithIdMethod, newImp);
+        ECLog(@"✅ [XCTest-Hide] NSBundle bundleWithIdentifier: patched to hide XCTest");
+      }
     }
 
     // TTKSingularityEPAHelper
@@ -1110,25 +1239,16 @@ static void setupTikTokHooks(void) {
     NSString *widthStr = [config spoofValueForKey:@"screenWidth"];
     NSString *heightStr = [config spoofValueForKey:@"screenHeight"];
 
-    if (widthStr || heightStr) {
-      CGRect original = [self ec_bounds];
-      CGFloat width =
-          widthStr ? [self parseScreenDimension:widthStr] : original.size.width;
-      CGFloat height = heightStr ? [self parseScreenDimension:heightStr]
-                                 : original.size.height;
-
-      // UI bounds 需要的是逻辑点(Points)，而配置项中的 screenWidth
-      // 通常是物理像素(Pixels) (例如 1125) 所以我们需要将其除以 scale
-      // 来换算成逻辑点 (1125 / 3 = 375)
-      CGFloat scale = [self ec_scale];
-      if (scale > 0 &&
-          width > 500) { // 这里做一个简单的防错，通常手机逻辑点不会大于
-                         // 500，以防配置本来就是逻辑点
-        width = width / scale;
-        height = height / scale;
+    if (widthStr && heightStr) {
+      // 配置中的 screenWidth/screenHeight 保存的是逻辑点(Points)，直接使用。
+      // [已移除] 之前的 width > 500 判断会错误地认为 390pt(iPhone 14) 是逻辑点
+      // 而不做换算，但实际 iPhone 7 屏幕是 375pt，导致坐标系偏差约 15pt，
+      // 使滑块验证码的拖动终点始终无法命中服务端期望位置。
+      CGFloat width = [self parseScreenDimension:widthStr];
+      CGFloat height = [self parseScreenDimension:heightStr];
+      if (width > 0 && height > 0) {
+        return CGRectMake(0, 0, width, height);
       }
-
-      return CGRectMake(0, 0, width, height);
     }
     return [self ec_bounds];
 }
@@ -1297,6 +1417,7 @@ static void setupTikTokHooks(void) {
 - (NSDictionary *)ec_infoDictionary;
 - (id)ec_objectForInfoDictionaryKey:(NSString *)key;
 - (NSString *)ec_pathForResource:(NSString *)name ofType:(NSString *)ext;
+- (NSURL *)ec_appStoreReceiptURL;
 @end
 
 @implementation NSBundle (ECDeviceSpoof)
@@ -1397,6 +1518,21 @@ static void setupTikTokHooks(void) {
       return g_spoofedBundleId;
     }
     return [self ec_bundleIdentifier];
+}
+
+// 伪造 AppStore 收据 (Bypass FairPlay DRM Checks)
+// 苹果原生 App Store 安装的应用会包含一个被签名的收据凭证
+// TrollStore 侧载的应用会导致调用该 API 时返回 nil，引发系统风控
+- (NSURL *)ec_appStoreReceiptURL {
+    // 【欺骗级别：基础】返回 Bundle 内的预设验证收据路径。
+    // TikTok 会检查该 URL 存在与否作为特征。
+    // 我们将其指向 Bundle 内部路径，系统不会因为越权而中止。
+    NSString *fakeReceiptPath = [[self bundlePath] stringByAppendingPathComponent:@"StoreKit/sandboxReceipt"];
+    // 移除实际写入动作，TrollStore 环境下 Bundle 是只读的，
+    // 只要 API 返回该 URL，大多检测就能过去。
+    
+    // ECLog(@"🧾 [AppStoreReceipt] 伪造 DRM 回执路径: %@", fakeReceiptPath);
+    return [NSURL fileURLWithPath:fakeReceiptPath];
 }
 
 // === NSBundle infoDictionary Hook ===
@@ -1690,8 +1826,8 @@ static int hooked_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp,
       ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
       NSString *spoofed = nil;
 
-      // hw.machine / hw.model — 受 enableSysctlMachine 子开关控制
-      if (name[0] == CTL_HW && (name[1] == HW_MACHINE || name[1] == HW_MODEL)) {
+      // hw.machine — 受 enableSysctlMachine 子开关控制 (移除对 hw.model 的伪装，否则 ARKit 等 Apple 框架会因解析失败而闪退)
+      if (name[0] == CTL_HW && name[1] == HW_MACHINE) {
         if ([config spoofBoolForKey:@"enableSysctlMachine" defaultValue:YES]) {
           spoofed = [config spoofValueForKey:@"machineModel"];
         }
@@ -1883,29 +2019,28 @@ hooked_NSSearchPathForDirectoriesInDomains(NSSearchPathDirectory directory,
 // Hook containerURLForSecurityApplicationGroupIdentifier: 用于 App Group 隔离
 - (NSURL *)ec_containerURLForSecurityApplicationGroupIdentifier:
     (NSString *)groupIdentifier {
-    NSString *cloneDataDir = [[ECDeviceSpoofConfig shared] cloneDataDirectory];
-    if (cloneDataDir && groupIdentifier) {
-      // 为分身创建独立的 App Group 容器
-      NSString *cloneGroupPath = [cloneDataDir
-          stringByAppendingPathComponent:[NSString
-                                             stringWithFormat:@"AppGroup/%@",
-                                                              groupIdentifier]];
+    
+    NSString *cloneId = [[ECDeviceSpoofConfig shared] currentCloneId];
+    if (cloneId && groupIdentifier) {
+        // [修复核心点]：我们必须将伪造的 AppGroup 建立在原生沙盒的白名单目录下（如 Documents / Library）
+        // 这样底层的 sqlite 和 MMKV 才会因为同属进程拥有正常的 file-lock 和 mutex POSIX 权限。
+        // 如果把目录建在外部非法空间，会导致底层的跨进程通信无法拿到内核特权而抛出 SegFault。
+        NSString *realHomeDir = [NSString stringWithUTF8String:getenv("HOME")];
+        NSString *cloneGroupPath = [realHomeDir stringByAppendingPathComponent:[NSString stringWithFormat:@"Documents/FakeAppGroup/%@/%@", cloneId, groupIdentifier]];
 
-      NSFileManager *fm = [NSFileManager defaultManager];
-      BOOL isNew = ![fm fileExistsAtPath:cloneGroupPath];
-      if (isNew) {
-        [fm createDirectoryAtPath:cloneGroupPath
-            withIntermediateDirectories:YES
-                             attributes:nil
-                                  error:nil];
-      }
-      // 🔍 诊断日志：App Group 路径重定向
-      ECLog(@"🔀 [Clone-AppGroup] %@ -> %@ %@", groupIdentifier, cloneGroupPath,
-            isNew ? @"(新建)" : @"(已存在)");
-      return [NSURL fileURLWithPath:cloneGroupPath];
+        NSFileManager *fm = [NSFileManager defaultManager];
+        BOOL isNew = ![fm fileExistsAtPath:cloneGroupPath];
+        if (isNew) {
+            [fm createDirectoryAtPath:cloneGroupPath
+                withIntermediateDirectories:YES
+                               attributes:nil
+                                    error:nil];
+        }
+        ECLog(@"🔀 [Clone-AppGroup] 跨号强隔离开启: %@ -> %@ %@", groupIdentifier, cloneGroupPath, isNew ? @"(新建)" : @"(已存在)");
+        return [NSURL fileURLWithPath:cloneGroupPath];
     }
-    return [self
-        ec_containerURLForSecurityApplicationGroupIdentifier:groupIdentifier];
+    
+    return [self ec_containerURLForSecurityApplicationGroupIdentifier:groupIdentifier];
 }
 
 @end
@@ -2180,6 +2315,13 @@ static OSStatus hooked_SecItemAdd(CFDictionaryRef attributes,
     CFDictionaryRef modifiedAttrs = rewriteKeychainQueryForClone(attributes);
     OSStatus status = original_SecItemAdd(modifiedAttrs, result);
 
+    // 🔍 【诊断】Keychain 写入风控探测
+    if (status == errSecMissingEntitlement) {
+        ECLog(@"⚠️【诊断】SecItemAdd 严重失败 (-34018 errSecMissingEntitlement)！此 App 包没有配置匹配此克隆环境的 Keychain Access Groups。设备号将无法保存，每次启动都会申请新号，从而立刻触发严重验证码封控！");
+    } else if (status != errSecSuccess && status != errSecDuplicateItem) {
+        ECLog(@"⚠️【诊断】SecItemAdd 发生异常状态码: %td，设备号存入 Keychain 失败！(会导致频繁验证码)", (long)status);
+    }
+
     // 🔍 诊断日志：Keychain 写入
     if (modifiedAttrs != attributes) {
       // Clone-KC SecItemAdd 日志已静默（减少内存压力）
@@ -2324,134 +2466,87 @@ static NSURLSessionDataTask *hooked_dataTaskWithRequestCompletion(
 
     NSString *url = request.URL.absoluteString;
     NSString *method = request.HTTPMethod ?: @"GET";
-    BOOL shouldLog = NO;
 
-    // Phase 30 Fix D: 增强登录请求检测范围
+    // 频率控制：代理超时时 TikTok 高频重试会产生大量日志，每秒可达200+条
+    // 非登录请求限速 3 秒一条，防止日志爆炸引发内存压力崩溃
+    static CFAbsoluteTime _lastNetLogTime = 0;
+    static int _suppressedNetCount = 0;
+    BOOL shouldLog = NO;
     BOOL isLoginRelated = NO;
+
     if (url &&
         ([url containsString:@"passport"] || [url containsString:@"login"] ||
          [url containsString:@"user/login"] ||
          [url containsString:@"sms/code"] || [url containsString:@"token"] ||
          [url containsString:@"device_register"])) {
       isLoginRelated = YES;
-      shouldLog = YES;
+      shouldLog = YES;  // 登录请求始终记录
       ECLog(@"🔑🔑🔑 [LOGIN] ★ %@ %@", method, url);
-    }
-
-    if (!shouldLog && url &&
-        ([method isEqualToString:@"POST"] || [url containsString:@"tiktok"] ||
-         [url containsString:@"musical"] || [url containsString:@"byte"])) {
-      shouldLog = YES;
-      ECLog(@"🌐 [Net] ➤ REQUEST: %@ %@", method, url);
-    }
-
-    if (shouldLog) {
-      NSDictionary *headers = request.allHTTPHeaderFields;
-      if (headers)
-        ECLog(@"   Req Headers: %@", headers);
-
-      if (request.HTTPBody) {
-        NSString *bodyStr =
-            [[NSString alloc] initWithData:request.HTTPBody
-                                  encoding:NSUTF8StringEncoding];
-        if (bodyStr) {
-          if (bodyStr.length > 10000) {
-            ECLog(@"   Req Body: %@... (truncated 10KB+)",
-                  [bodyStr substringToIndex:10000]);
-          } else {
-            ECLog(@"   Req Body: %@", bodyStr);
-          }
-        } else {
-          ECLog(@"   Req Body: <Binary Data %lu bytes>",
-                (unsigned long)request.HTTPBody.length);
+    } else if (url && ([method isEqualToString:@"POST"] ||
+                       [url containsString:@"tiktok"] ||
+                       [url containsString:@"musical"] ||
+                       [url containsString:@"byte"])) {
+      CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+      if (now - _lastNetLogTime > 3.0) {
+        if (_suppressedNetCount > 0) {
+          ECLog(@"🌐 [Net] ... 已静默 %d 条请求，恢复日志", _suppressedNetCount);
+          _suppressedNetCount = 0;
         }
+        shouldLog = YES;
+        _lastNetLogTime = now;
+        ECLog(@"🌐 [Net] ➤ REQUEST: %@ %@", method, url);
+      } else {
+        _suppressedNetCount++;
       }
     }
 
+    // Body 日志已移除（无实际作用，增加内存压力）
+
     void (^wrappedCompletion)(NSData *, NSURLResponse *, NSError *) = ^(
         NSData *data, NSURLResponse *response, NSError *error) {
-      if (shouldLog) {
-        NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
-        NSInteger statusCode = 0;
-        if ([response isKindOfClass:[NSHTTPURLResponse class]]) {
-          statusCode = httpResp.statusCode;
+      NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
+      NSInteger statusCode = 0;
+      if ([response isKindOfClass:[NSHTTPURLResponse class]]) {
+        statusCode = httpResp.statusCode;
+      }
+      // 错误时无论是否日志模式都记录一行（限速：5秒一条）
+      if (error) {
+        static CFAbsoluteTime _lastErrTime = 0;
+        CFAbsoluteTime t = CFAbsoluteTimeGetCurrent();
+        if (t - _lastErrTime > 5.0) {
+          ECLog(@"🌐 [Net] ❌ ERROR [%ld] %@ — %@",
+                (long)statusCode, url, error.localizedDescription);
+          _lastErrTime = t;
         }
-
+      }
+      if (shouldLog) {
         ECLog(@"🌐 [Net] ◀ RESPONSE [%ld]: %@", (long)statusCode, url);
-
-        if ([response isKindOfClass:[NSHTTPURLResponse class]]) {
+        if (isLoginRelated && [response isKindOfClass:[NSHTTPURLResponse class]]) {
           ECLog(@"   Resp Headers: %@", httpResp.allHeaderFields);
         }
-
-        if (error) {
-          ECLog(@"   Error: %@", error);
-        }
-
-        if (data) {
-          NSString *respStr =
-              [[NSString alloc] initWithData:data
-                                    encoding:NSUTF8StringEncoding];
-
-          // Intercept device_register response
-          if ([url containsString:@"device_register"]) {
-            ECLog(@"🔴🔴🔴 [Network] Intercepted device_register response!");
-            @try {
-              NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data
-                                                                   options:0
-                                                                     error:nil];
-              if (json) {
-                NSString *did = nil;
-                NSString *iid = nil;
-
-                // Parse structure: {"device_id": "...", "install_id": "..."} or
-                // {"data": {...}}
-                if (json[@"device_id"])
-                  did = [NSString stringWithFormat:@"%@", json[@"device_id"]];
-                if (json[@"install_id"])
-                  iid = [NSString stringWithFormat:@"%@", json[@"install_id"]];
-
-                if (!did && json[@"data"] &&
-                    [json[@"data"] isKindOfClass:[NSDictionary class]]) {
-                  NSDictionary *dataDict = json[@"data"];
-                  if (dataDict[@"device_id"])
-                    did = [NSString
-                        stringWithFormat:@"%@", dataDict[@"device_id"]];
-                  if (dataDict[@"install_id"])
-                    iid = [NSString
-                        stringWithFormat:@"%@", dataDict[@"install_id"]];
-                }
-
-                // Also check device_id_str
-                if (!did && json[@"device_id_str"])
-                  did = json[@"device_id_str"];
-
-                if (did.length > 0) {
-                  ECLog(@"✅ [Network] Extracted device_id from network: %@",
-                        did);
-                  ecSavePersistentID(@"deviceId", did);
-                }
-                if (iid.length > 0) {
-                  ECLog(@"✅ [Network] Extracted install_id from network: %@",
-                        iid);
-                  ecSavePersistentID(@"installId", iid);
-                }
+        // 保留 device_register 响应解析（提取 device_id / install_id），移除其他 body 打印
+        if (data && [url containsString:@"device_register"]) {
+          ECLog(@"🔴🔴🔴 [Network] Intercepted device_register response!");
+          @try {
+            NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data
+                                                                 options:0
+                                                                   error:nil];
+            if (json) {
+              NSString *did = json[@"device_id"]
+                  ? [NSString stringWithFormat:@"%@", json[@"device_id"]] : nil;
+              NSString *iid = json[@"install_id"]
+                  ? [NSString stringWithFormat:@"%@", json[@"install_id"]] : nil;
+              if (!did && [json[@"data"] isKindOfClass:[NSDictionary class]]) {
+                NSDictionary *d = json[@"data"];
+                if (d[@"device_id"])  did = [NSString stringWithFormat:@"%@", d[@"device_id"]];
+                if (d[@"install_id"]) iid = [NSString stringWithFormat:@"%@", d[@"install_id"]];
               }
-            } @catch (NSException *e) {
-              ECLog(@"⚠️ [Network] Failed to parse device_register response: %@",
-                    e);
+              if (!did && json[@"device_id_str"]) did = json[@"device_id_str"];
+              if (did.length > 0) { ECLog(@"✅ [Network] device_id: %@", did); ecSavePersistentID(@"deviceId", did); }
+              if (iid.length > 0) { ECLog(@"✅ [Network] install_id: %@", iid); ecSavePersistentID(@"installId", iid); }
             }
-          }
-
-          if (respStr) {
-            if (respStr.length > 20000) {
-              ECLog(@"   Resp Body: %@... (truncated 20KB+)",
-                    [respStr substringToIndex:20000]);
-            } else {
-              ECLog(@"   Resp Body: %@", respStr);
-            }
-          } else {
-            ECLog(@"   Resp Body: <Binary Data %lu bytes>",
-                  (unsigned long)data.length);
+          } @catch (NSException *e) {
+            ECLog(@"⚠️ [Network] parse device_register failed: %@", e);
           }
         }
       }
@@ -4278,6 +4373,13 @@ static void installTTNetHooks(Class ttNetClass) {
                   ![p[@"device_model"] isEqualToString:n])
                 p[@"device_model"] = n;
 
+              // 【网络层伪装】让 TTNet 认为当前本身就不支持 QUIC 或主动关闭了 QUIC
+              // 这会极大程度减少因为 UDP 强杀带来的“被劫持”风控判刑
+              if (p[@"enable_quic"] || p[@"enable_http3"]) {
+                p[@"enable_quic"] = @"0";
+                p[@"enable_http3"] = @"0";
+              }
+
               return (id)[p copy];
             }
             return result;
@@ -4645,6 +4747,7 @@ static void setupLoginDiagnosticHooks(void) {
           char ipStr[INET_ADDRSTRLEN];
           inet_ntop(AF_INET, &addr4->sin_addr, ipStr, sizeof(ipStr));
           ECLog(@"🚫 [QUIC] 阻断 UDP:443 连接 -> %s (强制回退 TCP/TLS)", ipStr);
+          ECLog(@"⚠️【诊断】极高风控警告：你正在阻断 TTNet QUIC。当代 TikTok Cronet 引擎检测到被强行阻挡 UDP 后，极其容易将此行为判定为网络代理(VPN)或黑产拦截，从而频发验证码！");
           errno = ECONNREFUSED;
           return -1;
         }
@@ -4661,6 +4764,7 @@ static void setupLoginDiagnosticHooks(void) {
           inet_ntop(AF_INET6, &addr6->sin6_addr, ipStr, sizeof(ipStr));
           ECLog(@"🚫 [QUIC] 阻断 UDP:443 (IPv6) -> %s (强制回退 TCP/TLS)",
                 ipStr);
+          ECLog(@"⚠️【诊断】极高风控警告：你正在阻断 TTNet QUIC (IPv6)。这将容易引发严重验证码及降权！");
           errno = ECONNREFUSED;
           return -1;
         }
@@ -4712,15 +4816,13 @@ static void setupLoginDiagnosticHooks(void) {
     // 节省一次全局 rebind_symbols 遍历
     ECLog(@"🔐 [L4] SSL hooks 已跳过（空操作，无需 rebind）");
 
-    // L5: QUIC 禁用 — Hook connect() 阻断 UDP:443
-    ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
-    if ([config spoofBoolForKey:@"disableQUIC" defaultValue:YES]) {
-      ECLog(@"🚫 [L5] 正在禁用 QUIC (connect 已注册到延迟 rebind)...");
-      ec_register_rebinding("connect", (void *)hooked_connect,
-                            (void **)&orig_connect);
-    } else {
-      ECLog(@"  ⏭️ [L5] QUIC 禁用已关闭 (disableQUIC=NO)");
-    }
+    // [已移除] L5: connect() Hook 阻断 UDP:443
+    // 原因：已通过应用层 TTNet CommonParams 注入 enable_quic=0 实现 QUIC 禁用。
+    // socket 层的暴力 connect() 拦截是冗余的，且会在 Cronet 引擎中
+    // 留下 ECONNREFUSED 指纹，被风控识别为网络劫持/黑产拦截。
+    // 特别是首次启动时，CommonParams 尚未就绪，Cronet 的 QUIC 探测会
+    // 被 connect hook 反复强杀，引发启动延迟和异常重试。
+    ECLog(@"ℹ️ [L5] QUIC 禁用已改用应用层方案 (TTNet enable_quic=0)，socket connect hook 已移除");
     }
 
     // --- Layer 3: NSURLProtocol 全局拦截器 ---
@@ -4752,27 +4854,7 @@ static void setupLoginDiagnosticHooks(void) {
       NSString *method = request.HTTPMethod ?: @"GET";
       ECLog(@"🔵 [Proto] ➤ %@ %@", method, url);
 
-      NSDictionary *headers = request.allHTTPHeaderFields;
-      if (headers && headers.count > 0) {
-        ECLog(@"   Proto Headers: %@", headers);
-      }
-
-      if (request.HTTPBody) {
-        NSString *bodyStr =
-            [[NSString alloc] initWithData:request.HTTPBody
-                                  encoding:NSUTF8StringEncoding];
-        if (bodyStr) {
-          if (bodyStr.length > 10000) {
-            ECLog(@"   Proto Body: %@... (truncated)",
-                  [bodyStr substringToIndex:10000]);
-          } else {
-            ECLog(@"   Proto Body: %@", bodyStr);
-          }
-        } else {
-          ECLog(@"   Proto Body: <Binary %lu bytes>",
-                (unsigned long)request.HTTPBody.length);
-        }
-      }
+      // Body/Headers 日志已移除（无实际作用）
     }
 
     return NO; // 返回 NO: 我们只做记录，不拦截实际请求
@@ -5445,6 +5527,12 @@ static void setupLoginDiagnosticHooks(void) {
     ECLog(@"  ✅ Swizzled: -[NSUserDefaults removeObjectForKey:] "
           @"(AppleLanguages Protection)");
 
+    // [DRM Bypass] 注册 appStoreReceiptURL swizzle
+    // 让 TrollStore 侧载的应用拥有合法的 App Store 收据路径
+    swizzleInstanceMethod([NSBundle class], @selector(appStoreReceiptURL),
+                          @selector(ec_appStoreReceiptURL));
+    ECLog(@"  ✅ Swizzled: -[NSBundle appStoreReceiptURL] (DRM Bypass)");
+
     ECLog(@"🌍 [Language] Language swizzling complete!");
     }
 
@@ -5899,6 +5987,134 @@ static void setupLoginDiagnosticHooks(void) {
           @"install.");
     }
 
+    // ================================================================
+    // 真实设备信息捕获 (必须在任何 Hook 安装前调用)
+    // ================================================================
+    static void captureRealDeviceInfo(void) {
+      struct utsname si;
+      uname(&si);
+      g_realMachineModel = [NSString stringWithCString:si.machine encoding:NSUTF8StringEncoding];
+      g_realSystemVersion = [UIDevice currentDevice].systemVersion;
+      g_realDeviceModel = [UIDevice currentDevice].model;
+      g_realDeviceName = [UIDevice currentDevice].name;
+
+      CGRect bounds = [UIScreen mainScreen].bounds;
+      g_realScreenWidth = bounds.size.width;
+      g_realScreenHeight = bounds.size.height;
+      g_realScreenScale = [UIScreen mainScreen].scale;
+      CGRect nb = [UIScreen mainScreen].nativeBounds;
+      g_realNativeWidth = nb.size.width;
+      g_realNativeHeight = nb.size.height;
+      g_realMaxFPS = [UIScreen mainScreen].maximumFramesPerSecond;
+
+      NSLocale *locale = [NSLocale currentLocale];
+      g_realLocaleId = [locale localeIdentifier];
+      g_realLanguageCode = [locale objectForKey:NSLocaleLanguageCode];
+      g_realCountryCode = [locale objectForKey:NSLocaleCountryCode];
+      g_realCurrencyCode = [locale objectForKey:NSLocaleCurrencyCode];
+      g_realTimezone = [NSTimeZone localTimeZone].name;
+      g_realPreferredLang = [NSLocale preferredLanguages].firstObject;
+    }
+
+    // ================================================================
+    // 综合诊断日志：真实信息 vs 伪装信息 全量对比
+    // ================================================================
+    static void printComprehensiveDiagnostics(void) {
+      ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
+
+      ECLog(@"");
+      ECLog(@"╔══════════════════════════════════════════════════════╗");
+      ECLog(@"║          📋 设备真实信息 (Hook 前原始值)             ║");
+      ECLog(@"╚══════════════════════════════════════════════════════╝");
+      ECLog(@"  hw.machine:        %@", g_realMachineModel);
+      ECLog(@"  systemVersion:     %@", g_realSystemVersion);
+      ECLog(@"  deviceModel:       %@", g_realDeviceModel);
+      ECLog(@"  deviceName:        %@", g_realDeviceName);
+      ECLog(@"  screenBounds:      %.0fx%.0f @%.1fx", g_realScreenWidth, g_realScreenHeight, g_realScreenScale);
+      ECLog(@"  nativeBounds:      %.0fx%.0f", g_realNativeWidth, g_realNativeHeight);
+      ECLog(@"  maxFPS:            %ld", (long)g_realMaxFPS);
+      ECLog(@"  localeIdentifier:  %@", g_realLocaleId);
+      ECLog(@"  languageCode:      %@", g_realLanguageCode);
+      ECLog(@"  countryCode:       %@", g_realCountryCode);
+      ECLog(@"  currencyCode:      %@", g_realCurrencyCode);
+      ECLog(@"  timezone:          %@", g_realTimezone);
+      ECLog(@"  preferredLang:     %@", g_realPreferredLang);
+      ECLog(@"  bundleId:          %@", [[NSBundle mainBundle] bundleIdentifier]);
+
+      ECLog(@"");
+      ECLog(@"╔══════════════════════════════════════════════════════╗");
+      ECLog(@"║          🎭 伪装后信息 (Config 配置值)              ║");
+      ECLog(@"╚══════════════════════════════════════════════════════╝");
+
+      // 全量 key 列表 — 覆盖所有已知和可能遗漏的伪装项
+      NSArray *allKeys = @[
+        // 设备型号
+        @"machineModel", @"deviceModel", @"deviceName", @"productName",
+        // 系统版本
+        @"systemVersion", @"systemBuildVersion", @"kernelVersion", @"systemName",
+        // 屏幕
+        @"screenWidth", @"screenHeight", @"screenScale", @"nativeBounds", @"maxFPS",
+        // 区域
+        @"countryCode", @"localeIdentifier", @"timezone", @"currencyCode",
+        @"storeRegion", @"priorityRegion",
+        // 语言
+        @"languageCode", @"preferredLanguage", @"systemLanguage", @"btdCurrentLanguage",
+        // 运营商
+        @"carrierName", @"mobileCountryCode", @"mobileNetworkCode", @"carrierCountry",
+        // 网络
+        @"networkType", @"enableNetworkInterception", @"disableQUIC",
+        // 标识符
+        @"deviceId", @"installId", @"idfv", @"openudid",
+      ];
+
+      for (NSString *key in allKeys) {
+        NSString *val = [config spoofValueForKey:key];
+        ECLog(@"  %-24s %@", [key UTF8String], val ?: @"⚠️ (未配置)");
+      }
+
+      // 额外检查：BundleID 伪装
+      ECLog(@"  %-24s %@", "[bundleId-spoofed]", g_spoofedBundleId ?: @"⚠️ (未配置)");
+      ECLog(@"  %-24s %@", "[cachedIDFV]", g_cachedIDFV ?: @"(待分配)");
+      ECLog(@"  %-24s %@", "[cachedDeviceID]", g_cachedDeviceID ?: @"(待服务端分配)");
+      ECLog(@"  %-24s %@", "[cachedInstallID]", g_cachedInstallID ?: @"(待服务端分配)");
+
+      // 屏幕一致性检查
+      NSString *sw = [config spoofValueForKey:@"screenWidth"];
+      NSString *sh = [config spoofValueForKey:@"screenHeight"];
+      NSString *ss = [config spoofValueForKey:@"screenScale"];
+      ECLog(@"");
+      if (sw && sh) {
+        CGFloat spoofW = [sw floatValue];
+        CGFloat spoofH = [sh floatValue];
+        CGFloat spoofS = ss ? [ss floatValue] : g_realScreenScale;
+        BOOL widthMatch = fabs(spoofW - g_realScreenWidth) < 1.0;
+        BOOL heightMatch = fabs(spoofH - g_realScreenHeight) < 1.0;
+        BOOL scaleMatch = fabs(spoofS - g_realScreenScale) < 0.1;
+
+        if (!widthMatch || !heightMatch || !scaleMatch) {
+          ECLog(@"╔══════════════════════════════════════════════════════╗");
+          ECLog(@"║  ⚠️ 屏幕尺寸不一致 — 可能影响验证码                ║");
+          ECLog(@"╚══════════════════════════════════════════════════════╝");
+          ECLog(@"  真实屏幕: %.0f x %.0f @%.1fx (native: %.0fx%.0f)",
+                g_realScreenWidth, g_realScreenHeight, g_realScreenScale,
+                g_realNativeWidth, g_realNativeHeight);
+          ECLog(@"  伪装屏幕: %.0f x %.0f @%.1fx (native: %@)",
+                spoofW, spoofH, spoofS,
+                [config spoofValueForKey:@"nativeBounds"] ?: @"?");
+          ECLog(@"  宽度比: %.3f  高度比: %.3f",
+                spoofW / g_realScreenWidth, spoofH / g_realScreenHeight);
+          ECLog(@"  ❗ 滑块验证码可能因物理触摸坐标与伪装屏幕不一致而失败");
+          ECLog(@"  💡 建议: 选择与真实屏幕尺寸一致的机型 (如 iPhone SE 3 = 375x667)");
+        } else {
+          ECLog(@"  ✅ 屏幕参数一致: 真实=%.0fx%.0f 伪装=%.0fx%.0f — 触摸坐标安全",
+                g_realScreenWidth, g_realScreenHeight, spoofW, spoofH);
+        }
+      } else {
+        ECLog(@"  ⚠️ screenWidth/screenHeight 未在配置中设置，使用真实屏幕值");
+      }
+      ECLog(@"");
+    }
+
     void ECDeviceSpoofInitialize(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -5975,6 +6191,11 @@ static void setupLoginDiagnosticHooks(void) {
         } else {
           ECLog(@"⚠️ FeatureFlag: Network Interception DISABLED");
         }
+
+        // [DIAG] 在所有 Hook 安装前捕获真实设备信息
+        captureRealDeviceInfo();
+        ECLog(@"📋 真实设备信息已缓存 (hw.machine=%@ screen=%.0fx%.0f @%.1fx)",
+              g_realMachineModel, g_realScreenWidth, g_realScreenHeight, g_realScreenScale);
 
         // [2] Method Swizzling (UIDevice/UIScreen/IDFV)
         if ([config spoofBoolForKey:@"enableMethodSwizzling"
@@ -6099,6 +6320,9 @@ static void setupLoginDiagnosticHooks(void) {
         // 必须在所有 setup 函数注册完毕后才能调用！
         // 将原来 6 次分散的 rebind_symbols 合并为 1 次统一遍历
         performMergedRebind();
+
+        // [DIAG] 打印完整的 真实 vs 伪装 对比诊断日志
+        printComprehensiveDiagnostics();
 
       } else {
         ECLog(@"未找到配置文件或配置为空，跳过设备伪造 Hook");
@@ -6478,88 +6702,74 @@ static void setupLoginDiagnosticHooks(void) {
 
     /// 在内存中抹除 Main Binary Header 中的注入痕迹
     /// 防止应用读取自己的 Mach-O Header 发现被注入的 dylib
-    static void sanitizeMainBinaryHeader(void) {
-    // 1. 获取主程序 Header (Index 0)
-    const struct mach_header_64 *header =
-        (const struct mach_header_64 *)_dyld_get_image_header(0);
-    if (!header)
-      return;
-
-    // 验证 Magic
-    if (header->magic != MH_MAGIC_64)
-      return;
-
-    // 2. 遍历 Load Commands
-    uintptr_t cmdPtr = (uintptr_t)(header + 1);
-    char *loadDylibNameToBeSanitized = NULL;
-    uint32_t nameOffset = 0;
-
-    for (uint32_t i = 0; i < header->ncmds; i++) {
-      struct load_command *lc = (struct load_command *)cmdPtr;
-
-      if (lc->cmd == LC_LOAD_DYLIB || lc->cmd == LC_LOAD_WEAK_DYLIB) {
-        struct dylib_command *dc = (struct dylib_command *)lc;
-        char *name = (char *)dc + dc->dylib.name.offset;
-
-        // 检查是否是我们的 dylib
-        if (strstr(name, "libswiftCompatibilityPacks.dylib") != NULL ||
-            strstr(name, "ECDeviceSpoof.dylib") != NULL) {
-          loadDylibNameToBeSanitized = name;
-          ECLog(@"[Sanitize] 🚨 Found injected LC_LOAD_DYLIB in header: %s",
-                name);
-          break;
-        }
+    // 内部辅助：覆盖单条 LC_LOAD_DYLIB 路径字符串
+    static void _sanitizeDylibName(char *name) {
+      size_t len = strlen(name);
+      const char *fakeName = "/usr/lib/libSystem.B.dylib";
+      size_t fakeLen = strlen(fakeName);
+      if (len < fakeLen) {
+        ECLog(@"[Sanitize] ⚠️ 路径太短无法安全覆盖: %s", name);
+        return;
       }
-      cmdPtr += lc->cmdsize;
-    }
-
-    if (loadDylibNameToBeSanitized) {
-      // 3. 修改内存权限 (READ + WRITE)
-      // 需要计算所在的 Page 地址
-      uintptr_t pageStart =
-          (uintptr_t)loadDylibNameToBeSanitized & ~(PAGE_SIZE - 1);
-      // 假设字符串跨 Page 的情况极少发生且我们的字符串较短，简单处理当前 Page
-      // 正确的做法是计算 range size
-      size_t len = strlen(loadDylibNameToBeSanitized);
-      uintptr_t pageEnd =
-          ((uintptr_t)loadDylibNameToBeSanitized + len + PAGE_SIZE - 1) &
-          ~(PAGE_SIZE - 1);
+      uintptr_t pageStart = (uintptr_t)name & ~(PAGE_SIZE - 1);
+      uintptr_t pageEnd   = ((uintptr_t)name + len + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
       size_t size = pageEnd - pageStart;
-
-      kern_return_t kr =
-          vm_protect(mach_task_self(), (vm_address_t)pageStart, (vm_size_t)size,
-                     FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
-
+      kern_return_t kr = vm_protect(mach_task_self(), (vm_address_t)pageStart,
+                                    (vm_size_t)size, FALSE,
+                                    VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
       if (kr != KERN_SUCCESS) {
         ECLog(@"[Sanitize] ❌ vm_protect failed: %d", kr);
         return;
       }
-
-      // 4. 覆盖字符串 (只能覆盖相同长度或更短)
-      // 原始: @executable_path/ECDeviceSpoof.dylib (length ~36)
-      // 目标: /usr/lib/libSystem.B.dylib             (length 26)
-      // 用空字符填充剩余部分
-      const char *fakeName = "/usr/lib/libSystem.B.dylib";
-      size_t fakeLen = strlen(fakeName);
-
-      if (len >= fakeLen) {
-        memcpy(loadDylibNameToBeSanitized, fakeName, fakeLen);
-        // 填充剩余为 0
-        memset(loadDylibNameToBeSanitized + fakeLen, 0, len - fakeLen);
-        ECLog(@"[Sanitize] ✅ Sanitized to: %s", loadDylibNameToBeSanitized);
-      } else {
-        ECLog(@"[Sanitize] ⚠️ Original string too short, cannot sanitize "
-              @"safely.");
-      }
-
-      // 5. 恢复内存权限 (READ + EXECUTE)
-      // 注意：代码段通常是 RX，但数据段可能是 RW。Header 通常在 __TEXT
-      // 段开头，是 RX。
+      memcpy(name, fakeName, fakeLen);
+      memset(name + fakeLen, 0, len - fakeLen);
+      ECLog(@"[Sanitize] ✅ Sanitized: → %s", name);
       vm_protect(mach_task_self(), (vm_address_t)pageStart, (vm_size_t)size,
                  FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
-    } else {
-      // ECLog(@"[Sanitize] No injected dylib found in header (Clean?)");
     }
+
+    static void sanitizeMainBinaryHeader(void) {
+      // 修复：遍历所有 LC_LOAD_DYLIB，清理全部可疑注入项（不再 break 后提前退出）
+      const struct mach_header_64 *header =
+          (const struct mach_header_64 *)_dyld_get_image_header(0);
+      if (!header || header->magic != MH_MAGIC_64) return;
+
+      // 可疑路径关键词（凡匹配的都清理）
+      const char *suspiciousKeywords[] = {
+        // 【修复 2】：移除 "libswiftCompatibilityPacks" 以及模糊匹配的 "@executable_path/Frameworks/lib"
+        // 防止误杀属于原生环境正常运行所需的 Swift 兼容库和类似于 libvcn.framework 这类的官方二方库！
+        "ECDeviceSpoof",
+        "spoof_plugin",
+        "CydiaSubstrate",     // 顺便补充一些常见越狱框架库作为靶向清理，提升隐藏深度
+        "SubstrateLoader",
+        "TweakInject",
+        NULL
+      };
+
+      uintptr_t cmdPtr = (uintptr_t)(header + 1);
+      int found = 0;
+      for (uint32_t i = 0; i < header->ncmds; i++) {
+        struct load_command *lc = (struct load_command *)cmdPtr;
+        if (lc->cmd == LC_LOAD_DYLIB || lc->cmd == LC_LOAD_WEAK_DYLIB) {
+          struct dylib_command *dc = (struct dylib_command *)lc;
+          char *name = (char *)dc + dc->dylib.name.offset;
+          // 匹配任意可疑关键词
+          for (int k = 0; suspiciousKeywords[k] != NULL; k++) {
+            if (strstr(name, suspiciousKeywords[k]) != NULL) {
+              ECLog(@"[Sanitize] 🚨 Found injected LC_LOAD_DYLIB in header: %s", name);
+              _sanitizeDylibName(name);
+              found++;
+              break;
+            }
+          }
+        }
+        cmdPtr += lc->cmdsize;
+      }
+      if (found == 0) {
+        // ECLog(@"[Sanitize] No injected dylib found (clean)");
+      } else {
+        ECLog(@"[Sanitize] ✅ 共清理 %d 条注入 dylib 路径", found);
+      }
     }
 
     // dylib 加载时自动执行
@@ -6568,37 +6778,39 @@ static void setupLoginDiagnosticHooks(void) {
       // 0. [CRITICAL] 立即抹除注入痕迹
       sanitizeMainBinaryHeader();
 
-      // [Audit] 记录启动信息到隐蔽的缓存文件
-      @try {
-        NSString *docDir = [NSSearchPathForDirectoriesInDomains(
-            NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-        if (docDir) {
-          // 伪装为 NSURLSession 下载缓存
-          NSString *logPath = [docDir
-              stringByAppendingPathComponent:@".com.apple.nsurlsessiond.plist"];
-          NSDateFormatter *df = [[NSDateFormatter alloc] init];
-          [df setDateFormat:@"yyyy-MM-dd HH:mm:ss"];
-          NSString *log = [NSString
-              stringWithFormat:@"[%@] %@ (%d)\n",
-                               [df stringFromDate:[NSDate date]],
-                               [[NSBundle mainBundle] bundleIdentifier],
-                               getpid()];
+      // [Audit] 记录启动信息到隐蔽的缓存文件（异步执行，避免阻塞 constructor）
+      // 首次安装时 Documents 目录可能尚未完全就绪，同步写入会增加启动延迟
+      dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+        @try {
+          NSString *docDir = [NSSearchPathForDirectoriesInDomains(
+              NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+          if (docDir) {
+            NSString *logPath = [docDir
+                stringByAppendingPathComponent:@".com.apple.nsurlsessiond.plist"];
+            NSDateFormatter *df = [[NSDateFormatter alloc] init];
+            [df setDateFormat:@"yyyy-MM-dd HH:mm:ss"];
+            NSString *log = [NSString
+                stringWithFormat:@"[%@] %@ (%d)\n",
+                                 [df stringFromDate:[NSDate date]],
+                                 [[NSBundle mainBundle] bundleIdentifier],
+                                 getpid()];
 
-          NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:logPath];
-          if (fh) {
-            [fh seekToEndOfFile];
-            [fh writeData:[log dataUsingEncoding:NSUTF8StringEncoding]];
-            [fh closeFile];
-          } else {
-            [log writeToFile:logPath
-                  atomically:YES
-                    encoding:NSUTF8StringEncoding
-                       error:nil];
+            NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:logPath];
+            if (fh) {
+              [fh seekToEndOfFile];
+              [fh writeData:[log dataUsingEncoding:NSUTF8StringEncoding]];
+              [fh closeFile];
+            } else {
+              [log writeToFile:logPath
+                    atomically:YES
+                      encoding:NSUTF8StringEncoding
+                         error:nil];
+            }
           }
+        } @catch (NSException *e) {
+          // 忽略
         }
-      } @catch (NSException *e) {
-        // 忽略
-      }
+      });
 
       // 1. [FIX] 同步加载 Config - 修复竞态条件
       // 必须在 Hook 生效前完成配置加载，否则早期 Bundle 访问会返回真实包名

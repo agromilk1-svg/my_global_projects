@@ -132,6 +132,13 @@ extern NSNotificationName const kECLogNotification;
                      error:(NSError **)error;
 
 /**
+ * Post-install fix: 对已安装 App Bundle 的 Frameworks/ loose .dylib 重签。
+ * 用于修复 TrollStore CTLoop 二次 bypass 产生的无效签名。
+ * @param installedAppBundlePath 已安装的 .app 完整路径（如 /var/containers/Bundle/.../TikTok.app）
+ */
+- (void)fixLooseDylibSignaturesForInstalledBundle:(NSString *)installedAppBundlePath;
+
+/**
  * 解压 IPA 到临时目录
  */
 - (nullable NSString *)extractIPAToTemp:(NSString *)ipaPath
