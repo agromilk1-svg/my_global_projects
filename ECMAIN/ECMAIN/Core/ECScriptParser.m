@@ -3800,6 +3800,22 @@ static NSString *gActiveWDASessionId = nil;
     [self log:@"ℹ️ 保持原 App 信息（不分身）"];
   }
 
+  // --- [v2148 新增：跳过重复安装逻辑] ---
+  NSString *finalBundleId = customBundleId ?: originalBundleId;
+  if ([self isAppInstalled:finalBundleId]) {
+    [self log:[NSString stringWithFormat:@"✨ 跳过克隆：检测到项目 (%@) 已存在，无需重复安装", finalBundleId]];
+    if (tempDir) {
+      [[NSFileManager defaultManager] removeItemAtPath:tempDir error:nil];
+    }
+    return @{
+      @"success" : @YES,
+      @"skipped" : @YES,
+      @"bundleId" : finalBundleId,
+      @"message" : @"App already installed"
+    };
+  }
+  // ------------------------------------
+
 
   // 5. 执行注入（Dylib 注入 + 签名处理 + 默认配置生成）
   //    注意：prepareIPAForInjection 内部会自动生成包含所有 Hook 开关的完整配置
