@@ -6782,87 +6782,113 @@ static void setupLoginDiagnosticHooks(void) {
     }
 
 // ============================================================
-// 网络访问授权自动触发 — 修复国行 iPhone 脱壳安装后无法访问网络的问题
-// 原因：工信部强制要求国行 App 向用户申请「无线局域网与蜂窝网络」权限
-//       但通过 TrollStore/重签名安装的 App 经常跳过注册，导致系统不弹弹窗
-// 策略：监听 UIApplicationDidBecomeActiveNotification（等主窗口准备好），
-//       延迟 1.5s 后实例化 CTCellularData 并发起探针请求，强制触发弹窗
-//       通过 NSUserDefaults 标志位保证整个 App 生命周期内只触发一次
+// CTCellularData 网络权限绕过
+// ─────────────────────────────────────────────────────────────
+// 问题：CommCenter 因无法识别本 App（bundleID hook 导致名称查询失败）
+//       立即返回 kCTCellularDataRestricted，TikTok 显示"无网络"且无弹窗
+// 解决：Swizzle CTCellularData 的 setCellularDataRestrictionDidUpdateNotifier:
+//       拦截所有"已限制"回调，强制改为 kCTCellularDataNotRestricted
+//       实际连接已通过代理正常运作，仅需告知 TikTok "权限已允许" 即可
 // ============================================================
+
+// ── CTCellularData Setter Swizzle ────────────────────────────
+static IMP g_orig_setCellularDataNotifier = nil;
+
+static void ec_hooked_setCellularDataNotifier(id self, SEL _cmd,
+    CTCellularDataRestrictionDidUpdateNotifier userNotifier) {
+  if (!userNotifier) {
+    if (g_orig_setCellularDataNotifier) {
+      ((void (*)(id, SEL, CTCellularDataRestrictionDidUpdateNotifier))
+          g_orig_setCellularDataNotifier)(self, _cmd, nil);
+    }
+    return;
+  }
+
+  // 包装用户 block：拦截任何"已限制"回调，强制改为"未限制"
+  CTCellularDataRestrictionDidUpdateNotifier wrappedNotifier =
+      ^(CTCellularDataRestrictedState state) {
+    if (state != kCTCellularDataNotRestricted) {
+      ECLog(@"🔓 [CTCellularData-Hook] CommCenter 状态 %ld → 强制覆盖为 NotRestricted", (long)state);
+    }
+    userNotifier(kCTCellularDataNotRestricted);
+  };
+
+  // 安装拦截后的 block
+  if (g_orig_setCellularDataNotifier) {
+    ((void (*)(id, SEL, CTCellularDataRestrictionDidUpdateNotifier))
+        g_orig_setCellularDataNotifier)(self, _cmd, wrappedNotifier);
+  }
+
+  // 立即主线程触发一次"允许"回调，让 TikTok 尽快解除"无网络"状态
+  dispatch_async(dispatch_get_main_queue(), ^{
+    ECLog(@"🔓 [CTCellularData-Hook] 立即回调 kCTCellularDataNotRestricted");
+    userNotifier(kCTCellularDataNotRestricted);
+  });
+}
+
+// 安装 CTCellularData Hook（在 ECDeviceSpoofInitialize 中调用一次）
+static void ec_install_cellular_data_hook(void) {
+  Class cls = NSClassFromString(@"CTCellularData");
+  if (!cls) {
+    ECLog(@"⚠️ [CTCellularData-Hook] CTCellularData 类未找到，跳过");
+    return;
+  }
+  SEL sel = NSSelectorFromString(@"setCellularDataRestrictionDidUpdateNotifier:");
+  Method method = class_getInstanceMethod(cls, sel);
+  if (!method) {
+    ECLog(@"⚠️ [CTCellularData-Hook] 方法未找到，跳过");
+    return;
+  }
+  g_orig_setCellularDataNotifier = method_setImplementation(
+      method, (IMP)ec_hooked_setCellularDataNotifier);
+  ECLog(@"✅ [CTCellularData-Hook] Hook 已安装：所有 Restricted 回调将被覆盖为 NotRestricted");
+}
+
+// ── 探针请求（辅助触发 CommCenter 注册）──────────────────────
 static void ec_trigger_network_permission_once(void) {
-  // dispatch_once 防止多线程重入
   static dispatch_once_t onceToken;
   dispatch_once(&onceToken, ^{
-    // 检查是否已记录授权成功（避免重复打扰用户）
-    NSString *const flagKey = @"__ec_net_perm_ok_v1";
-    if ([[NSUserDefaults standardUserDefaults] boolForKey:flagKey]) {
-      ECLog(@"🌐 [NetworkPerm] 已授权，跳过");
-      return;
-    }
+    ECLog(@"🌐 [NetworkPerm] 等待主窗口后发送探针请求...");
 
-    ECLog(@"🌐 [NetworkPerm] 首次启动，等待主窗口后触发网络授权...");
-
-    // 监听 App 进入前台事件（constructor 阶段 UIApplication 尚未就绪，必须延后）
     __block id obs = [[NSNotificationCenter defaultCenter]
         addObserverForName:UIApplicationDidBecomeActiveNotification
                     object:nil
                      queue:nil
                 usingBlock:^(NSNotification *_) {
-      // 只触发一次，立即解除监听
       [[NSNotificationCenter defaultCenter] removeObserver:obs];
       obs = nil;
 
-      // 延迟 1.5s：确保 App 的 rootViewController 已显示，弹窗不会被吞
+      // 延迟 1.5s 确保 rootViewController 已显示
       dispatch_after(
           dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
           dispatch_get_main_queue(), ^{
         @try {
-          // ── Step 1: 实例化 CTCellularData ──────────────────────────
-          // 这一步让 CommCenter 将本 App 注册进蜂窝权限系统
-          // 如果系统尚未弹弹窗，此时会触发授权请求
+          // 实例化 CTCellularData：此时 Hook 已安装，回调会立即返回 NotRestricted
           CTCellularData *cd = [[CTCellularData alloc] init];
-          [cd setCellularDataRestrictionDidUpdateNotifier:^(CTCellularDataRestrictedState state) {
-            // kCTCellularDataNotRestricted = 0：用户已允许
-            if (state == kCTCellularDataNotRestricted) {
-              ECLog(@"✅ [NetworkPerm] 用户已允许网络访问，写入标志位");
-              [[NSUserDefaults standardUserDefaults] setBool:YES forKey:flagKey];
-              [[NSUserDefaults standardUserDefaults] synchronize];
-            } else if (state == kCTCellularDataRestricted) {
-              ECLog(@"🚫 [NetworkPerm] 用户拒绝了网络访问");
-            } else {
-              ECLog(@"🌐 [NetworkPerm] 网络权限状态未知: %ld", (long)state);
-            }
+          __unused CTCellularData *strongCD = cd; // 防止 ARC 过早释放
+          [cd setCellularDataRestrictionDidUpdateNotifier:^(CTCellularDataRestrictedState s) {
+            ECLog(@"🌐 [NetworkPerm] CTCellularData 状态: %ld (Hook 后应为 0)", (long)s);
           }];
 
-          // ── Step 2: 发起探针请求 ───────────────────────────────────
-          // captive.apple.com 是 iOS 系统自身的门户检测地址
-          // 发起这个请求会让 CommCenter 进一步确认弹窗需求
+          // captive.apple.com 探针请求：进一步刺激 CommCenter 完成注册
           NSURL *probeURL =
               [NSURL URLWithString:@"https://captive.apple.com/hotspot-detect.html"];
           NSMutableURLRequest *req =
               [NSMutableURLRequest requestWithURL:probeURL
                                      cachePolicy:NSURLRequestReloadIgnoringCacheData
                                  timeoutInterval:5.0];
-          // 伪装成系统的捕获门户检测 UA，绕过部分 App 自身的网络拦截
           [req setValue:@"CaptiveNetworkSupport/1.0 wispr"
               forHTTPHeaderField:@"User-Agent"];
-
-          NSURLSessionConfiguration *cfg =
-              [NSURLSessionConfiguration ephemeralSessionConfiguration];
-          NSURLSession *sess = [NSURLSession sessionWithConfiguration:cfg];
+          NSURLSession *sess =
+              [NSURLSession sessionWithConfiguration:
+                  [NSURLSessionConfiguration ephemeralSessionConfiguration]];
           [[sess dataTaskWithRequest:req
               completionHandler:^(NSData *d, NSURLResponse *r, NSError *err) {
-            if (!err) {
-              ECLog(@"✅ [NetworkPerm] 探针请求成功，网络已连通");
-              [[NSUserDefaults standardUserDefaults] setBool:YES forKey:flagKey];
-              [[NSUserDefaults standardUserDefaults] synchronize];
-            } else {
-              // 网络错误不代表授权失败，可能只是没有 Wi-Fi
-              ECLog(@"ℹ️ [NetworkPerm] 探针结果: %@", err.localizedDescription);
-            }
+            ECLog(@"🌐 [NetworkPerm] 探针完成: %@",
+                  err ? err.localizedDescription : @"成功");
           }] resume];
 
-          ECLog(@"🌐 [NetworkPerm] 网络授权触发序列已启动（CTCellularData + 探针）");
+          ECLog(@"🌐 [NetworkPerm] 探针序列已发射");
         } @catch (NSException *ex) {
           ECLog(@"⚠️ [NetworkPerm] 触发异常: %@", ex);
         }
@@ -6929,8 +6955,14 @@ static void ec_trigger_network_permission_once(void) {
       // 2. 初始化 Hook
       ECDeviceSpoofInitialize();
 
-      // 3. [NETWORK] 首次启动触发网络访问权限弹窗
-      //    修复国行 iPhone 通过 TrollStore/重签名安装后 App 无网络访问权限的问题
+      // 3. [NETWORK-BYPASS] 安装 CTCellularData 拦截 Hook
+      //    CommCenter 无法识别本 App 名称（bundleID hook 副作用），
+      //    导致 kCTCellularDataRestricted 立即返回且不弹授权弹窗。
+      //    Hook 在此注入：将所有 Restricted 回调强制改为 NotRestricted，
+      //    让 TikTok 始终认为已获得网络权限（实际流量已通过代理运作）。
+      ec_install_cellular_data_hook();
+
+      // 4. [NETWORK] 发起探针请求辅助 CommCenter 完成 App 注册
       ec_trigger_network_permission_once();
     }
     }
