@@ -6795,17 +6795,17 @@ static void setupLoginDiagnosticHooks(void) {
 static IMP g_orig_setCellularDataNotifier = nil;
 
 static void ec_hooked_setCellularDataNotifier(id self, SEL _cmd,
-    CTCellularDataRestrictionDidUpdateNotifier userNotifier) {
+    CellularDataRestrictionDidUpdateNotifier userNotifier) {
   if (!userNotifier) {
     if (g_orig_setCellularDataNotifier) {
-      ((void (*)(id, SEL, CTCellularDataRestrictionDidUpdateNotifier))
+      ((void (*)(id, SEL, CellularDataRestrictionDidUpdateNotifier))
           g_orig_setCellularDataNotifier)(self, _cmd, nil);
     }
     return;
   }
 
   // 包装用户 block：拦截任何"已限制"回调，强制改为"未限制"
-  CTCellularDataRestrictionDidUpdateNotifier wrappedNotifier =
+  CellularDataRestrictionDidUpdateNotifier wrappedNotifier =
       ^(CTCellularDataRestrictedState state) {
     if (state != kCTCellularDataNotRestricted) {
       ECLog(@"🔓 [CTCellularData-Hook] CommCenter 状态 %ld → 强制覆盖为 NotRestricted", (long)state);
@@ -6815,7 +6815,7 @@ static void ec_hooked_setCellularDataNotifier(id self, SEL _cmd,
 
   // 安装拦截后的 block
   if (g_orig_setCellularDataNotifier) {
-    ((void (*)(id, SEL, CTCellularDataRestrictionDidUpdateNotifier))
+    ((void (*)(id, SEL, CellularDataRestrictionDidUpdateNotifier))
         g_orig_setCellularDataNotifier)(self, _cmd, wrappedNotifier);
   }
 
