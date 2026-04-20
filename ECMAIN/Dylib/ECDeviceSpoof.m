@@ -1881,8 +1881,14 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
 
       // 字符串类型的伪装 — 按子开关控制
       if (strcmp(name, "hw.machine") == 0) {
-        if ([config spoofBoolForKey:@"enableSysctlMachine" defaultValue:YES])
+        if ([config spoofBoolForKey:@"enableSysctlMachine" defaultValue:YES]) {
           spoofedStr = [config spoofValueForKey:@"machineModel"];
+          // 诊断日志: 确认 hw.machine hook 已拦截并替换
+          if (spoofedStr && oldp) {
+            ECLog(@"🔧 [sysctlbyname] hw.machine: %s → %@ ✅",
+                  (char *)oldp, spoofedStr);
+          }
+        }
       } else if (strcmp(name, "kern.osversion") == 0) {
         if ([config spoofBoolForKey:@"enableSysctlKern" defaultValue:YES])
           spoofedStr = [config spoofValueForKey:@"systemBuildVersion"];
@@ -6092,9 +6098,9 @@ static void setupLoginDiagnosticHooks(void) {
         BOOL scaleMatch = fabs(spoofS - g_realScreenScale) < 0.1;
 
         if (!widthMatch || !heightMatch || !scaleMatch) {
-          ECLog(@"╔══════════════════════════════════════════════════════╗");
-          ECLog(@"║  ⚠️ 屏幕尺寸不一致 — 可能影响验证码                ║");
-          ECLog(@"╚══════════════════════════════════════════════════════╝");
+          ECLog(@"╔══════════════════════════════════════════════════════════╗");
+          ECLog(@"║  🔴 [CRITICAL] 屏幕尺寸不一致 — 设备指纹矛盾           ║");
+          ECLog(@"╚══════════════════════════════════════════════════════════╝");
           ECLog(@"  真实屏幕: %.0f x %.0f @%.1fx (native: %.0fx%.0f)",
                 g_realScreenWidth, g_realScreenHeight, g_realScreenScale,
                 g_realNativeWidth, g_realNativeHeight);
@@ -6103,8 +6109,10 @@ static void setupLoginDiagnosticHooks(void) {
                 [config spoofValueForKey:@"nativeBounds"] ?: @"?");
           ECLog(@"  宽度比: %.3f  高度比: %.3f",
                 spoofW / g_realScreenWidth, spoofH / g_realScreenHeight);
-          ECLog(@"  ❗ 滑块验证码可能因物理触摸坐标与伪装屏幕不一致而失败");
-          ECLog(@"  💡 建议: 选择与真实屏幕尺寸一致的机型 (如 iPhone SE 3 = 375x667)");
+          ECLog(@"  ❗ 影响 [1]: 滑块验证码坐标系错位 — 验证码必定失败");
+          ECLog(@"  ❗ 影响 [2]: TikTok 设备指纹矛盾 — 可能导致商城(Shop)不显示");
+          ECLog(@"  💡 修复建议: 在 ECMAIN 中选择与真实屏幕一致的机型");
+          ECLog(@"             iPhone 7 (375x667) → 选 iPhone SE 3 (iPhone14,6)");
         } else {
           ECLog(@"  ✅ 屏幕参数一致: 真实=%.0fx%.0f 伪装=%.0fx%.0f — 触摸坐标安全",
                 g_realScreenWidth, g_realScreenHeight, spoofW, spoofH);

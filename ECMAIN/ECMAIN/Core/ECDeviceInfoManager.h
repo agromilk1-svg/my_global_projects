@@ -81,6 +81,14 @@ typedef NS_ENUM(NSInteger, ECDeviceInfoSection) {
 /// 获取支持的国家代码列表
 + (NSArray<NSString *> *)supportedCountryCodes;
 
+/// 根据机型自动联动屏幕参数 (scale / width / height / nativeBounds)
+/// 必须在用户设置 machineModel 后调用，内部会同步触发系统版本校验
+- (void)applyScreenParamsForMachineModel:(NSString *)machineModel;
+
+/// 根据机型自动校验并修正 systemVersion / systemBuildVersion
+/// 差距超过 2 个大版本时自动替换为推荐稳定版，防止出现 iPhone17+iOS15 等不合法组合
+- (void)applySystemVersionForMachineModel:(NSString *)machineModel;
+
 @end
 
 NS_ASSUME_NONNULL_END

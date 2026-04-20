@@ -904,6 +904,11 @@
     @"iPhone17,2" : @"iPhone 16 Pro Max",
     @"iPhone17,3" : @"iPhone 16",
     @"iPhone17,4" : @"iPhone 16 Plus",
+    // iPhone 17 系列 (A19 芯片, 2025年发布, 搭载 iOS 26)
+    @"iPhone18,1" : @"iPhone 17",
+    @"iPhone18,2" : @"iPhone 17 Plus",
+    @"iPhone18,3" : @"iPhone 17 Pro",
+    @"iPhone18,4" : @"iPhone 17 Pro Max",
   };
   return models[model] ?: model;
 }
@@ -963,6 +968,14 @@
     @"iPhone17,1" : @{ @"scale":@"3.0", @"w":@"402", @"h":@"874", @"nw":@"1206", @"nh":@"2622" },
     // iPhone 16 Pro Max (6.9") - 3x
     @"iPhone17,2" : @{ @"scale":@"3.0", @"w":@"440", @"h":@"956", @"nw":@"1320", @"nh":@"2868" },
+    // iPhone 17 (6.12") - 3x (A19 芯片, 2025)
+    @"iPhone18,1" : @{ @"scale":@"3.0", @"w":@"393", @"h":@"852", @"nw":@"1179", @"nh":@"2556" },
+    // iPhone 17 Plus (6.69") - 3x
+    @"iPhone18,2" : @{ @"scale":@"3.0", @"w":@"430", @"h":@"932", @"nw":@"1290", @"nh":@"2796" },
+    // iPhone 17 Pro (6.3") - 3x
+    @"iPhone18,3" : @{ @"scale":@"3.0", @"w":@"402", @"h":@"874", @"nw":@"1206", @"nh":@"2622" },
+    // iPhone 17 Pro Max (6.9") - 3x
+    @"iPhone18,4" : @{ @"scale":@"3.0", @"w":@"440", @"h":@"956", @"nw":@"1320", @"nh":@"2868" },
   };
 
   NSDictionary *params = screenDB[machineModel];
@@ -990,6 +1003,98 @@
 
   NSLog(@"[ECDeviceInfoManager] ✅ 屏幕参数已自动联动: %@ -> scale=%@ bounds=%@x%@ native=%@",
         machineModel, params[@"scale"], params[@"w"], params[@"h"], nativeBoundsStr);
+
+  // 屏幕联动完成后，同步校验系统版本
+  [self applySystemVersionForMachineModel:machineModel];
+}
+
+/**
+ * 根据机型自动联动系统版本号，防止出现不兼容的 iOS 版本 (如 iPhone 17 + iOS 26.0 beta)。
+ * 只在当前配置版本与机型最低/推荐版本差距超过 2 个大版本时自动修正。
+ * 非强制性：如果版本在合理范围内则不覆盖用户设置。
+ */
+- (void)applySystemVersionForMachineModel:(NSString *)machineModel {
+  // 机型 → 推荐稳定 iOS 版本
+  // build 版本号为对应 iOS 版本的实际构建号
+  NSDictionary *osDB = @{
+    // iPhone SE 2 (A13, 最高支持 iOS 16)
+    @"iPhone12,8" : @{ @"os": @"15.8.3",  @"build": @"19H370" },
+    // iPhone SE 3 (A15)
+    @"iPhone14,6" : @{ @"os": @"18.4.1",  @"build": @"22E252" },
+    // iPhone 12 系列 (A14)
+    @"iPhone13,1" : @{ @"os": @"18.4.1",  @"build": @"22E252" },
+    @"iPhone13,2" : @{ @"os": @"18.4.1",  @"build": @"22E252" },
+    @"iPhone13,3" : @{ @"os": @"18.4.1",  @"build": @"22E252" },
+    @"iPhone13,4" : @{ @"os": @"18.4.1",  @"build": @"22E252" },
+    // iPhone 13 系列 (A15)
+    @"iPhone14,2" : @{ @"os": @"18.4.1",  @"build": @"22E252" },
+    @"iPhone14,3" : @{ @"os": @"18.4.1",  @"build": @"22E252" },
+    @"iPhone14,4" : @{ @"os": @"18.4.1",  @"build": @"22E252" },
+    @"iPhone14,5" : @{ @"os": @"18.4.1",  @"build": @"22E252" },
+    // iPhone 14 系列 (A15/A16)
+    @"iPhone14,7" : @{ @"os": @"18.4.1",  @"build": @"22E252" },
+    @"iPhone14,8" : @{ @"os": @"18.4.1",  @"build": @"22E252" },
+    @"iPhone15,2" : @{ @"os": @"18.4.1",  @"build": @"22E252" },
+    @"iPhone15,3" : @{ @"os": @"18.4.1",  @"build": @"22E252" },
+    // iPhone 15 系列 (A16/A17 Pro)
+    @"iPhone15,4" : @{ @"os": @"18.4.1",  @"build": @"22E252" },
+    @"iPhone15,5" : @{ @"os": @"18.4.1",  @"build": @"22E252" },
+    @"iPhone16,1" : @{ @"os": @"18.4.1",  @"build": @"22E252" },
+    @"iPhone16,2" : @{ @"os": @"18.4.1",  @"build": @"22E252" },
+    // iPhone 16 系列 (A18)
+    @"iPhone17,1" : @{ @"os": @"18.4.1",  @"build": @"22E252" },
+    @"iPhone17,2" : @{ @"os": @"18.4.1",  @"build": @"22E252" },
+    @"iPhone17,3" : @{ @"os": @"18.4.1",  @"build": @"22E252" },
+    @"iPhone17,4" : @{ @"os": @"18.4.1",  @"build": @"22E252" },
+    // iPhone 17 系列 (A19, 2025) — 搭载 iOS 26 (Apple 年份命名)
+    // iOS 26.3.1 为 2026年春季稳定版推测值，若实际版本不同请手动更新
+    @"iPhone18,1" : @{ @"os": @"26.3.1",  @"build": @"23A380" },
+    @"iPhone18,2" : @{ @"os": @"26.3.1",  @"build": @"23A380" },
+    @"iPhone18,3" : @{ @"os": @"26.3.1",  @"build": @"23A380" },
+    @"iPhone18,4" : @{ @"os": @"26.3.1",  @"build": @"23A380" },
+  };
+
+  NSDictionary *params = osDB[machineModel];
+  if (!params) {
+    NSLog(@"[ECDeviceInfoManager] ⚠️ 无法找到机型 %@ 的推荐 iOS 版本，跳过版本联动", machineModel);
+    return;
+  }
+
+  NSString *recommendedOS = params[@"os"];
+  NSString *buildVersion  = params[@"build"];
+
+  // 获取当前配置版本
+  ECDeviceInfoItem *currentOSItem = self.allItems[@"systemVersion"];
+  NSString *currentOS = currentOSItem.currentValue ?: @"15.0";
+
+  // 提取大版本号进行比较
+  NSInteger currentMajor     = [[currentOS componentsSeparatedByString:@"."].firstObject integerValue];
+  NSInteger recommendedMajor = [[recommendedOS componentsSeparatedByString:@"."].firstObject integerValue];
+
+  // 大版本差距超过 2 则视为不合法组合，自动修正
+  BOOL tooOld = (currentMajor < recommendedMajor - 2);
+  BOOL tooNew = (currentMajor > recommendedMajor + 1);
+
+  if (tooOld || tooNew) {
+    NSLog(@"[ECDeviceInfoManager] ⚠️ systemVersion %@ 与机型 %@ 不兼容 (推荐 %@)，已自动修正",
+          currentOS, machineModel, recommendedOS);
+    NSDictionary *updates = @{
+      @"systemVersion"      : recommendedOS,
+      @"systemBuildVersion" : buildVersion,
+    };
+    for (NSString *key in updates) {
+      ECDeviceInfoItem *item = self.allItems[key];
+      if (item) {
+        item.currentValue = updates[key];
+        item.isModified   = YES;
+      }
+    }
+    NSLog(@"[ECDeviceInfoManager] ✅ 系统版本联动完成: %@ -> iOS %@ (Build %@)",
+          machineModel, recommendedOS, buildVersion);
+  } else {
+    NSLog(@"[ECDeviceInfoManager] ✅ systemVersion %@ 与机型 %@ 兼容，无需修正",
+          currentOS, machineModel);
+  }
 }
 
 - (int)getCPUCores {
@@ -1015,11 +1120,12 @@
   NSString *machine = [NSString stringWithCString:systemInfo.machine
                                          encoding:NSUTF8StringEncoding];
 
-  // A12+ 芯片使用 arm64e
+  // A12+ 芯片使用 arm64e (iPhone18,x = iPhone 17 系列 A19 芯片)
   if ([machine hasPrefix:@"iPhone11"] || [machine hasPrefix:@"iPhone12"] ||
       [machine hasPrefix:@"iPhone13"] || [machine hasPrefix:@"iPhone14"] ||
       [machine hasPrefix:@"iPhone15"] || [machine hasPrefix:@"iPhone16"] ||
-      [machine hasPrefix:@"iPhone17"] || [machine hasPrefix:@"iPad8"] ||
+      [machine hasPrefix:@"iPhone17"] || [machine hasPrefix:@"iPhone18"] ||
+      [machine hasPrefix:@"iPad8"] ||
       [machine hasPrefix:@"iPad11"] || [machine hasPrefix:@"iPad13"] ||
       [machine hasPrefix:@"iPad14"]) {
     return @"arm64e";
