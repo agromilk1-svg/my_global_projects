@@ -377,6 +377,29 @@ const toggleFolder = (path: string) => {
     }
 };
 
+const isRefreshingFiles = ref(false);
+
+const handleRefreshFiles = async () => {
+    if (isRefreshingFiles.value) return;
+    isRefreshingFiles.value = true;
+    try {
+        if (fileManagerTab.value === 'shared') {
+            await fetchSharedFiles();
+        } else {
+            await fetchOnetimeGroups();
+        }
+        // 轻量提示
+        console.log('文件列表刷新成功');
+    } catch (err) {
+        console.error('刷新失败', err);
+    } finally {
+        // 给一个视觉上的缓冲感，至少转一下
+        setTimeout(() => {
+            isRefreshingFiles.value = false;
+        }, 500);
+    }
+};
+
 const fetchSharedFiles = async () => {
   try {
     const res = await authFetch(`${apiBase}/files`);
@@ -7032,16 +7055,24 @@ M27|ig_user|ig_pass|||com.burbn.instagram|IG"
                     </button>
                 </div>
                 
-                <div v-if="isSuperAdmin" class="flex gap-3 items-center">
-                    <button v-if="fileManagerTab === 'onetime'" @click="scanLocalFiles" class="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold transition-all bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-900/30 hover:shadow-indigo-800/40" title="扫描录入外部文件目录">
-                        🔍 母舰兵工厂扫描
+                <div class="flex gap-3 items-center">
+                    <button @click="handleRefreshFiles" :disabled="isRefreshingFiles" 
+                            class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold transition-all bg-gray-800/80 hover:bg-gray-700 text-gray-300 border border-gray-700 hover:border-gray-600 shadow-lg shadow-black/20 disabled:opacity-50">
+                        <span :class="['transition-all inline-block', isRefreshingFiles ? 'animate-spin' : '']">🔄</span>
+                        <span class="hidden sm:inline">刷新</span>
                     </button>
-                    <label v-if="fileManagerTab === 'shared'" class="cursor-pointer">
-                        <input type="file" class="hidden" @change="uploadSharedFile" :disabled="fileUploading" />
-                        <span :class="['inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold transition-all', fileUploading ? 'bg-gray-700 text-gray-500 cursor-wait' : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/30 hover:shadow-emerald-800/40']">
-                            {{ fileUploading ? '⏳ 上传中...' : '📤 播种基建文件' }}
-                        </span>
-                    </label>
+
+                    <div v-if="isSuperAdmin" class="flex gap-3 items-center">
+                        <button v-if="fileManagerTab === 'onetime'" @click="scanLocalFiles" class="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold transition-all bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-900/30 hover:shadow-indigo-800/40" title="扫描录入外部文件目录">
+                            🔍 母舰兵工厂扫描
+                        </button>
+                        <label v-if="fileManagerTab === 'shared'" class="cursor-pointer">
+                            <input type="file" class="hidden" @change="uploadSharedFile" :disabled="fileUploading" />
+                            <span :class="['inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold transition-all', fileUploading ? 'bg-gray-700 text-gray-500 cursor-wait' : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/30 hover:shadow-emerald-800/40']">
+                                {{ fileUploading ? '⏳ 上传中...' : '📤 播种基建文件' }}
+                            </span>
+                        </label>
+                    </div>
                 </div>
             </div>
 

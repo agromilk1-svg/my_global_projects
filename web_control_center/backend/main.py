@@ -962,8 +962,10 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
         # [v1742] 增加模糊匹配回退，与 SCRIPT 处理器对齐
         _ws = ACTIVE_TUNNELS.get(req.udid)
         if not _ws:
+            # [v2140] 增强模糊匹配：改为不区分大小写
+            _search_udid = req.udid.upper()
             for tk, tw in ACTIVE_TUNNELS.items():
-                if req.udid in tk or tk in req.udid:
+                if _search_udid in tk.upper() or tk.upper() in _search_udid:
                     _ws = tw
                     break
         
@@ -979,8 +981,9 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                     await asyncio.sleep(0.5)
                     _ws = ACTIVE_TUNNELS.get(req.udid)
                     if not _ws:
+                        _search_udid = req.udid.upper()
                         for tk, tw in ACTIVE_TUNNELS.items():
-                            if req.udid in tk or tk in req.udid:
+                            if _search_udid in tk.upper() or tk.upper() in _search_udid:
                                 _ws = tw
                                 break
                     if _ws:
@@ -1082,6 +1085,10 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
 
     try:
         # [v1682.11] 统合路由准备
+        # [v2140] 标准化 UDID 处理：强制转大写并去除空格，防止因大小写不一致导致的寻址失败
+        if req.udid:
+            req.udid = req.udid.upper().strip()
+
         if not req.udid and not req.ecmain_url:
             return {"status": "error", "msg": "Neither UDID nor WLAN IP provided"}
             
@@ -1633,8 +1640,10 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
              # ===== 兜底通道：WS 隧道（纯远程或 USB/LAN 全失败后的最后手段）=====
              _script_ws = ACTIVE_TUNNELS.get(req.udid)
              if not _script_ws:
+                 # [v2140] 增强模糊匹配：改为不区分大小写
+                 _search_udid = req.udid.upper()
                  for tk, tw in ACTIVE_TUNNELS.items():
-                     if req.udid in tk or tk in req.udid:
+                     if _search_udid in tk.upper() or tk.upper() in _search_udid:
                          _script_ws = tw
                          logging.info(f"[SCRIPT] 模糊匹配隧道成功: req.udid={req.udid} → tunnel_key={tk}")
                          break
@@ -1666,8 +1675,8 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                      logging.error(f"[SCRIPT] WS 隧道发送失败 ({req.udid}): {ws_err}")
              
              # 三路全挂：输出详细诊断信息
-             logging.error(f"[SCRIPT] 三通道全部失败! udid={req.udid}, tunnels={list(ACTIVE_TUNNELS.keys())}, dev={'exists' if dev else 'None'}, wlan_ip={wlan_ip}")
-             return {"status": "error", "msg": f"No valid channel (WS/USB/LAN) to deliver script payload. Active tunnels: {list(ACTIVE_TUNNELS.keys())}"}
+             logging.error(f"[SCRIPT] 三通道全部失败! udid={req.udid}, connection_mode={req.connection_mode}, tunnels={list(ACTIVE_TUNNELS.keys())}, dev={'exists' if dev else 'None'}, wlan_ip={wlan_ip}")
+             return {"status": "error", "msg": f"No valid channel (WS/USB/LAN) for UDID [{req.udid}]. Active tunnels: {list(ACTIVE_TUNNELS.keys())}"}
              
         return {"status": "error", "msg": f"Unsupported action {req.action_type}"}
         
