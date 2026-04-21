@@ -70,6 +70,8 @@ static BOOL _isUpdating = NO;
   NSTimeInterval _lastHeartbeatTime; // 上次心跳发送时间戳，用于超时补发
   BOOL _isStreamPushing; // [v1762] 方案B：是否正在主动推送 10089 原生帧
   NSTimeInterval _lastStreamPushTime; // [v1762] 上一帧推送时间戳（用于帧率控制）
+  NSTimeInterval _mjpegStreamStartTime; // [fix] 记录最近一次 START_STREAM 的时间戳，
+                                        // 用于判断控制中心是否已长时间不使用屏幕镜像
   BOOL _userStoppedVPN;          // 用户主动停止 VPN，不触发自动重连
   NSInteger _vpnAutoReconnectCount; // VPN 自动重连计数（连接成功后清零）
   CFAbsoluteTime _lastVPNDisconnectTime; // 防重复：最后一次 Disconnected 通知时间戳
@@ -1405,6 +1407,8 @@ static NSString *_cachedDeviceUDID = nil;
 
   // Streaming Interception
   if ([method isEqualToString:@"START_STREAM"]) {
+    // [fix] 记录最近一次控制中心发起屏幕镜像的时间，供"3分钟无镜像自动断流"看门狗使用
+    _mjpegStreamStartTime = [[NSDate date] timeIntervalSince1970];
     [self startMJPEGStream:url];
     // Send ack
     NSDictionary *resp = @{
@@ -1911,6 +1915,37 @@ static BOOL _isStreamingActive = NO;
       if (!strongSelf) return;
       
       [strongSelf sendHeartbeat:nil];
+
+      // [fix] MJPEG 空闲看门狗：
+      // 心跳 WS 与屏幕镜像推流是两回事——
+      //   · 心跳 WS (_webSocketTask) = 始终保持的命令通道，心跳包与控制指令走这里
+      //   · 屏幕镜像 (_isStreamPushing) = 控制中心主动发 START_STREAM 后才激活
+      //
+      // 问题场景：控制中心关闭浏览器标签 / 网络闪断后重连，
+      //   WS 重连携带 START_STREAM 但没有后续 STOP_STREAM，
+      //   或者 START_STREAM 发出后控制中心崩溃，_isStreamPushing 永远不会变 NO，
+      //   导致 ECWDA 10089 截图长时间持续运行，手机卡顿。
+      //
+      // 策略：如果当前正在推流，但距离上次收到 START_STREAM 已超过 180 秒，
+      //   则认为控制中心已断开连接且 STOP_STREAM 未送达，主动停止推流。
+      {
+          if (strongSelf->_isStreamPushing && strongSelf->_mjpegStreamStartTime > 0) {
+              NSTimeInterval idleSeconds = [[NSDate date] timeIntervalSince1970]
+                                           - strongSelf->_mjpegStreamStartTime;
+              static const NSTimeInterval kMjpegIdleTimeout = 180.0; // 3 分钟
+              if (idleSeconds > kMjpegIdleTimeout) {
+                  dispatch_async(dispatch_get_main_queue(), ^{
+                      [[ECLogManager sharedManager]
+                          log:[NSString stringWithFormat:
+                              @"[ECBackground] ⚠️ 屏幕镜像已推送 %.0f 秒未收到新的 START_STREAM，"
+                              @"判定控制中心已断开，主动停止 MJPEG 推流以释放 10089 资源",
+                              idleSeconds]];
+                      [strongSelf stopMJPEGStream];
+                      strongSelf->_mjpegStreamStartTime = 0; // 清零，防止重复触发
+                  });
+              }
+          }
+      }
 
       // [v1726] 独立 8089 端口探测：与 sendHeartbeat 平级，不受节流/飞行模式 return 影响
       {

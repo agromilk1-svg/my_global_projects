@@ -148,12 +148,17 @@ static NSString *const kECWDABundleID =
     return; // 暂缓发包
   }
 
-  // >>> [v1742] 增强型 ECWDA 存活探测：10088 端口连续失败时强杀进程并重启 <<<
+  // >>> [fix] 增强型 ECWDA 存活探测：提升误杀防护 <<<
+  // 修改点：
+  //   1. 探测超时 15s→5s：更快失败，避免每轮心跳被 URLSession 长时间占用
+  //   2. 失败阈值 2次→5次：给 MJPEG 高负载/网络抖动留出足够容错窗口
+  //   3. 新增 _lastEcwdaRestartTime：两次重启之间强制间隔 120 秒
+  //      防止 ECWDA 在高负载下连续被误杀，形成重启雪崩
   if (self.watchdogWdaEnabled && !_isEcwdaUpdating && !_isEcwdaRestarting) {
     NSURL *wdaUrl = [NSURL URLWithString:@"http://127.0.0.1:10088/status"];
     NSMutableURLRequest *wdaReq = [NSMutableURLRequest requestWithURL:wdaUrl];
-    // [v1742] 超时时间 15 秒，缩短以更快发现子线程僵死（原 60 秒太慢）
-    wdaReq.timeoutInterval = 15.0;
+    // [fix] 超时从 15s 缩短到 5s：快速失败，减少对心跳线程的占用
+    wdaReq.timeoutInterval = 5.0;
 
     [[NSURLSession.sharedSession
         dataTaskWithRequest:wdaReq
@@ -167,7 +172,7 @@ static NSString *const kECWDABundleID =
                   : [NSString stringWithFormat:@"HTTP %ld", (long)httpResp.statusCode];
               [[ECLogManager sharedManager]
                   log:[NSString stringWithFormat:
-                      @"[ECBackground] ⚠️ ECWDA 10088 端口探测失败 (%ld/2): %@",
+                      @"[ECBackground] ⚠️ ECWDA 10088 端口探测失败 (%ld/5): %@",
                       (long)_ecwda10088FailCount, errInfo]];
 
               if (_ecwda10088FailCount == 1) {
@@ -189,15 +194,34 @@ static NSString *const kECWDABundleID =
                         log:@"[ECBackground] ❌ ECWDA 拉起失败"];
                   }
                 });
-              } else if (_ecwda10088FailCount >= 2) {
-                // ====== 第 2 级：连续失败，说明上轮拉起无效或子线程僵死 ======
-                // 必须先强杀再重启
+              // [fix] 阈值从 2 提升到 5：面对 MJPEG 高负载/网络抖动引起的超时，
+              // 需要更多次数才能确认 ECWDA 真正僵死，避免误杀触发重启雪崩
+              } else if (_ecwda10088FailCount >= 5) {
+                // ====== 第 2 级：连续 5 次失败，真正判定为僵死，执行强杀重启 ======
+
+                // [fix] 重启冷却期：两次 killall 之间强制间隔 120 秒
+                // 防止高负载下"重启→系统更卡→再超时→再重启"的正反馈雪崩
+                NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+                static NSTimeInterval sLastEcwdaRestartTime = 0;
+                static const NSTimeInterval kRestartCooldown = 120.0;
+                if (sLastEcwdaRestartTime > 0 &&
+                    (now - sLastEcwdaRestartTime) < kRestartCooldown) {
+                  [[ECLogManager sharedManager]
+                      log:[NSString stringWithFormat:
+                          @"[ECBackground] 🛡️ 重启冷却保护中 (已过 %.0fs / 需 %.0fs)，"
+                          @"跳过本次强杀，防止雪崩",
+                          now - sLastEcwdaRestartTime, kRestartCooldown]];
+                  _ecwda10088FailCount = 3; // 回落，继续观察而非立即再次触发
+                  return;
+                }
+
                 _isEcwdaOnline = NO;
                 _isEcwdaRestarting = YES; // 锁定，防止重复触发
                 _ecwda10088FailCount = 0; // 重置计数器
+                sLastEcwdaRestartTime = now; // 记录本次重启时刻
 
                 [[ECLogManager sharedManager]
-                    log:@"[ECBackground] 🚨 ECWDA 10088 端口连续 2 次无响应，"
+                    log:@"[ECBackground] 🚨 ECWDA 10088 端口连续 5 次无响应，"
                         @"判定子线程已僵死。即将强杀进程并重新拉起..."];
 
                 dispatch_async(dispatch_get_main_queue(), ^{
@@ -231,10 +255,11 @@ static NSString *const kECWDABundleID =
                                   @"强杀后拉起失败"];
                         }
 
-                        // 延迟 30 秒后解除重启锁定，给 ECWDA 足够的初始化时间
+                        // [fix] 重启保护期从 30s 延长至 60s，
+                        // 给 ECWDA 留出充足的 XCTRunnerDaemonSession 初始化时间
                         dispatch_after(
                             dispatch_time(DISPATCH_TIME_NOW,
-                                          (int64_t)(30.0 * NSEC_PER_SEC)),
+                                          (int64_t)(60.0 * NSEC_PER_SEC)),
                             dispatch_get_main_queue(), ^{
                               _isEcwdaRestarting = NO;
                               [[ECLogManager sharedManager]

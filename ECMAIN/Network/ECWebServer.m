@@ -16,6 +16,23 @@
 @property(assign, nonatomic) CFRunLoopRef serverRunLoop; // [v1726] 后台 RunLoop
 @end
 
+static NSString *formatFileSize(long long size) {
+    if (size < 1024) return [NSString stringWithFormat:@"%lld B", size];
+    if (size < 1024 * 1024) return [NSString stringWithFormat:@"%.1f KB", size / 1024.0];
+    if (size < 1024 * 1024 * 1024) return [NSString stringWithFormat:@"%.1f MB", size / (1024.0 * 1024.0)];
+    return [NSString stringWithFormat:@"%.1f GB", size / (1024.0 * 1024.0 * 1024.0)];
+}
+
+static NSString *formatFileDate(NSDate *date) {
+    static NSDateFormatter *formatter;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        formatter = [[NSDateFormatter alloc] init];
+        formatter.dateFormat = @"yyyy-MM-dd HH:mm:ss";
+    });
+    return [formatter stringFromDate:date];
+}
+
 @implementation ECWebServer
 
 + (instancetype)sharedServer {
@@ -245,20 +262,28 @@ void handleRequest(int socket) {
     currentBodyLength += len;
   }
 
-  NSString *request = [[NSString alloc] initWithData:requestData
-                                            encoding:NSUTF8StringEncoding];
-  if (!request) {
-    close(socket);
-    return;
+  // Separate Header and Body.
+  NSData *crlf2 = [@"\r\n\r\n" dataUsingEncoding:NSUTF8StringEncoding];
+  NSRange bStart = [requestData rangeOfData:crlf2 options:0 range:NSMakeRange(0, requestData.length)];
+  if (bStart.location == NSNotFound) {
+      close(socket);
+      return;
   }
+  
+  NSData *headerData = [requestData subdataWithRange:NSMakeRange(0, bStart.location + 4)];
+  NSData *bodyData = [requestData subdataWithRange:NSMakeRange(bStart.location + 4, requestData.length - (bStart.location + 4))];
+  
+  NSString *headerStr = [[NSString alloc] initWithData:headerData encoding:NSUTF8StringEncoding];
+  if (!headerStr) headerStr = [[NSString alloc] initWithData:headerData encoding:NSASCIIStringEncoding];
+  if (!headerStr) { close(socket); return; }
 
+  NSString *request = headerStr; // Compatibility
+  NSArray *lines = [headerStr componentsSeparatedByString:@"\r\n"];
+  NSString *firstLine = lines.count > 0 ? lines[0] : @"";
+  
   NSLog(@"[ECWebServer] ====== HTTP REQUEST ======");
-  NSLog(@"[ECWebServer] Raw request length: %lu bytes",
-        (unsigned long)requestData.length);
-
-  // 解析第一行以获取 Method 和 Path
-  NSString *firstLine = [[request componentsSeparatedByString:@"\r\n"] firstObject];
   NSLog(@"[ECWebServer] Request Line: %@", firstLine);
+  NSLog(@"[ECWebServer] Body length: %lu bytes", (unsigned long)bodyData.length);
 
   // Check for GET /ping
   if ([request hasPrefix:@"GET /ping"]) {
@@ -307,31 +332,116 @@ void handleRequest(int socket) {
                   NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:absPath error:nil];
                   files = [files sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
                   
-                  NSMutableString *html = [NSMutableString stringWithString:@"<html><head><meta charset='utf-8'><title>Root FS Explorer</title><meta name='viewport' content='width=device-width, initial-scale=1.0'><style>body{font-family:-apple-system,sans-serif;padding:20px;background:#f5f5f7}li{margin:8px 0;display:flex;align-items:center;padding:8px;background:#fff;border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,0.1)}a{flex:1;color:#007aff;text-decoration:none;word-break:break-all}a:hover{text-decoration:underline}.del-btn{background:#ff3b30;color:#fff;border:none;border-radius:4px;padding:4px 8px;margin-left:10px;cursor:pointer}.del-btn:active{background:#d32f2f}.head-bar{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;font-size:14px;word-break:break-all;gap:10px}.refresh-btn{background:#007aff;color:#fff;border:none;border-radius:6px;padding:8px 16px;cursor:pointer;font-size:14px;white-space:nowrap}</style></head><body>"];
+                  NSMutableString *html = [NSMutableString stringWithString:@"<html><head><meta charset='utf-8'><title>Root FS Explorer</title><meta name='viewport' content='width=device-width, initial-scale=1.0'><style>body{font-family:-apple-system,system-ui,sans-serif;margin:0;padding:0;background:#f0f2f5;color:#1c1e21}.container{max-width:1000px;margin:20px auto;background:#fff;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,0.1);overflow:hidden;position:relative}header{padding:20px;background:#007aff;color:#fff;display:flex;justify-content:space-between;align-items:center}header h2{margin:0;font-size:20px;word-break:break-all;flex:1}.shortcuts{padding:10px 20px;background:#fff;border-bottom:1px solid #eee;display:flex;gap:10px;flex-wrap:wrap}.shortcut-btn{text-decoration:none;background:#f0f2f5;color:#007aff;padding:6px 12px;border-radius:20px;font-size:13px;font-weight:500;transition:all 0.2s}.shortcut-btn:hover{background:#007aff;color:#fff}.upload-zone{padding:20px;background:#f8f9fa;border-bottom:1px solid #eee;display:flex;flex-direction:column;gap:10px}.batch-actions{padding:10px 20px;background:#fff;border-bottom:1px solid #eee;display:none;align-items:center;gap:15px;position:sticky;top:0;z-index:10;box-shadow:0 2px 8px rgba(0,0,0,0.05)}#progress-container{width:100%;background:#e0e0e0;border-radius:10px;height:20px;overflow:hidden;display:none;margin-top:10px}#progress-bar{height:100%;background:linear-gradient(90deg, #007aff, #5856d6);width:0%;transition:width 0.1s ease;display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px}table{width:100%;border-collapse:collapse}th{text-align:left;background:#f8f9fa;padding:12px 15px;font-size:13px;color:#65676b;text-transform:uppercase;border-bottom:1px solid #eee}td{padding:12px 15px;border-bottom:1px solid #f0f2f5;vertical-align:middle}tr:hover{background:#f1f8ff}.name{display:flex;align-items:center;gap:10px;text-decoration:none;color:#007aff;font-weight:500}.size,.time{font-size:13px;color:#65676b}.actions{text-align:right}.btn{border:none;border-radius:6px;padding:8px 16px;cursor:pointer;font-size:14px;transition:all 0.2s}.btn-refresh{background:rgba(255,255,255,0.2);color:#fff;border:1px solid rgba(255,255,255,0.3)}.btn-refresh:hover{background:rgba(255,255,255,0.3)}.btn-upload{background:#007aff;color:#fff}.btn-upload:hover{background:#0056b3}.btn-del{background:#ff3b30;color:#fff;padding:4px 8px;font-size:12px}.btn-del:hover{background:#d32f2f}.btn-batch-del{background:#ff3b30;color:#fff;font-weight:bold}input[type='file']{font-size:14px;color:#65676b}input[type='checkbox']{width:18px;height:18px;cursor:pointer}</style></head><body>"];
                   
-                  [html appendFormat:@"<div class='head-bar'><h2>📁 %@</h2><button class='refresh-btn' onclick='location.reload()'>🔄 刷新</button></div><ul style='list-style:none;padding:0'>", absPath];
+                  [html appendFormat:@"<div class='container'><header><h2>📁 %@</h2><button class='btn btn-refresh' onclick='location.reload()'>🔄 刷新</button></header>", absPath];
+                  
+                  // Shortcuts
+                  NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
+                  NSString *dataPath = NSHomeDirectory();
+                  NSString *sharedPath = [[NSFileManager defaultManager] containerURLForSecurityApplicationGroupIdentifier:@"group.com.ecmain.shared"].path;
+                  NSString *mediaPath = @"/var/mobile/Media/DCIM";
+                  if (![[NSFileManager defaultManager] fileExistsAtPath:mediaPath]) mediaPath = @"/var/mobile/Media";
+
+                  NSString* (^encode)(NSString*) = ^NSString*(NSString *p) {
+                      return [p stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]];
+                  };
+
+                  [html appendString:@"<div class='shortcuts'>"];
+                  [html appendFormat:@"<a href='/files%@' class='shortcut-btn'>🖼️ 相册</a>", encode(mediaPath)];
+                  [html appendFormat:@"<a href='/files%@' class='shortcut-btn'>📂 Data 目录</a>", encode(dataPath)];
+                  [html appendFormat:@"<a href='/files%@' class='shortcut-btn'>📦 Bundle 目录</a>", encode(bundlePath)];
+                  if (sharedPath) {
+                      [html appendFormat:@"<a href='/files%@' class='shortcut-btn'>🤝 共享容器</a>", encode(sharedPath)];
+                  }
+                  [html appendString:@"</div>"];
+                  
+                  // Batch Actions Bar
+                  [html appendString:@"<div class='batch-actions' id='batchBar'><input type='checkbox' id='selectAll' onclick='toggleAll(this)'> <span id='selectedCount' style='flex:1;font-size:14px;color:#1c1e21'>已选择 0 项</span> <button class='btn btn-batch-del' onclick='batchDelete()'>🗑️ 批量强力删除</button></div>"];
+
+                  // Upload form with Progress
+                  [html appendFormat:@"<div class='upload-zone'><div style='display:flex;gap:10px;align-items:center'><input type='file' id='fileInput' name='file'><button type='button' class='btn btn-upload' onclick='handleUpload()'>🚀 开始上传</button></div><div id='progress-container'><div id='progress-bar'>0%%</div></div></div>", absPath];
+                  
+                  [html appendString:@"<table><thead><tr><th style='width:40px'></th><th>名称</th><th>大小</th><th>修改时间</th><th class='actions'>操作</th></tr></thead><tbody id='fileList'>"];
                   
                   if (![absPath isEqualToString:@"/"]) {
                       NSString *parentPath = [absPath stringByDeletingLastPathComponent];
                       if (parentPath.length == 0) parentPath = @"/";
                       NSString *parentEncoded = [parentPath stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]];
                       NSString *hrefUrl = [parentEncoded isEqualToString:@"/"] ? @"/files" : [NSString stringWithFormat:@"/files%@", parentEncoded];
-                      [html appendFormat:@"<li style='background:#e5e5ea'><a href='%@'>📁 ../ (返回上级目录)</a></li>", hrefUrl];
+                      [html appendFormat:@"<tr><td></td><td><a href='%@' class='name'>📁 ../ (返回上级目录)</a></td><td>-</td><td>-</td><td></td></tr>", hrefUrl];
                   }
                   
                   for (NSString *f in files) {
                       NSString *fullChildPath = [absPath isEqualToString:@"/"] ? [@"/" stringByAppendingString:f] : [absPath stringByAppendingPathComponent:f];
-                      BOOL childIsDir = NO;
-                      [[NSFileManager defaultManager] fileExistsAtPath:fullChildPath isDirectory:&childIsDir];
+                      NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:fullChildPath error:nil];
+                      BOOL childIsDir = [[attrs fileType] isEqualToString:NSFileTypeDirectory];
+                      
                       NSString *icon = childIsDir ? @"📁" : @"📄";
+                      NSString *sizeStr = childIsDir ? @"-" : formatFileSize([attrs fileSize]);
+                      NSString *timeStr = formatFileDate([attrs fileModificationDate]);
                       
                       NSString *encodedPath = [fullChildPath stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]];
                       
-                      [html appendFormat:@"<li><a href='/files%@'>%@ %@</a><button class='del-btn' data-file='%@' onclick=\"if(confirm('强暴删除警告: 确定删除 %@ 吗？不可恢复！')) { fetch('/files'+this.dataset.file, {method:'DELETE'}).then(()=>location.reload()); }\">直接删除</button></li>", encodedPath, icon, f, encodedPath, f];
+                      [html appendFormat:@"<tr><td><input type='checkbox' class='file-check' data-path='%@' onclick='updateBatchBar()'></td><td><a href='/files%@' class='name'>%@ %@</a></td><td class='size'>%@</td><td class='time'>%@</td><td class='actions'><button class='btn btn-del' data-file='%@' onclick=\"if(confirm('警告: 确定删除 %@ 吗？不可恢复！')) { fetch('/files'+this.dataset.file, {method:'DELETE'}).then(()=>location.reload()); }\">删除</button></td></tr>", encodedPath, encodedPath, icon, f, sizeStr, timeStr, encodedPath, f];
                   }
                   
-                  if (files.count == 0) [html appendString:@"<li style='color:#888;justify-content:center'>( Empty Directory )</li>"];
-                  [html appendString:@"</ul></body></html>"];
+                  if (files.count == 0) [html appendString:@"<tr><td colspan='5' style='text-align:center;color:#888;padding:20px'>( 空目录 )</td></tr>"];
+                  
+                  // Add Scripts
+                  [html appendString:@"</tbody></table></div>"];
+                  [html appendString:@"<script> \
+                    function toggleAll(el) { \
+                        document.querySelectorAll('.file-check').forEach(c => c.checked = el.checked); \
+                        updateBatchBar(); \
+                    } \
+                    function updateBatchBar() { \
+                        const checks = document.querySelectorAll('.file-check:checked'); \
+                        const bar = document.getElementById('batchBar'); \
+                        const count = document.getElementById('selectedCount'); \
+                        if (checks.length > 0) { \
+                            bar.style.display = 'flex'; \
+                            count.innerText = '已选择 ' + checks.length + ' 项'; \
+                        } else { \
+                            bar.style.display = 'none'; \
+                        } \
+                    } \
+                    function batchDelete() { \
+                        const checks = document.querySelectorAll('.file-check:checked'); \
+                        if (!confirm('确定批量删除这 ' + checks.length + ' 项吗？删除后不可恢复！')) return; \
+                        const paths = Array.from(checks).map(c => c.dataset.path); \
+                        let completed = 0; \
+                        paths.forEach(p => { \
+                            fetch('/files' + p, {method:'DELETE'}).then(() => { \
+                                completed++; \
+                                if (completed === paths.length) location.reload(); \
+                            }); \
+                        }); \
+                    } \
+                    function handleUpload() { \
+                        const input = document.getElementById('fileInput'); \
+                        if (input.files.length === 0) return; \
+                        const file = input.files[0]; \
+                        const xhr = new XMLHttpRequest(); \
+                        const formData = new FormData(); \
+                        formData.append('file', file); \
+                        const pContainer = document.getElementById('progress-container'); \
+                        const pBar = document.getElementById('progress-bar'); \
+                        pContainer.style.display = 'block'; \
+                        xhr.upload.onprogress = (e) => { \
+                            if (e.lengthComputable) { \
+                                const percent = Math.round((e.loaded / e.total) * 100); \
+                                pBar.style.width = percent + '%'; \
+                                pBar.innerText = percent + '%'; \
+                            } \
+                        }; \
+                        xhr.onreadystatechange = () => { \
+                            if (xhr.readyState === 4) location.reload(); \
+                        }; \
+                        xhr.open('POST', window.location.pathname, true); \
+                        xhr.send(formData); \
+                    } \
+                  </script></body></html>"];
                   
                   NSString *header = [NSString stringWithFormat:@"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: %lu\r\nConnection: close\r\n\r\n", (unsigned long)[html lengthOfBytesUsingEncoding:NSUTF8StringEncoding]];
                   send(socket, [header UTF8String], header.length, 0);
@@ -405,6 +515,93 @@ void handleRequest(int socket) {
               send(socket, resp404, strlen(resp404), 0);
           }
       }
+      close(socket);
+      return;
+  }
+
+  // Check for POST /files (文件上传)
+  if ([request hasPrefix:@"POST /files"]) {
+      NSLog(@"[ECWebServer] Matched: POST /files (Upload)");
+      NSString *targetDir = @"/";
+      NSArray *routeParts = [firstLine componentsSeparatedByString:@" "];
+      if (routeParts.count >= 2) {
+          NSString *routePath = routeParts[1];
+          if (routePath.length > 6) {
+              targetDir = [[routePath substringFromIndex:6] stringByRemovingPercentEncoding];
+              if (![targetDir hasPrefix:@"/"]) targetDir = [@"/" stringByAppendingString:targetDir];
+          }
+      }
+      
+      // Get boundary from headerStr
+      NSString *boundary = nil;
+      NSRange ctRange = [headerStr rangeOfString:@"Content-Type: multipart/form-data; boundary=" options:NSCaseInsensitiveSearch];
+      if (ctRange.location == NSNotFound) {
+          // Alternative check for Header
+          for (NSString *line in lines) {
+              if ([line rangeOfString:@"boundary=" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                  boundary = [[line componentsSeparatedByString:@"boundary="] lastObject];
+                  break;
+              }
+          }
+      } else {
+          NSString *afterBoundary = [headerStr substringFromIndex:ctRange.location + ctRange.length];
+          boundary = [[afterBoundary componentsSeparatedByString:@"\r\n"] firstObject];
+      }
+      
+      if (boundary) {
+          NSString *boundaryStr = [NSString stringWithFormat:@"--%@", boundary];
+          NSData *boundaryData = [boundaryStr dataUsingEncoding:NSUTF8StringEncoding];
+          
+          // Find first boundary in bodyData
+          NSRange firstBoundaryPos = [bodyData rangeOfData:boundaryData options:0 range:NSMakeRange(0, bodyData.length)];
+          if (firstBoundaryPos.location != NSNotFound) {
+              // Extract part header (after boundary, before \r\n\r\n)
+              NSData *crlfcrlfData = [@"\r\n\r\n" dataUsingEncoding:NSUTF8StringEncoding];
+              NSUInteger partSearchStart = firstBoundaryPos.location + firstBoundaryPos.length;
+              NSRange partHeaderEnd = [bodyData rangeOfData:crlfcrlfData options:0 range:NSMakeRange(partSearchStart, bodyData.length - partSearchStart)];
+              
+              if (partHeaderEnd.location != NSNotFound) {
+                  NSData *partHeaderData = [bodyData subdataWithRange:NSMakeRange(partSearchStart, partHeaderEnd.location - partSearchStart)];
+                  NSString *partHeaderStr = [[NSString alloc] initWithData:partHeaderData encoding:NSUTF8StringEncoding];
+                  if (!partHeaderStr) partHeaderStr = [[NSString alloc] initWithData:partHeaderData encoding:NSASCIIStringEncoding];
+                  
+                  NSRange fnRange = [partHeaderStr rangeOfString:@"filename=\""];
+                  if (fnRange.location != NSNotFound) {
+                      NSString *afterFn = [partHeaderStr substringFromIndex:fnRange.location + 10];
+                      NSString *filename = [[afterFn componentsSeparatedByString:@"\""] firstObject];
+                      
+                      if (filename.length > 0) {
+                          NSUInteger fileContentStart = partHeaderEnd.location + 4;
+                          NSRange nextBoundaryRange = [bodyData rangeOfData:boundaryData options:0 range:NSMakeRange(fileContentStart, bodyData.length - fileContentStart)];
+                          
+                          if (nextBoundaryRange.location != NSNotFound) {
+                              // Data ends before next boundary (-2 for \r\n)
+                              NSData *finalFileData = [bodyData subdataWithRange:NSMakeRange(fileContentStart, nextBoundaryRange.location - fileContentStart - 2)];
+                              
+                              NSString *finalPath = [targetDir stringByAppendingPathComponent:filename];
+                              NSLog(@"[ECWebServer] Saving Binary Upload: %@ (Size: %lu bytes)", finalPath, (unsigned long)finalFileData.length);
+                              
+                              BOOL saved = [finalFileData writeToFile:finalPath atomically:YES];
+                              if (saved) {
+                                  // For AJAX, return 200 OK
+                                  const char *resp200 = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK";
+                                  send(socket, resp200, strlen(resp200), 0);
+                              } else {
+                                  NSLog(@"[ECWebServer] ERROR: Permission denied or Path invalid for %@", finalPath);
+                                  const char *resp500 = "HTTP/1.1 500 Internal Server Error (Write Failed)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                                  send(socket, resp500, strlen(resp500), 0);
+                              }
+                              close(socket);
+                              return;
+                          }
+                      }
+                  }
+              }
+          }
+      }
+      
+      const char *resp400 = "HTTP/1.1 400 Bad Request (Multipart Parse Error)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+      send(socket, resp400, strlen(resp400), 0);
       close(socket);
       return;
   }

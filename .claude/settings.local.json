@@ -6,7 +6,18 @@
       "Bash(xcode-select:*)",
       "Bash(sudo xcode-select:*)",
       "Bash(xcodebuild build:*)",
-      "Bash(export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer:*)"
+      "Bash(export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer:*)",
+      "Bash(find Payload/TikTok.app -name *.framework -o -name *.dylib)",
+      "Bash(find Payload/TikTok.app -name *hook* -o -name *tamper* -o -name *integrity* -o -name *verify*)",
+      "Bash(find Payload/TikTok.app -name *.o -o -name *.enc -o -name *.crypt)",
+      "Bash(openssl dgst:*)",
+      "Bash(xxd)",
+      "Bash(grep -r \"APP_STORE_APP_ID\\\\|AppAttest\\\\|DeviceCheck\" Payload/TikTok.app --include=*.plist --include=*.m --include=*.h)",
+      "Bash(grep -r \"hook\\\\|fishhook\\\\|fstrcat\" Payload/TikTok.app --include=*.h --include=*.m)",
+      "Bash(grep -rl \"integrity\\\\|sha\\\\|checksum\\\\|hash\\\\|verify\" Payload/TikTok.app --include=*.m --include=*.h)",
+      "Bash(grep -r \"libmobileg\\\\|mobileg\\\\|gmock\\\\|libfak\\\\|dyld\\\\|cptrace\" Payload/TikTok.app --include=*.framework)",
+      "Bash(grep -r \"atexit\\\\|pthread\\\\|lwp\\\\|proc\\\\|task\\\\|ptrace\" Payload/TikTok.app/Frameworks --include=*.framework)",
+      "Bash(grep -r \"DYLD\\\\|LD_PRELOAD\\\\|LD_LIBRARY_PATH\" Payload/TikTok.app --include=*.m --include=*.h)"
     ]
   }
 }

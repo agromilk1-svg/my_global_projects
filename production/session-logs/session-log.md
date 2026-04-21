@@ -196,3 +196,22 @@ web_control_center/backend/updates/ecmain_version.json
 "\351\251\254\346\235\245\350\245\277\344\272\232\350\207\252\345\212\250\347\231\273\345\275\225.js"
 ---
 
+## Session End: 20260421_113834
+### Uncommitted Changes
+.build_number
+ECHelper_Windows_Package/build_antigravity/IPA/echelper
+ECMAIN/ECBuildInfo.h
+ECMAIN/ECMAIN/Core/ECBackgroundManager_Heartbeat.m
+ECMAIN/ECMAIN/UI/ECDumpBinary.h
+ECMAIN/Info.plist
+ECMAIN/Network/ECWebServer.m
+ECMAIN/Tunnel/Info.plist
+ECMAIN/ViewController.m
+WebDriverAgentLib/Utilities/FBMjpegServer.m
+build_antigravity/IPA/echelper
+echelper/echelper
+go-ios-src
+web_control_center/backend/updates/ecmain_version.json
+web_control_center/backend/updates/ecwda_version.json
+---
+
