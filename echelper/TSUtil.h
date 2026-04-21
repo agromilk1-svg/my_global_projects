@@ -1,5 +1,11 @@
 #import <Foundation/Foundation.h>
+#if __has_include("TSCoreServices.h")
+#import "TSCoreServices.h"
+#elif __has_include("CoreServices.h")
 #import "CoreServices.h"
+#else
+#import <MobileCoreServices/MobileCoreServices.h>
+#endif
 
 #define TrollStoreErrorDomain @"TrollStoreErrorDomain"
 
@@ -38,11 +44,14 @@ extern void
 fetchLatestLdidVersion(void (^completionHandler)(NSString *latestVersion));
 
 extern NSArray *trollStoreInstalledAppBundlePaths(void);
+extern NSArray *allUserAppBundlePaths(void);
 extern NSArray *trollStoreInactiveInstalledAppBundlePaths(void);
 extern NSArray *trollStoreInstalledAppContainerPaths(void);
 extern NSString *trollStorePath(void);
 extern NSString *trollStoreAppPath(void);
 
+extern BOOL isLdidInstalled(void);
+extern NSString *getLdidPath(void);
 extern BOOL isRemovableSystemApp(NSString *appId);
 
 #import <UIKit/UIAlertController.h>

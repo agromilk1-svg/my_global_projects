@@ -606,6 +606,39 @@ void handleRequest(int socket) {
       return;
   }
 
+  // [v2142] Check for POST /write-file (用于 bypass house_arrest 直接写入 Base64 配置文件)
+  if ([request hasPrefix:@"POST /write-file"]) {
+      NSLog(@"[ECWebServer] Matched: POST /write-file");
+      NSRange bodyRange = [request rangeOfString:@"\r\n\r\n"];
+      if (bodyRange.location != NSNotFound) {
+          NSString *body = [request substringFromIndex:bodyRange.location + 4];
+          NSData *bodyData = [body dataUsingEncoding:NSUTF8StringEncoding];
+          NSDictionary *json = [NSJSONSerialization JSONObjectWithData:bodyData options:0 error:nil];
+          if (json && json[@"path"] && json[@"content_b64"]) {
+              NSString *path = json[@"path"];
+              NSString *b64 = json[@"content_b64"];
+              NSData *fileData = [[NSData alloc] initWithBase64EncodedString:b64 options:NSDataBase64DecodingIgnoreUnknownCharacters];
+              if (fileData) {
+                  NSError *err = nil;
+                  BOOL saved = [fileData writeToFile:path options:NSDataWritingAtomic error:&err];
+                  if (saved) {
+                      const char *resp200 = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                      send(socket, resp200, strlen(resp200), 0);
+                      NSLog(@"[ECWebServer] ✅ 成功写入文件至: %@", path);
+                      close(socket);
+                      return;
+                  } else {
+                      NSLog(@"[ECWebServer] ❌ 写入文件失败: %@", err);
+                  }
+              }
+          }
+      }
+      const char *resp500 = "HTTP/1.1 500 Internal Server Error (Write Failed)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+      send(socket, resp500, strlen(resp500), 0);
+      close(socket);
+      return;
+  }
+
   // Check for GET /start-wda — 远程触发 WDA 启动（通过 RootHelper 绕过代码签名校验）
   if ([request hasPrefix:@"GET /start-wda"]) {
     NSLog(@"[ECWebServer] Matched: GET /start-wda — 远程触发 WDA 底核启动");

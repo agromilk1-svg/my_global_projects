@@ -1212,7 +1212,8 @@ const openAddAccountModal = (grp: any) => {
 const saveAccount = async () => {
   try {
     const body = {
-      country: editingAccount.value.device_country || '',
+      account: editingAccount.value.account || '',
+      country: editingAccount.value.country || '',
       following_count: parseInt(editingAccount.value.following_count) || 0,
       fans_count: parseInt(editingAccount.value.fans_count) || 0,
       likes_count: parseInt(editingAccount.value.likes_count) || 0,
@@ -1225,7 +1226,9 @@ const saveAccount = async () => {
       email: editingAccount.value.email || '',
       email_password: editingAccount.value.email_password || '',
       app_id: editingAccount.value.app_id || 'com.zhiliaoapp.musically',
-      account_type: editingAccount.value.account_type || 'TK'
+      account_type: editingAccount.value.account_type || 'TK',
+      is_following: editingAccount.value.is_following ? 1 : 0,
+      is_farming: editingAccount.value.is_farming ? 1 : 0
     };
     
     let res;

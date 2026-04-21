@@ -400,10 +400,7 @@ void setTSURLSchemeState(BOOL newState, NSString *customAppPath) {
 
 #ifdef TROLLSTORE_LITE
 
-BOOL isLdidInstalled(void) {
-  // Since TrollStore Lite depends on ldid, we assume it exists
-  return YES;
-}
+// isLdidInstalled 已统一定义在 TSUtil.m 中
 
 #else
 
@@ -437,14 +434,7 @@ void installLdid(NSString *ldidToCopyPath, NSString *ldidVersion) {
   NSLog(@"[RootHelper] installLdid: Success");
 }
 
-BOOL isLdidInstalled(void) {
-  NSString *ldidPath =
-      [trollStoreAppPath() stringByAppendingPathComponent:@"ldid"];
-  BOOL exists = [[NSFileManager defaultManager] fileExistsAtPath:ldidPath];
-  NSLog(@"[RootHelper] isLdidInstalled? Path: %@ | Exists: %@", ldidPath,
-        exists ? @"YES" : @"NO");
-  return exists;
-}
+// isLdidInstalled 已统一定义在 TSUtil.m 中
 
 #endif
 
@@ -1192,11 +1182,17 @@ int signApp(NSString *appPath, BOOL isUserInstall) {
   // all executables
   // XXX: This only works because we're using ldid at the moment and that
   // recursively signs everything
-  // ERROR 175 FIX: Disable recursive sign that fails on WDA bundles.
-  // We rely on the loop above (now including Frameworks) to sign everything.
-  // int r = signAdhoc(appPath, nil);
-  // if (r != 0)
-  //   return r;
+  // 【Antigravity 修复】为 WDA 添加包含判断，普通应用必须执行此递归签名
+  // 否则框架将保留原始证书，导致启动立刻被 AMFI crash
+  int r = signAdhoc(appPath, nil);
+  if (r != 0) {
+    if ([appPath containsString:@"WebDriverAgentRunner"]) {
+      NSLog(@"[signApp] Ignoring recursive sign failure (175) for WDA...");
+    } else {
+      NSLog(@"[signApp] Recursive signAdhoc failed with error: %d", r);
+      return r;
+    }
+  }
 
 #ifndef TROLLSTORE_LITE
   // Apply CoreTrust bypass
@@ -2002,7 +1998,9 @@ int installIpa(NSString *ipaPath, BOOL force, BOOL useInstalldMethod,
   }
 
   // Determine registration type
-  BOOL registerAsSystem = !shouldRegisterAsUserByDefault();
+  // 【Antigravity 恢复】在 iOS 15 下，/var/containers 中的应用默认必须是 User 类型
+  // 否则强制注册为 System 会被 LS 拒绝并标记为灰色占位符
+  BOOL registerAsSystem = NO;
   if (registrationType && registrationType.length > 0) {
     if ([registrationType isEqualToString:@"System"]) {
       registerAsSystem = YES;
@@ -2240,7 +2238,7 @@ int installTrollStore(NSString *pathToTar) {
 }
 
 void refreshAppRegistrations(BOOL system) {
-  // TrollStore itself is always System
+  // ECMAIN itself is always System
   registerPath(trollStoreAppPath(), NO, YES);
 
   // For installed apps, check entitlements to decide System vs User
@@ -2261,7 +2259,10 @@ void refreshAppRegistrations(BOOL system) {
           appPath.lastPathComponent, isSystemApp ? @"YES" : @"NO",
           isSystemApp ? @"System" : @"User");
 
-    registerPath(appPath, NO, isSystemApp);
+    // 【Antigravity 修复】强效修复机制：先卸载再注册
+    // 强制清除LaunchServices中可能存在的因之前的Bug造成的残余损坏状态
+    registerPath(appPath, YES, isSystemApp); // Unregister first
+    registerPath(appPath, NO, isSystemApp);  // Register clean
   }
 }
 
@@ -2823,7 +2824,8 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
       NSString *appPath = args.lastObject;
       ret = uninstallAppByPath(appPath, useCustomMethod);
     } else if ([cmd isEqualToString:@"refresh"]) {
-      refreshAppRegistrations(!shouldRegisterAsUserByDefault());
+      // 【Antigravity 修复】无条件强制 System 注册，防止重启后应用消失
+      refreshAppRegistrations(YES);
     } else if ([cmd isEqualToString:@"refresh-all"]) {
       cleanRestrictions();
       // refreshAppRegistrations(NO); // <- fixes app permissions resetting,
@@ -2837,8 +2839,9 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
           _LSPrivateRebuildApplicationDatabasesForSystemApps:YES
                                                     internal:YES
                                                         user:YES];
-      if (!shouldRegisterAsUserByDefault())
-        refreshAppRegistrations(YES);
+      // 【Antigravity 修复】无条件强制重新注册，不再依赖 shouldRegisterAsUserByDefault 条件判断
+      // 否则数据库被清空后应用全部消失且无法恢复
+      refreshAppRegistrations(YES);
       killall(@"backboardd", YES);
     } else if ([cmd isEqualToString:@"url-scheme"]) {
       if (args.count < 2)
@@ -3607,7 +3610,8 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
         [[NSFileManager defaultManager] removeItemAtPath:inactiveMarkerPath
                                                    error:nil];
 
-        registerPath(appBundlePath, 0, !shouldRegisterAsUserByDefault());
+        // 【Antigravity 修复】强制 System 注册
+        registerPath(appBundlePath, 0, YES);
 
         NSLog(@"Transfered %@!", appBundlePath);
       }

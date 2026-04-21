@@ -1,10 +1,19 @@
 #import "TSUtil.h"
 
-#import <Foundation/Foundation.h>
+// 兼容两个编译环境的头文件导入
+#if __has_include("TSCoreServices.h")
+#import "TSCoreServices.h"
+#elif __has_include("CoreServices.h")
+#import "CoreServices.h"
+#endif
+#if __has_include(<libroot.h>)
 #import <libroot.h>
+#else
+#import "libroot.h"
+#endif
 #import <mach-o/dyld.h>
 #import <spawn.h>
-#import <sys/stat.h> // Fixed: Import for chmod
+#import <sys/stat.h>
 #import <sys/sysctl.h>
 
 static EXPLOIT_TYPE gPlatformVulnerabilities;
@@ -93,6 +102,9 @@ void printMultilineNSString(NSString *stringToPrint) {
 
 int spawnRoot(NSString *path, NSArray *args, NSString **stdOut,
               NSString **stdErr) {
+  // 【权限自愈】TrollRestore 安装后二进制可能丢失执行权限，在此强制修复
+  chmod([path UTF8String], 0755);
+
   NSMutableArray *argsM = args.mutableCopy ?: [NSMutableArray new];
   [argsM insertObject:path atIndex:0];
 
@@ -156,16 +168,24 @@ int spawnRoot(NSString *path, NSArray *args, NSString **stdOut,
     int outPipe = out[0];
     int outErrPipe = outErr[0];
 
-    __block BOOL outEnabled = (BOOL)stdOut;
-    __block BOOL errEnabled = (BOOL)stdErr;
+    __block BOOL outEnabled = (stdOut != NULL);
+    __block BOOL errEnabled = (stdErr != NULL);
     dispatch_async(logQueue, ^{
       while (_isRunning) {
         @autoreleasepool {
           if (outEnabled) {
-            [outString appendString:getNSStringFromFile(outPipe)];
+            NSString *s = getNSStringFromFile(outPipe);
+            if (s.length > 0)
+              NSLog(@"[SPAWN] Read %lu bytes from STDOUT",
+                    (unsigned long)s.length);
+            [outString appendString:s];
           }
           if (errEnabled) {
-            [errString appendString:getNSStringFromFile(outErrPipe)];
+            NSString *s = getNSStringFromFile(outErrPipe);
+            if (s.length > 0)
+              NSLog(@"[SPAWN] Read %lu bytes from STDERR",
+                    (unsigned long)s.length);
+            [errString appendString:s];
           }
         }
       }
@@ -316,6 +336,17 @@ void fetchLatestLdidVersion(
   github_fetchLatestVersion(@"opa334/ldid", completionHandler);
 }
 
+NSString *getLdidPath(void) {
+  // 优先检查应用包内的 ldid（ECMAIN 内嵌）
+  NSString *bundleLdid = [[rootHelperPath() stringByDeletingLastPathComponent]
+      stringByAppendingPathComponent:@"ldid"];
+  if ([[NSFileManager defaultManager] fileExistsAtPath:bundleLdid]) {
+    return bundleLdid;
+  }
+  // 回退到 Documents 目录
+  return [trollStoreAppPath() stringByAppendingPathComponent:@"ldid"];
+}
+
 NSArray *trollStoreInstalledAppContainerPathsInternal(NSString *marker) {
   NSMutableArray *appContainerPaths = [NSMutableArray new];
 
@@ -339,18 +370,16 @@ NSArray *trollStoreInstalledAppContainerPathsInternal(NSString *marker) {
         [[NSFileManager defaultManager] fileExistsAtPath:containerPath
                                              isDirectory:&isDirectory];
     if (exists && isDirectory) {
-      NSString *trollStoreMark =
-          [containerPath stringByAppendingPathComponent:marker];
-      if ([[NSFileManager defaultManager] fileExistsAtPath:trollStoreMark]) {
-        NSString *trollStoreApp =
-            [containerPath stringByAppendingPathComponent:@"TrollStore.app"];
-        NSString *trollStoreLiteApp = [containerPath
-            stringByAppendingPathComponent:@"TrollStoreLite.app"];
-        if (![[NSFileManager defaultManager] fileExistsAtPath:trollStoreApp] &&
-            ![[NSFileManager defaultManager]
-                fileExistsAtPath:trollStoreLiteApp]) {
-          [appContainerPaths addObject:containerPath];
-        }
+      if (marker) {
+        NSString *trollStoreMark =
+            [containerPath stringByAppendingPathComponent:marker];
+        if ([[NSFileManager defaultManager] fileExistsAtPath:trollStoreMark]) {
+        // 【Antigravity 修复】不再排除 ECMAIN.app 自身
+        [appContainerPaths addObject:containerPath];
+      }
+      } else {
+        // Return all user apps
+        [appContainerPaths addObject:containerPath];
       }
     }
   }
@@ -371,6 +400,7 @@ NSArray *trollStoreInstalledAppBundlePathsInternal(NSString *marker) {
                                                             error:nil];
     if (!items)
       return nil;
+
     for (NSString *item in items) {
       if ([item.pathExtension isEqualToString:@"app"]) {
         [appPaths
@@ -385,30 +415,61 @@ NSArray *trollStoreInstalledAppBundlePaths(void) {
   return trollStoreInstalledAppBundlePathsInternal(TS_ACTIVE_MARKER);
 }
 
+NSArray *allUserAppBundlePaths(void) {
+  return trollStoreInstalledAppBundlePathsInternal(nil);
+}
+
 NSArray *trollStoreInactiveInstalledAppBundlePaths(void) {
   return trollStoreInstalledAppBundlePathsInternal(TS_INACTIVE_MARKER);
 }
 
+#import <dlfcn.h>
+
 NSString *trollStorePath() {
   NSError *mcmError;
-  NSLog(@"[TSUtil] trollStorePath checking APP_ID: %@", APP_ID);
-  MCMAppDataContainer *appContainer =
-      [MCMAppDataContainer containerWithIdentifier:APP_ID
-                                 createIfNecessary:NO
-                                           existed:NULL
-                                             error:&mcmError];
-  if (!appContainer) {
-    NSLog(@"[TSUtil] Error getting container for %@: %@", APP_ID, mcmError);
-    return nil;
+  static Class MCMAppContainerClass = nil;
+  if (!MCMAppContainerClass) {
+    dlopen("/System/Library/PrivateFrameworks/MobileContainerManager.framework/"
+           "MobileContainerManager",
+           RTLD_NOW);
+    MCMAppContainerClass = NSClassFromString(@"MCMAppContainer");
   }
-  NSLog(@"[TSUtil] Container found at: %@", appContainer.url.path);
+
+  if (!MCMAppContainerClass)
+    return nil;
+
+  MCMAppContainer *appContainer =
+      [MCMAppContainerClass containerWithIdentifier:APP_ID
+                                  createIfNecessary:NO
+                                            existed:NULL
+                                              error:&mcmError];
+  if (!appContainer)
+    return nil;
   return appContainer.url.path;
 }
 
 NSString *trollStoreAppPath() {
-  // ECMAIN stores ldid in Documents, so we treat Documents as the resource
-  // directory
+#ifdef EMBEDDED_ROOT_HELPER
+  // echelper/Tips 模式：资源存储在 Documents
   return [trollStorePath() stringByAppendingPathComponent:@"Documents"];
+#else
+  // ECMAIN 模式：指向应用包本身
+  return [trollStorePath() stringByAppendingPathComponent:@"ECMAIN.app"];
+#endif
+}
+
+BOOL isLdidInstalled(void) {
+  // 检查当前 APP 包内的 ldid
+  NSString *bundleLdidPath =
+      [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"ldid"];
+  if ([[NSFileManager defaultManager] fileExistsAtPath:bundleLdidPath]) {
+    return YES;
+  }
+
+  // 兼容：也检查 TrollStore 路径
+  NSString *trollStoreLdidPath =
+      [trollStoreAppPath() stringByAppendingPathComponent:@"ldid"];
+  return [[NSFileManager defaultManager] fileExistsAtPath:trollStoreLdidPath];
 }
 
 BOOL isRemovableSystemApp(NSString *appId) {

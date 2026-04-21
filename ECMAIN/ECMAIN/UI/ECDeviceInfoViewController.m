@@ -1376,7 +1376,10 @@ typedef void (^ECRegionSelectionBlock)(ECRegionInfo *info);
   dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
     NSString *helperPath = rootHelperPath();
     if (helperPath) {
-      spawnRoot(helperPath, @[ @"refresh" ], nil, nil);
+      // 使用 refresh-safe：只增量补注册已知带标记应用为 System 类型，保护 LSD 不彻底清库
+      // refresh-all 会执行 _LSPrivateRebuildApplicationDatabasesForSystemApps 导致 ECMAIN 丢失
+      // refresh-safe 自带干掉 backboardd 使得缓存重载，应用立即可用
+      spawnRoot(helperPath, @[ @"refresh-safe" ], nil, nil);
     } else {
       NSLog(@"[ECDeviceInfo] RootHelper path is nil!");
     }
@@ -1386,10 +1389,10 @@ typedef void (^ECRegionSelectionBlock)(ECRegionInfo *info);
           dismissViewControllerAnimated:YES
                              completion:^{
                                UIAlertController *done = [UIAlertController
-                                   alertControllerWithTitle:@"完成"
+                                   alertControllerWithTitle:@"✅ 刷新完成"
                                                     message:
-                                                        @"应用注册已刷新。\n请"
-                                                        @"尝试打开应用。"
+                                                        @"已将所有 TrollStore 管理的应用重新注册为 "
+                                                        @"System 类型。\n\n现在可以正常打开，重启后也不会消失。"
                                              preferredStyle:
                                                  UIAlertControllerStyleAlert];
                                [done

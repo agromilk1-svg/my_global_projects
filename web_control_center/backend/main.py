@@ -586,6 +586,7 @@ async def batch_import_comments(req: BatchImportReq, user: dict = Depends(requir
 # ==================== 泛用账号管理接口 ====================
 
 class UpdateAccountReq(BaseModel):
+    account: str = ""
     country: str = ""
     following_count: int = 0
     fans_count: int = 0
@@ -639,6 +640,7 @@ async def get_accounts_list(request: Request):
 async def update_account_info(account_id: int, req: UpdateAccountReq, user: dict = Depends(get_current_user)):
     success = database.update_account(
         account_id, 
+        req.account,
         req.country, 
         req.following_count, 
         req.fans_count, 
@@ -2496,100 +2498,118 @@ def _kill_previous_process(proc_dict, udid):
 class LaunchReq(BaseModel):
     udid: str
 
-@app.post("/api/launch_ecwda")
-async def api_launch_ecwda(req: LaunchReq, user: dict = Depends(get_current_user)):
-    await require_device_permission(user, req.udid)
+async def _core_launch_wda(req_udid: str, conn_type_prefix=""):
     import subprocess
     import platform_utils
     
-    try:
-        logical_udid = req.udid
-        import platform_utils
-        t_path = platform_utils.find_tidevice()
-        env = platform_utils.get_env_with_path()
-        
-        # 0. 核心：把逻辑 UDID (SN) 转化为真正的物理硬件 UDID (40位哈希)
-        hw_udid = logical_udid
-        state = device_manager.devices.get(logical_udid)
-        if state:
-            hw_udid = state.hardware_udid
-            logging.info(f"[v1930] 逻辑 ID ({logical_udid}) -> 底层物理 ID ({hw_udid})")
-        else:
-            # DeviceManager 未注册 (WiFi 设备)，通过 tidevice list 反查物理 UDID
-            try:
-                output = subprocess.check_output([t_path, "list"], text=True, timeout=5)
-                for line in output.splitlines():
-                    if logical_udid in line:
-                        parts = line.split()
-                        if parts and len(parts[0]) == 40:
-                            hw_udid = parts[0]
-                            logging.info(f"[v1930] tidevice list 反查: {logical_udid} -> {hw_udid}")
-                        break
-            except Exception:
-                pass
-        
-        # 0.5 嗅探连接类型
-        conn_type = "USB 或 WiFi"
-        is_network = False
+    logical_udid = req_udid
+    t_path = platform_utils.find_tidevice()
+    env = platform_utils.get_env_with_path()
+    
+    # 0. 核心：把逻辑 UDID (SN) 转化为真正的物理硬件 UDID (40位哈希)
+    hw_udid = logical_udid
+    state = device_manager.devices.get(logical_udid)
+    if state:
+        hw_udid = state.hardware_udid
+        logging.info(f"[v2142] 逻辑 ID ({logical_udid}) -> 底层物理 ID ({hw_udid})")
+    else:
+        # DeviceManager 未注册 (WiFi 设备)，通过 tidevice list 反查物理 UDID
         try:
             output = subprocess.check_output([t_path, "list"], text=True, timeout=5)
             for line in output.splitlines():
-                if hw_udid in line or logical_udid in line:
-                    if "network" in line.lower():
-                        conn_type = "WiFi 纯无线远控"
-                        is_network = True
-                    else:
-                        conn_type = "USB 有线专网"
+                if logical_udid in line:
+                    parts = line.split()
+                    if parts and len(parts[0]) == 40:
+                        hw_udid = parts[0]
+                        logging.info(f"[v2142] tidevice list 反查: {logical_udid} -> {hw_udid}")
                     break
         except Exception:
             pass
+    
+    # 0.5 嗅探连接类型
+    conn_type = f"{conn_type_prefix} USB 或 WiFi"
+    is_network = False
+    try:
+        output = subprocess.check_output([t_path, "list"], text=True, timeout=5)
+        for line in output.splitlines():
+            if hw_udid in line or logical_udid in line:
+                if "network" in line.lower():
+                    conn_type = f"{conn_type_prefix} WiFi 纯无线远控"
+                    is_network = True
+                else:
+                    conn_type = f"{conn_type_prefix} USB 有线专网"
+                break
+    except Exception:
+        pass
 
-        logging.info(f"[v1930] 🚀 通过 {conn_type} 启动 WDA (目标: {hw_udid})")
+    logging.info(f"[v2142] 🚀 通过 {conn_type} 启动 WDA (目标: {hw_udid})")
 
-        # 1. 净化历史遗留
-        _kill_previous_process(_WDA_PROCS, logical_udid)
-        platform_utils.kill_process_by_keyword(f"tidevice -u {hw_udid} xctest")
+    # 1. 净化历史遗留
+    _kill_previous_process(_WDA_PROCS, logical_udid)
+    platform_utils.kill_process_by_keyword(f"tidevice -u {hw_udid} xctest")
+    
+    # 2. 根据连接类型选择启动策略
+    if is_network:
+        # ========== WiFi 模式：使用自研 wifi_wda_launcher 绕过 house_arrest 限制 ==========
+        logging.info(f"[v2142] 📡 WiFi 模式：启用自研 instruments 协议直连启动器")
+        from wifi_wda_launcher import launch_wda_wifi
         
-        # 2. 根据连接类型选择启动策略
-        if is_network:
-            # ========== WiFi 模式：使用自研 wifi_wda_launcher 绕过 house_arrest 限制 ==========
-            logging.info(f"[v1930] 📡 WiFi 模式：启用自研 instruments 协议直连启动器")
-            from wifi_wda_launcher import launch_wda_wifi
+        # 在后台线程中启动 (非阻塞)
+        import threading
+        
+        # 获取设备的内网 IP (从心跳状态中提取)
+        current_ip = None
+        if state and hasattr(state, 'ip'):
+            current_ip = state.ip
             
-            # 在后台线程中启动 (非阻塞)
-            import threading
-            def _wifi_launch():
-                try:
-                    success = launch_wda_wifi(hw_udid, bundle_id="com.apple.accessibility.ecwda")
-                    if success:
-                        logging.info(f"[v1930] ✅ WiFi WDA 启动成功！")
-                    else:
-                        logging.error(f"[v1930] ❌ WiFi WDA 启动失败")
-                except Exception as e:
-                    logging.error(f"[v1930] WiFi WDA 启动异常: {e}")
-            
-            t = threading.Thread(target=_wifi_launch, daemon=True)
-            t.start()
-        else:
-            # ========== USB 模式：使用 tidevice 标准流程 ==========
-            log_file_path = os.path.join(os.path.dirname(__file__), "wda_run.log")
-            wda_log = open(log_file_path, "a")
-            cmd_wda = [t_path, "-u", hw_udid, "xctest", "-B", "com.apple.accessibility.ecwda"]
-            _WDA_PROCS[logical_udid] = subprocess.Popen(cmd_wda, stdout=wda_log, stderr=wda_log, env=env)
+        def _wifi_launch(target_ip):
+            try:
+                success = launch_wda_wifi(hw_udid, bundle_id="com.apple.accessibility.ecwda", device_ip=target_ip)
+                if success:
+                    logging.info(f"[v2142] ✅ WiFi WDA 启动成功！(IP: {target_ip})")
+                else:
+                    logging.error(f"[v2142] ❌ WiFi WDA 启动失败")
+            except Exception as e:
+                logging.error(f"[v2142] WiFi WDA 启动异常: {e}")
         
-        # 3. 触发 DeviceManager 的重连/转发机制
-        if logical_udid in device_manager.devices:
-            device_manager._start_tunnels(logical_udid)
+        t = threading.Thread(target=_wifi_launch, args=(current_ip,), daemon=True)
+        t.start()
+    else:
+        # ========== USB 模式：使用 tidevice 标准流程 ==========
+        log_file_path = os.path.join(os.path.dirname(__file__), "wda_run.log")
+        wda_log = open(log_file_path, "a")
+        cmd_wda = [t_path, "-u", hw_udid, "xctest", "-B", "com.apple.accessibility.ecwda"]
+        _WDA_PROCS[logical_udid] = subprocess.Popen(cmd_wda, stdout=wda_log, stderr=wda_log, env=env)
+    
+    # 3. 触发 DeviceManager 的重连/转发机制
+    if logical_udid in device_manager.devices:
+        device_manager._start_tunnels(logical_udid)
 
-        logging.info(f"[v1930] ECWDA 唤醒波已通过 {conn_type} 通道发出！目标: {logical_udid}")
-        return {
-            "status": "ok", 
-            "message": f"🤖 WDA 已通过【{conn_type}】成功发射！PID 已分配，WDA 正在初始化...", 
-            "mode": conn_type.lower()
-        }
-        
-    except HTTPException:
-        raise
+    logging.info(f"[v2142] ECWDA 唤醒波已通过 {conn_type} 通道发出！目标: {logical_udid}")
+    return {
+        "status": "ok", 
+        "message": f"🤖 WDA 已通过【{conn_type}】成功发射！PID 已分配，WDA 正在初始化...", 
+        "mode": conn_type.lower()
+    }
+
+class DeviceLaunchReq(BaseModel):
+    udid: str
+
+@app.post("/devices/launch_wda")
+async def api_device_launch_wda(req: DeviceLaunchReq):
+    # 来自设备本身的安全免密触发 (设备自身在有需要时主动通知服务端向自己发射 WDA)
+    try:
+        return await _core_launch_wda(req.udid, "iOS逆发")
+    except Exception as e:
+        logging.error(f"设备逆发启动严重受阻: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/launch_ecwda")
+async def api_launch_ecwda(req: LaunchReq, user: dict = Depends(get_current_user)):
+    await require_device_permission(user, req.udid)
+    try:
+        return await _core_launch_wda(req.udid)
+    
     except Exception as e:
         logging.error(f"启动 EC 严重受阻: {e}")
         raise HTTPException(status_code=500, detail=str(e))

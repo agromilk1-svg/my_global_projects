@@ -117,25 +117,27 @@ def main():
         print(f"❌ 编译失败: {e}")
         return 1
 
-    # 签名
+    # 签名流程：先用 codesign 注入 entitlements，再用 fastPathSign 做 CT 绕过
     output_path = os.path.join(WORK_DIR, OUTPUT_BINARY)
     entitlements_path = os.path.join(WORK_DIR, "entitlements.plist")
-    
-    if os.path.exists(SIGNING_TOOL):
-        print("\n[*] 使用 fastPathSign 签名...")
-        try:
-            run_cmd([
-                os.path.abspath(SIGNING_TOOL),
-                "--entitlements", "entitlements.plist",
-                OUTPUT_BINARY
-            ], cwd=WORK_DIR)
-            print("✅ CoreTrust 签名成功!")
-        except subprocess.CalledProcessError:
-            print("[-] fastPathSign 失败，尝试 codesign...")
-            run_cmd(["codesign", "-f", "-s", "-", output_path])
+    # 【关键修复】之前错误地将 --entitlements 传给 fastPathSign 导致 Tips 闪退
+    print("\n[*] 步骤1: 使用 codesign 注入权限...")
+    if os.path.exists(entitlements_path):
+        run_cmd(["codesign", "-f", "-s", "-", "--entitlements", entitlements_path, output_path])
+        print("✅ 权限注入成功!")
     else:
-        print("\n[*] 使用 codesign 签名...")
+        print("[-] 未找到 entitlements.plist，使用 ad-hoc 签名")
         run_cmd(["codesign", "-f", "-s", "-", output_path])
+
+    if os.path.exists(SIGNING_TOOL):
+        print("[*] 步骤2: 使用 fastPathSign 做 CoreTrust 绕过...")
+        try:
+            run_cmd([os.path.abspath(SIGNING_TOOL), output_path])
+            print("✅ CoreTrust 绕过成功!")
+        except subprocess.CalledProcessError:
+            print("[-] fastPathSign 失败，CT 绕过未生效")
+    else:
+        print("[-] 未找到 fastPathSign，跳过 CT 绕过")
 
     # 验证
     print("\n[*] 验证签名...")

@@ -487,12 +487,9 @@ void setTSURLSchemeState(BOOL newState, NSString *customAppPath) {
 
 #ifdef TROLLSTORE_LITE
 
-BOOL isLdidInstalled(void) {
-  // Since TrollStore Lite depends on ldid, we assume it exists
-  return YES;
-}
+// isLdidInstalled 已统一定义在 TSUtil.m 中
 
-NSString *getLdidPath(void) { return JBROOT_PATH(@"/usr/bin/ldid"); }
+// getLdidPath 已统一定义在 TSUtil.m 中
 
 #else
 
@@ -526,20 +523,9 @@ void installLdid(NSString *ldidToCopyPath, NSString *ldidVersion) {
   NSLog(@"[RootHelper] installLdid: Success");
 }
 
-BOOL isLdidInstalled(void) {
-  NSString *ldidPath =
-      [trollStoreAppPath() stringByAppendingPathComponent:@"ldid"];
-  BOOL exists = [[NSFileManager defaultManager] fileExistsAtPath:ldidPath];
-  NSLog(@"[RootHelper] isLdidInstalled? Path: %@ | Exists: %@", ldidPath,
-        exists ? @"YES" : @"NO");
-  return exists;
-}
+// isLdidInstalled 已统一定义在 TSUtil.m 中
 
-NSString *getLdidPath(void) {
-  NSString *path = [trollStoreAppPath() stringByAppendingPathComponent:@"ldid"];
-  NSLog(@"[RootHelper] getLdidPath: %@", path);
-  return path;
-}
+// getLdidPath 已统一定义在 TSUtil.m 中
 
 #endif
 
@@ -1450,8 +1436,11 @@ int installApp(NSString *appPackagePath, BOOL sign, BOOL force, BOOL isTSUpdate,
   NSURL *updatedAppURL = findAppURLInBundleURL(appContainer.url);
   fixPermissionsOfAppBundle(updatedAppURL.path);
   if (!skipUICache) {
-    if (!registerPath(updatedAppURL.path, 0,
-                      !shouldRegisterAsUserByDefault())) {
+    // 【Antigravity 强力修复】
+    // 安装 App 时必须无条件强制注册为 System 类型（传入 forceSystem=YES）。
+    // 否则普通未带 no-sandbox 提取的应用会被注册为 User 类型，一旦重启设备就会直接消失/打不开，
+    // 需要用户每次重启都手动点击一次 Refresh！
+    if (!registerPath(updatedAppURL.path, 0, YES)) {
       [[NSFileManager defaultManager] removeItemAtURL:appContainer.url
                                                 error:nil];
       return 181;
@@ -1868,7 +1857,7 @@ int installTrollStore(NSString *pathToTar) {
 }
 
 void refreshAppRegistrations(BOOL forceSystemRefresh) {
-  // TrollStore itself is always System
+  // ECMAIN itself is always System
   registerPath(trollStoreAppPath(), NO, YES);
 
   // For installed apps, check entitlements to decide System vs User
@@ -1877,30 +1866,20 @@ void refreshAppRegistrations(BOOL forceSystemRefresh) {
     NSDictionary *entitlements =
         dumpEntitlementsFromBinaryAtPath(executablePath);
 
-    // If has no-sandbox, it's a System app.
-    // IF forceSystemRefresh is YES, we also FORCE register as System (smart
-    // fix).
     BOOL isSystemApp = NO;
     if (entitlements &&
         entitlements[@"com.apple.private.security.no-sandbox"]) {
       isSystemApp = YES;
     }
 
-    // If the user requested "System Refresh", we ignore the lack of no-sandbox
-    // and try to register as system. The underlying registerPath might still
-    // downgrade if it's in User path AND logic in uicache.m isn't smart enough,
-    // BUT we know we put the "Antigravity Fix" in uicache.m (presumably).
-    // Actually, to be safe and match user expectation:
-    // If forceSystemRefresh is YES, we pass YES to registerPath.
-
-    BOOL finalIsSystem = isSystemApp || forceSystemRefresh;
-
-    NSLog(@"[refresh] App: %@ | no-sandbox: %@ | force: %@ -> Register as: %@",
+    NSLog(@"[refresh] App: %@ | no-sandbox: %@ -> Register as: %@",
           appPath.lastPathComponent, isSystemApp ? @"YES" : @"NO",
-          forceSystemRefresh ? @"YES" : @"NO",
-          finalIsSystem ? @"System" : @"User");
+          isSystemApp ? @"System" : @"User");
 
-    registerPath(appPath, NO, finalIsSystem);
+    // 【Antigravity 修复】强效修复机制：先卸载再注册
+    // 完全清除因早期强制 System 注册导致 iOS 15 LaunchServices 卡死不刷新的状态
+    registerPath(appPath, YES, isSystemApp); // Unregister
+    registerPath(appPath, NO, isSystemApp);  // Register
   }
 }
 
@@ -2335,17 +2314,21 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
       NSString *appPath = args.lastObject;
       ret = uninstallAppByPath(appPath, useCustomMethod);
     } else if ([cmd isEqualToString:@"refresh"]) {
-      // Default to User unless overridden (or keep legacy behavior)
-      // Original: !shouldRegisterAsUserByDefault() -> YES (System) usually?
-      // Wait, shouldRegisterAsUserByDefault returns NO usually
-      // (unless 14.0-15.0+?) Actually, let's make "refresh" = default behavior,
-      // and add new commands.
-      refreshAppRegistrations(!shouldRegisterAsUserByDefault());
+      // [修复 Bug#2] 强制以 System 类型刷新，确保应用注册在 iOS 14+ 重启后持久存活
+      // 原来：refreshAppRegistrations(!shouldRegisterAsUserByDefault())
+      // iOS 14+ 上 shouldRegisterAsUserByDefault()=YES，导致 !YES=NO，
+      // 所有克隆应用被注册为 User 类型，重启后 LSD 数据库不持久化，应用消失。
+      refreshAppRegistrations(YES);
     } else if ([cmd isEqualToString:@"refresh-user"]) {
       refreshAppRegistrations(
           NO); // Force User Logic (standard echelper behavior)
     } else if ([cmd isEqualToString:@"refresh-system"]) {
       refreshAppRegistrations(YES); // Force System Logic (Antigravity behavior)
+    } else if ([cmd isEqualToString:@"refresh-safe"]) {
+      // 增量安全刷新：不清空 LSD 数据库（防止未带标记的 TrollRestore 覆盖安装 App 如 ECMAIN 丢失）
+      // 仅重注册已知的 TS clone，并温柔地干掉 backboardd 让 SpringBoard 重载缓存立即可用
+      refreshAppRegistrations(YES); // Force System Logic
+      respring();
     } else if ([cmd isEqualToString:@"refresh-all"]) {
       cleanRestrictions();
       // refreshAppRegistrations(NO); // <- fixes app permissions resetting,
@@ -2359,8 +2342,9 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
           _LSPrivateRebuildApplicationDatabasesForSystemApps:YES
                                                     internal:YES
                                                         user:YES];
-      if (!shouldRegisterAsUserByDefault())
-        refreshAppRegistrations(YES);
+      // [修复 Bug#3] 无条件重注册：iOS 14+ 上 !shouldRegisterAsUserByDefault()=NO，
+      // 原条件导致 refreshAppRegistrations 永远不执行，数据库重建后应用全部消失。
+      refreshAppRegistrations(YES);
       killall(@"backboardd", YES);
     } else if ([cmd isEqualToString:@"url-scheme"]) {
       if (args.count < 2)

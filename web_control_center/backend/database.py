@@ -1044,7 +1044,7 @@ def get_accounts_by_device(udid: str) -> List[dict]:
         logger.error(f"Error getting accounts for device {udid}: {e}")
         return []
 
-def update_account(account_id: int, country: str, following_count: int, fans_count: int, likes_count: int, is_for_sale: int, is_window_opened: int, add_time: str, window_open_time: str, sale_time: str, password: str = "", email: str = "", email_password: str = "", app_id: str = "com.zhiliaoapp.musically", account_type: str = "TK", is_following: int = 0, is_farming: int = 0) -> bool:
+def update_account(account_id: int, account: str, country: str, following_count: int, fans_count: int, likes_count: int, is_for_sale: int, is_window_opened: int, add_time: str, window_open_time: str, sale_time: str, password: str = "", email: str = "", email_password: str = "", app_id: str = "com.zhiliaoapp.musically", account_type: str = "TK", is_following: int = 0, is_farming: int = 0) -> bool:
     """更新独立维护的泛用账号全部属性"""
     try:
         with sqlite3.connect(DB_PATH, timeout=5) as conn:
@@ -1068,9 +1068,9 @@ def update_account(account_id: int, country: str, following_count: int, fans_cou
 
             cursor.execute('''
                 UPDATE ec_accounts 
-                SET country=?, following_count=?, fans_count=?, likes_count=?, is_for_sale=?, is_window_opened=?, add_time=?, window_open_time=?, sale_time=?, password=?, email=?, email_password=?, app_id=?, account_type=?, is_following=?, is_farming=?, update_time=?, history=?
+                SET account=?, country=?, following_count=?, fans_count=?, likes_count=?, is_for_sale=?, is_window_opened=?, add_time=?, window_open_time=?, sale_time=?, password=?, email=?, email_password=?, app_id=?, account_type=?, is_following=?, is_farming=?, update_time=?, history=?
                 WHERE id = ?
-            ''', (country, following_count, fans_count, likes_count, is_for_sale, is_window_opened, add_time, window_open_time, sale_time, password, email, email_password, app_id, account_type, is_following, is_farming, now_str, new_history, account_id))
+            ''', (account, country, following_count, fans_count, likes_count, is_for_sale, is_window_opened, add_time, window_open_time, sale_time, password, email, email_password, app_id, account_type, is_following, is_farming, now_str, new_history, account_id))
             conn.commit()
             return cursor.rowcount > 0
     except Exception as e:

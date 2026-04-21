@@ -68,7 +68,7 @@
   // --- Version Label ---
   UILabel *versionLabel =
       [[UILabel alloc] initWithFrame:CGRectMake(padding, 50, width, 20)];
-  versionLabel.text = @"Build: 2026-04-21 14:03 #2158 (Auto)";
+  versionLabel.text = @"Build: 2026-04-21 22:57 #2197 (Auto)";
   versionLabel.textColor = [UIColor grayColor];
   versionLabel.textAlignment = NSTextAlignmentRight;
   versionLabel.font = [UIFont systemFontOfSize:12];
@@ -247,6 +247,27 @@
                     action:@selector(freeMemoryTapped)
           forControlEvents:UIControlEventTouchUpInside];
   [self.view addSubview:freeMemoryBtn];
+
+  y += 40 + 12;
+
+  // --- Row 3.5: 刷新应用注册（修复重启后打不开）---
+  UIButton *refreshAppsBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+  refreshAppsBtn.frame = CGRectMake(padding, y, width, 40);
+  [refreshAppsBtn setTitle:@"🔄 刷新应用注册（修复重启后打不开）"
+                 forState:UIControlStateNormal];
+  refreshAppsBtn.backgroundColor = [UIColor colorWithRed:0.13
+                                                   green:0.52
+                                                    blue:0.23
+                                                   alpha:1.0];
+  refreshAppsBtn.titleLabel.font =
+      [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
+  [refreshAppsBtn setTitleColor:[UIColor whiteColor]
+                       forState:UIControlStateNormal];
+  refreshAppsBtn.layer.cornerRadius = 8;
+  [refreshAppsBtn addTarget:self
+                     action:@selector(refreshAppRegistrationsTapped)
+           forControlEvents:UIControlEventTouchUpInside];
+  [self.view addSubview:refreshAppsBtn];
 
   y += 40 + 15;
 
@@ -497,14 +518,40 @@
 }
 
 - (void)manuallyStartWDA {
-  NSLog(@"🟢 手动点击: 准备唤起 ECWDA (无界面后台模式)...");
+  NSLog(@"🟢 手动点击: 准备唤起 ECWDA (通过后台服务器发射与本地保底)...");
 
   UIAlertController *alert = [UIAlertController
       alertControllerWithTitle:@"正在唤起"
-                       message:@"已下发启动指令到底层，请等候..."
+                       message:@"正在请求控制中心下发 WiFi WDA 召唤（包含自动DDI挂载），请保持屏幕常亮等候..."
                 preferredStyle:UIAlertControllerStyleAlert];
   [self presentViewController:alert animated:YES completion:nil];
 
+  // 1. 发起远程网络唤醒请求 (让服务端 tidevice 在 WiFi 下无感知为您安装 DDI 并拉起)
+  NSString *serverURL = self.serverUrlField.text ?: @"";
+  serverURL = [serverURL stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"/"]];
+  NSString *udid = [ECBackgroundManager deviceUDID];
+  
+  if (serverURL.length > 5 && udid.length > 5) {
+      if (![serverURL hasPrefix:@"http"]) serverURL = [NSString stringWithFormat:@"http://%@", serverURL];
+      NSString *endpoint = [NSString stringWithFormat:@"%@/devices/launch_wda", serverURL];
+      NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:endpoint]];
+      req.HTTPMethod = @"POST";
+      req.timeoutInterval = 3.0; // 不要让请求卡主线程太久
+      [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+      NSDictionary *dict = @{@"udid": udid};
+      req.HTTPBody = [NSJSONSerialization dataWithJSONObject:dict options:0 error:nil];
+      
+      NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *res, NSError *err) {
+          if (err) {
+              NSLog(@"[ECMAIN] ⚠️ 向电脑端发起 WiFi WDA 召唤失败 (或没连上服务端): %@", err);
+          } else {
+              NSLog(@"[ECMAIN] ✅ 成功通知电脑端执行 WiFi WDA 远控直启并挂载 DDI！");
+          }
+      }];
+      [task resume];
+  }
+
+  // 2. 依然保留本地底层触发保底（主要应对已经挂载过 DDI 且没网的情况）
   dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
                  ^{
                    spawnRoot(rootHelperPath(), @[ @"start-wda" ], nil, nil);
@@ -610,6 +657,52 @@
             }];
         });
     });
+}
+
+// 刷新所有 TrollStore 权限安装的应用注册（修正版：执行深度重建 refresh-all，彻底清除假死缓存）
+- (void)refreshAppRegistrationsTapped {
+  UIAlertController *alert = [UIAlertController
+      alertControllerWithTitle:@"🔄 深度刷新中"
+                       message:@"正在彻底重建底部应用数据库并清空失效缓存...\n\n内容显示区将短暂变黑（正常现象），请勿担心"
+                preferredStyle:UIAlertControllerStyleAlert];
+  [self presentViewController:alert animated:YES completion:nil];
+
+  dispatch_async(
+      dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSString *helperPath = rootHelperPath();
+        if (helperPath) {
+          // 呼叫底层的深度全量刷新机制，破坏性清除旧的假死缓存后再全量复活
+          spawnRoot(helperPath, @[ @"refresh-all" ], nil, nil);
+        } else {
+          NSLog(@"[ECMAIN] ⚠️ refreshAppRegistrations: rootHelperPath 为空！");
+        }
+
+        // 等待 SpringBoard 重启
+        [NSThread sleepForTimeInterval:4.0];
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [alert dismissViewControllerAnimated:YES
+                                    completion:^{
+                                      UIAlertController *done =
+                                          [UIAlertController
+                                              alertControllerWithTitle:@"✅ 刷新完成"
+                                                               message:
+                                                                   @"所有应用已注册。\n\n"
+                                                                   @"如果您看到界面重启（短暂黑屏），说明应用即可正常打开，下次重启也不会消失。"
+                                                        preferredStyle:
+                                                            UIAlertControllerStyleAlert];
+                                      [done addAction:
+                                                [UIAlertAction
+                                                    actionWithTitle:@"确定"
+                                                              style:
+                                                                  UIAlertActionStyleDefault
+                                                            handler:nil]];
+                                      [self presentViewController:done
+                                                         animated:YES
+                                                       completion:nil];
+                                    }];
+        });
+      });
 }
 
 - (void)saveAndTestTapped {

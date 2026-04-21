@@ -63,13 +63,7 @@ if os.path.exists(device_support_dir):
 else:
     print(f"[!] 警告: 未找到 '{device_support_dir}' 目录，tidevice 启动 WDA 时可能需要联网下载镜像。")
 
-# 加入预置 IPA 文件（TikTok 包等）
-ipa_dir = "ipa"
-if os.path.exists(ipa_dir):
-    add_data_args.extend(["--add-data", f"{ipa_dir}{separator}{ipa_dir}"])
-    print(f"[+] 已加入内嵌预置 IPA 资源: {ipa_dir}")
-else:
-    print(f"[!] 警告: 未找到预置 '{ipa_dir}' 目录，打包产物将不包含备用沙盒注入环境包。")
+# IPA 预置包已移除，不再打包到安装器中
 
 # 4. 执行 PyInstaller 打包
 cmd = [
