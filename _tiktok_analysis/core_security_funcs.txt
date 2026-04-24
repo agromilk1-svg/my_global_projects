@@ -1,0 +1,233 @@
+$__lazy_storage_$_stepTrace
+$s14TikTokUserImpl30SecurityCheckupEntriesProtocolP
+$s14TikTokUserImpl42SecurityCheckupEntriesDataProviderProtocolP
+.jojo/repos/TikTokUserImpl/AWEUser/Classes/Core/Component/SecurityCheckupTool/View/SecurityCheckupToolCell/SecurityCheckupToolActionCell.swift
+.jojo/repos/TikTokUserImpl/AWEUser/Classes/Core/Component/SecurityCheckupTool/View/SecurityCheckupToolCell/SecurityCheckupToolHintCell.swift
+.jojo/repos/TikTokUserImpl/AWEUser/Classes/Core/Component/SecurityCheckupTool/View/SecurityCheckupToolVC.swift
+@"LynxFSPTracer"
+@"TTKECGoda2DataModel"24@?0@"NSDictionary"8@"TTKECNormalStepTrace"16
+@"TTKECNormalStepTrace"
+@"TTKECNormalStepTrace"16@0:8
+@"UIViewController<AWERouterViewControllerProtocol>"40@0:8@"TTKECMallVideoSchemaParserModel"16@"NSDictionary"24@"TTKECNormalStepTrace"32
+@24@?0@"NSDictionary"8@"TTKECNormalStepTrace"16
+ACCAuditWatermarkRiskCheckPendingBlockTask
+ACCFundSecurityChecker
+ACCFundSecurityCheckerProtocol
+ATSDMRiskDetectionContextProvider
+AWEPublishRiskCheckSamplingStage
+AWEPublishWaitRiskCheckResultStage
+AWEPublishWaitRiskCheckResultStage cancelSaveLocal
+AWEPublishWaitRiskCheckResultStage p_handleDoneTask error:%@
+DoFileIntegrityCheck:
+FraudDetected
+LynxFSPTracer
+OnDeviceRiskDetection
+OpenIABSecurityCheckResponse
+PasskeyIntroVCForSecurityCheckup
+SafeEnvironmentCheckEmailCoordinator
+SafeEnvironmentCheckSmsCoordinator
+SaySo20TTKECNormalStepTraceCGSg
+SecurityCheckupAddEmailEntry
+SecurityCheckupAddPhoneEntry
+SecurityCheckupAddTTSEmailFlow
+SecurityCheckupAddTTSPhoneFlow
+SecurityCheckupAddingPhoneFlow
+SecurityCheckupChangePasswordEntry
+SecurityCheckupEntriesDataProviderProtocol
+SecurityCheckupEntriesProtocol
+SecurityCheckupHintEntry
+SecurityCheckupInfoResponse
+SecurityCheckupPasskeyEntry
+SecurityCheckupReviewActivityEntry
+SecurityCheckupTTSEmailCodeCoordinator
+SecurityCheckupTTSSmsCodeCoordinator
+SecurityCheckupToolActionCell
+SecurityCheckupToolDetailsSectionModel
+SecurityCheckupToolHintCell
+SecurityCheckupToolVC
+SecurityCheckupTwoSvEntry
+SecurityCheckupUnknownDeviceEntry
+SecurityCheckup_passkeyModal_headline
+SecurityCheckup_securityActivityModal_headline
+SecurityCheckup_securityActivityModal_mainCTA
+SecurityCheckup_securityCheckupPage_activitySecurityTip
+SecurityCheckup_securityCheckupPage_checkedActivitySecurityTip
+SecurityCheckup_securityCheckupPage_checkedActivitySecurityTip_description
+SecurityCheckup_securityCheckupPage_checkedEmailSecurityTip_description
+SecurityCheckup_securityCheckupPage_checkedPasskeySecurityTip_description
+SecurityCheckup_securityCheckupPage_checkedPhoneSecurityTip_description
+SecurityCheckup_securityCheckupPage_checkedTwoSvSecurityTip_description
+SecurityCheckup_securityCheckupPage_checkedUnknownDevicesSecurityTip_description
+SecurityCheckup_securityCheckupPage_checkedUnknownDevicesSecurityTip_description_withoutTimestamp
+SecurityCheckup_securityCheckupPage_description_betweenTwoToFourChecked
+SecurityCheckup_securityCheckupPage_description_lessThanTwoChecked
+SecurityCheckup_securityCheckupPage_description_moreThanFourChecked
+SecurityCheckup_securityCheckupPage_devicesCheckedState
+SecurityCheckup_securityCheckupPage_emailSecurityTip
+SecurityCheckup_securityCheckupPage_emailSecurityTip_description
+SecurityCheckup_securityCheckupPage_emailSecurityTip_verifyDescription
+SecurityCheckup_securityCheckupPage_headline
+SecurityCheckup_securityCheckupPage_helpButton
+SecurityCheckup_securityCheckupPage_passkeySecurityTip_description
+SecurityCheckup_securityCheckupPage_passkeySvSecurityTip
+SecurityCheckup_securityCheckupPage_phoneSecurityTip
+SecurityCheckup_securityCheckupPage_phoneSecurityTip_description
+SecurityCheckup_securityCheckupPage_phoneSecurityTip_verifyDescription
+SecurityCheckup_securityCheckupPage_twoSvSecurityTip
+SecurityCheckup_securityCheckupPage_twoSvSecurityTip_description
+SecurityCheckup_securityCheckupPage_unknownDevicesSecurityTip
+SecurityCheckup_securityCheckupPage_unknownDevicesSecurityTip_description
+SecurityCheckup_securityCheckupPage_verifyEmailSecurityTip_description
+SecurityCheckup_suspiciousActivityPage_description
+So20TTKECNormalStepTraceC
+So20TTKECNormalStepTraceCSg
+So30ACCFundSecurityCheckerProtocol_p
+So30ACCFundSecurityCheckerProtocol_pm
+T@"LynxFSPTracer",R,N,V_fspTracer
+T@"NSString",C,N,V_verifySignatureExemptionReason
+T@"NSString",C,N,V_watermarkRiskCheckPendingNotificationName
+T@"NSString",C,N,V_watermarkRiskCheckVFrameId
+T@"TTKECMMKItemTrace",&,N,V_setupTrace
+T@"TTKECNormalStepTrace",&,N,V_trace
+T@"TTKECNormalStepTrace",N,&,Vtrace
+T@"TTKECNormalStepTrace",N,R
+T@"TTKECNormalStepTrace",R,N
+TB,N,V_integrityCheck
+TB,N,V_isJailBroken
+TB,N,V_isRunnningForWatermarkRiskCheckMode
+TB,N,V_shouldShowSecurityCheckup
+TB,N,V_useReceiptValidationSandbox
+TB,N,V_verifySignatureExemptionEnabled
+TQ,N,V_watermarkRiskCheckStatus
+TTKECNormalStepTrace
+TTKPasskeyIntroVCForSecurityCheckup
+TTKPublishWatermarkRiskCheckResultHandle
+TikTokSecurityEngDeviceRiskInfoMobileRiskInfo
+TikTokSecurityEngDeviceRiskInfoWebRiskInfo
+TikTokTikTokFundSecurityCheckCase
+TikTokTikTokFundSecurityCheckRule
+TikTokUserImpl/SecurityCheckupToolActionCell.swift
+TikTokUserImpl/SecurityCheckupToolHintCell.swift
+TikTokUserImpl@SecurityCheckupToolVC
+VerifySignature algorithmModel md5 doesn't match model vs actual %@ vs %@
+VerifySignature: Failed to find model file in unzip folder. %@
+VerifySignature: fail, return code: %d fileDetails: %@
+VerifySignature: skip verify, reason: %@ - file details: %@
+VerifySignature: success, return code: %d fileDetails: %@
+[Publish] [ShareStage] _saveAwemeIfNeeded|before saveVideoIfNeededWithURL, saveToAlbum is %@, publishModel.needsSaveToAlbum is %@, ignoreSaveToAlbum is %@, hitWatermarkRiskCheckAB is %@, watermarkRiskCheckStatus is %@, needSavePostsWithoutWatermark is %@, resultURL is %@, resultURL is exist?: %@, resultURL is dir?: %@
+[Publish] [ShareStage] videoURL:%@, isCopiedForSaveAlbum:%@, needSavePostsWithoutWatermark:%@, watermarkRiskCheckStatus:%@, isSaveLocalWithoutCheck is :%@, saveLocalCheckNotPass = %@, watermarkRiskCheckStatusNotPassed = %@, noVideoURL = %@
+[Publish] [Watermark] [RiskCheck] AWEPublishRiskCheckSamplingStage finishing sampling & uploading, start to listen, creationId:%@, vframe_id:%@
+[Publish] [Watermark] [RiskCheck] AWEPublishRiskCheckSamplingStage start to sampling & uploading, creationId:%@
+[Publish] [Watermark] [RiskCheck] AWEPublishWaitRiskCheckResultStage start time at %@
+[Publish] [Watermark] [RiskCheck] AWEPublishWaitRiskCheckResultStage status=success, creationId is %@, called by timer
+[Publish] [Watermark] [RiskCheck] AWEPublishWaitRiskCheckResultStage status=success, creationId is %@, pass check before running.
+[Publish] [Watermark] [RiskCheck] AWEPublishWaitRiskCheckResultStage status=success, creationId is %@,called by notification
+[Publish] [Watermark] [RiskCheck] [ShareStage] checkResult task not found, frameId:%@, pass:%@
+[Publish] [Watermark] [RiskCheck] [ShareStage] creationId && task are both null at %@
+[Publish] [Watermark] [RiskCheck] [ShareStage] creationId is %@, task is %@
+[Publish] [Watermark] [RiskCheck] [ShareStage] failed! %@
+[Publish] [Watermark] [RiskCheck] [ShareStage] recevied resultDict is %@, status: %@
+[Publish] [Watermark] [RiskCheck] [ShareStage] recevied unexpected pushData, frame_id is null
+[Publish] [Watermark] [RiskCheck] [ShareStage] recevied unexpected pushData: nil
+[Publish] [Watermark] [RiskCheck] [ShareStage] result is not pass, creationId is %@
+[Publish] [Watermark] [RiskCheck] [ShareStage] result is pass, creationId is %@, frame_id is %@, pass is %@
+[Publish] [Watermark] [RiskCheck] needsWatermarkByUser = %@
+[Publish] [Watermark] [RiskCheck] skip cuz no option
+[Publish] [Watermark] [RiskCheck] skip cuz option and need watermark
+[Publish] [Watermark] [RiskCheck] timeout!
+_TtC14TikTokUserImpl21SecurityCheckupToolVC
+_TtC14TikTokUserImpl27SecurityCheckupToolHintCell
+_TtC14TikTokUserImpl29SecurityCheckupToolActionCell
+_TtC14TikTokUserImpl30SecurityCheckupAddTTSEmailFlow
+_TtC14TikTokUserImpl30SecurityCheckupAddTTSPhoneFlow
+_TtC14TikTokUserImpl30SecurityCheckupAddingPhoneFlow
+_TtC14TikTokUserImpl36SecurityCheckupTTSSmsCodeCoordinator
+_TtC14TikTokUserImpl38SecurityCheckupTTSEmailCodeCoordinator
+_TtC14TikTokUserImpl38SecurityCheckupToolDetailsSectionModel
+_TtC23TikTokServicePluginImpl28OpenIABSecurityCheckResponse
+_fspTracer
+_integrityCheck
+_isJailBroken
+_isRunnningForWatermarkRiskCheckMode
+_setupTrace
+_shouldShowSecurityCheckup
+_useReceiptValidationSandbox
+_verifySignatureExemptionEnabled
+_verifySignatureExemptionReason
+_watermarkRiskCheckPendingNotificationName
+_watermarkRiskCheckStatus
+_watermarkRiskCheckVFrameId
+acctSecurityLeakedPasswords_securityCheckupPasswordBody
+acctSecurityLeakedPasswords_securityCheckupPasswordSuccessBody
+acctSecurityLeakedPasswords_securityCheckupPasswordTitle
+btd_isJailBroken
+calculateV2SanityFlagsWithIsSimulator:isDevBuild:isJailBroken:isCounterValid:isDebuggerAttached:
+calculateV2ValueWithTimestamp:uid:systemVersion:firstLaunchDate:AFSDKVersion:isSimulator:isDevBuild:isJailBroken:isCounterValid:isDebuggerAttached:
+cleanupTrace:
+deviceIsJailbroken
+fraudDetection
+fspTracer
+gck_verifySignatureWithPublicKeyHash:
+getKernelVersion
+getVerifySignatureExemptionWithReason:
+handleCardPreRiskCheck:realBind:completion:failHandler:
+handleUnexpectedRiskCheckResult:
+handleWatermarkRiskCheckWithPushData:resultStat:error:extraDict:
+hasIntegrityCheck
+inAppReceiptValidationURL:appleAppID:libraryVersion:
+inAppReceiptValidationV2URL:
+inAppReceiptValidationV4URLForPurchaseType:appID:
+integrityCheck
+isJailBroken
+isJailbrokenWithSkipAdvancedJailbreakValidation:
+isRunnningForWatermarkRiskCheckMode
+p_setupTrace:api:
+p_setupTraceConfig:sync:api:
+phw_enable3pTrace
+provideSingleton:ACCFundSecurityCheckerProtocol:
+receiptValidationURL:appsFlyerUID:appsFlyerDevKey:isSandbox:transactionId:skipAdvancedJailbreakValidation:
+riskCheck
+riskCheckSampling
+riskCheckSamplingStage
+saveVideoIfNeededWithURL:saveToAlbum:toAlbumName:needsURLAsset:isSaveLocal:watermarkRiskCheckStatus:copyToSandbox:completion:
+securityCheckDidEnd:
+securityCheckDidStart:
+securityCheckupInfoURLString
+securityCheckupToolPasskeyintroUrl
+securityCheckupToolTargetUrl
+setIntegrityCheck:
+setIsJailBroken:
+setIsRunnningForWatermarkRiskCheckMode:
+setRiskCheck:
+setSetupTrace:
+setShouldShowSecurityCheckup:
+setUseReceiptValidationSandbox:
+setVerifySignatureExemptionEnabled:
+setVerifySignatureExemptionEnabled:reason:
+setVerifySignatureExemptionReason:
+setWatermarkRiskCheckPendingNotificationName:
+setWatermarkRiskCheckStatus:
+setWatermarkRiskCheckVFrameId:
+setupTrace
+shouldShowSecurityCheckup
+stepTrace
+stopTrace
+stopTraceTimeForKey:
+studioFixWatermarkRiskCheckNilBlockCrash
+tapSecurityCheckupToolCell
+taskWithWatermarkRiskCheckFrameId:
+trackPrecheckEnvironmentWithResult:merchantID:isJailBroken:
+tspk_device_info_btd_isJailBroken
+updateWatermarkRiskCheckDisableSaveToDeviceStatusIfNeeded
+useReceiptValidationSandbox
+vdbe_addoptrace
+verifySignature:key:digest:padding:
+verifySignatureExemptionEnabled
+verifySignatureExemptionReason
+waitWaterMarkRiskCheckResultTask
+waitWatermarkRiskCheckResult
+watermarkRiskCheckPendingNotificationName
+watermarkRiskCheckStatus
+watermarkRiskCheckVFrameId
+ySo20TTKECNormalStepTraceCG
+{shared_ptr<lynx::tasm::performance::FSPTracer>="__ptr_"^{FSPTracer}"__cntrl_"^{__shared_weak_count}}

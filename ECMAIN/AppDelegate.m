@@ -48,20 +48,7 @@
   // 确保日志文件夹可见
   [[ECLogManager sharedManager] syncToDocuments];
 
-  // 自动刷新应用注册 (恢复 System 权限) - 后台执行避免阻塞启动
-  dispatch_async(
-      dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        NSString *helperPath = rootHelperPath();
-        if (helperPath &&
-            [[NSFileManager defaultManager] fileExistsAtPath:helperPath]) {
-          int result = spawnRoot(helperPath, @[ @"refresh" ], nil, nil);
-          NSLog(@"[ECMAIN] Refreshed app registrations on launch (result: %d)",
-                result);
-        } else {
-          NSLog(@"[ECMAIN] RootHelper not found, skipping app registration "
-                @"refresh");
-        }
-      });
+
 
   // --- 随版本更新自动拉取最新全集评论数据 ---
   dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{

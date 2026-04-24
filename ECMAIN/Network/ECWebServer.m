@@ -8,7 +8,8 @@
 #import <sys/socket.h>
 #import <arpa/inet.h>
 #import <unistd.h>
-
+#import <sys/stat.h>
+#import <fcntl.h>
 @interface ECWebServer ()
 @property(assign, nonatomic) CFSocketRef socket;
 @property(assign, nonatomic) BOOL isRunning;
@@ -253,6 +254,64 @@ void handleRequest(int socket) {
     }
   }
 
+  // 解析出基础 Header 来拦截特定流式路由
+  NSString *tempHeader = [[NSString alloc] initWithData:requestData encoding:NSUTF8StringEncoding];
+  if (!tempHeader) tempHeader = [[NSString alloc] initWithData:requestData encoding:NSASCIIStringEncoding];
+  if (!tempHeader) { close(socket); return; }
+  
+  NSArray *tempLines = [tempHeader componentsSeparatedByString:@"\r\n"];
+  NSString *tempFirstLine = tempLines.count > 0 ? tempLines[0] : @"";
+
+  // 【大文件流式上传拦截，彻底消灭 OOM】
+  if ([tempFirstLine hasPrefix:@"POST /upload-stream"]) {
+      NSString *targetDir = @"/";
+      NSString *fileName = @"upload.bin";
+      for (NSString *line in tempLines) {
+          if ([line hasPrefix:@"X-Target-Dir: "]) {
+              targetDir = [[line substringFromIndex:14] stringByRemovingPercentEncoding];
+          } else if ([line hasPrefix:@"X-File-Name: "]) {
+              fileName = [[line substringFromIndex:13] stringByRemovingPercentEncoding];
+          }
+      }
+      if (![targetDir hasPrefix:@"/"]) targetDir = [@"/" stringByAppendingString:targetDir];
+      NSString *fullPath = [targetDir stringByAppendingPathComponent:fileName];
+      NSLog(@"[ECWebServer] 🌊 流式写入大文件至: %@", fullPath);
+      
+      int fd = open([fullPath UTF8String], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      if (fd >= 0) {
+          // 写入被 header 读取带出来的 body 部分
+          NSRange hlRange = [tempHeader rangeOfString:@"\r\n\r\n"];
+          if (hlRange.location != NSNotFound) {
+              NSUInteger headerLen = hlRange.location + 4;
+              if (requestData.length > headerLen) {
+                  write(fd, [requestData bytes] + headerLen, requestData.length - headerLen);
+              }
+          }
+          // 循环流式写入剩下的 body
+          while (currentBodyLength < contentLength) {
+              ssize_t len = recv(socket, buffer, sizeof(buffer), 0);
+              if (len <= 0) break;
+              write(fd, buffer, len);
+              currentBodyLength += len;
+          }
+          close(fd);
+          const char *resp200 = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK";
+          send(socket, resp200, strlen(resp200), 0);
+      } else {
+          NSLog(@"[ECWebServer] ❌ 无法打开文件进行写入: %@", fullPath);
+          while (currentBodyLength < contentLength) {
+              ssize_t len = recv(socket, buffer, sizeof(buffer), 0);
+              if (len <= 0) break;
+              currentBodyLength += len;
+          }
+          const char *resp500 = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+          send(socket, resp500, strlen(resp500), 0);
+      }
+      close(socket);
+      return;
+  }
+
+  // 常规缓存整个 Body (由于拦截了大文件上传，剩下的请求都很小)
   while (headersComplete && contentLength > 0 &&
          currentBodyLength < contentLength) {
     ssize_t len = recv(socket, buffer, sizeof(buffer), 0);
@@ -360,7 +419,7 @@ void handleRequest(int socket) {
                   [html appendString:@"<div class='batch-actions' id='batchBar'><input type='checkbox' id='selectAll' onclick='toggleAll(this)'> <span id='selectedCount' style='flex:1;font-size:14px;color:#1c1e21'>已选择 0 项</span> <button class='btn btn-batch-del' onclick='batchDelete()'>🗑️ 批量强力删除</button></div>"];
 
                   // Upload form with Progress
-                  [html appendFormat:@"<div class='upload-zone'><div style='display:flex;gap:10px;align-items:center'><input type='file' id='fileInput' name='file'><button type='button' class='btn btn-upload' onclick='handleUpload()'>🚀 开始上传</button></div><div id='progress-container'><div id='progress-bar'>0%%</div></div></div>", absPath];
+                  [html appendString:@"<div class='upload-zone'><div style='display:flex;gap:10px;align-items:center'><input type='file' id='fileInput' name='file'><button type='button' class='btn btn-upload' onclick='handleUpload()'>🚀 开始上传</button></div><div id='progress-container'><div id='progress-bar'>0%%</div></div></div>"];
                   
                   [html appendString:@"<table><thead><tr><th style='width:40px'></th><th>名称</th><th>大小</th><th>修改时间</th><th class='actions'>操作</th></tr></thead><tbody id='fileList'>"];
                   
@@ -423,8 +482,6 @@ void handleRequest(int socket) {
                         if (input.files.length === 0) return; \
                         const file = input.files[0]; \
                         const xhr = new XMLHttpRequest(); \
-                        const formData = new FormData(); \
-                        formData.append('file', file); \
                         const pContainer = document.getElementById('progress-container'); \
                         const pBar = document.getElementById('progress-bar'); \
                         pContainer.style.display = 'block'; \
@@ -438,8 +495,13 @@ void handleRequest(int socket) {
                         xhr.onreadystatechange = () => { \
                             if (xhr.readyState === 4) location.reload(); \
                         }; \
-                        xhr.open('POST', window.location.pathname, true); \
-                        xhr.send(formData); \
+                        xhr.open('POST', '/upload-stream', true); \
+                        let currentDir = window.location.pathname.substring(6); \
+                        if (currentDir === '') currentDir = '/'; \
+                        xhr.setRequestHeader('X-Target-Dir', encodeURIComponent(currentDir)); \
+                        xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name)); \
+                        xhr.setRequestHeader('Content-Type', 'application/octet-stream'); \
+                        xhr.send(file); \
                     } \
                   </script></body></html>"];
                   
@@ -447,9 +509,13 @@ void handleRequest(int socket) {
                   send(socket, [header UTF8String], header.length, 0);
                   send(socket, [html UTF8String], [html lengthOfBytesUsingEncoding:NSUTF8StringEncoding], 0);
               } else {
-                  // ==== Serve specific file ====
-                  NSData *fileData = [NSData dataWithContentsOfFile:absPath];
-                  if (fileData) {
+                  // ==== Serve specific file (Stream) ====
+                  int fd = open([absPath UTF8String], O_RDONLY);
+                  if (fd >= 0) {
+                      struct stat st;
+                      fstat(fd, &st);
+                      long long fileSize = st.st_size;
+                      
                       NSString *ext = [absPath pathExtension].lowercaseString;
                       NSString *contentType = @"application/octet-stream";
                       
@@ -457,7 +523,6 @@ void handleRequest(int socket) {
                       NSArray *imageExts = @[@"jpg", @"jpeg", @"png", @"gif", @"webp", @"bmp", @"ico"];
                       NSArray *videoExts = @[@"mp4", @"mov", @"avi", @"mkv"];
                       
-                      // 模糊匹配包含 log 的文件或者常见后缀
                       if ([textExts containsObject:ext] || [[absPath lowercaseString] containsString:@".log"]) {
                           contentType = @"text/plain; charset=utf-8";
                       } else if ([ext isEqualToString:@"html"] || [ext isEqualToString:@"htm"]) {
@@ -470,9 +535,21 @@ void handleRequest(int socket) {
                           else contentType = [NSString stringWithFormat:@"video/%@", ext];
                       }
                       
-                      NSString *header = [NSString stringWithFormat:@"HTTP/1.1 200 OK\r\nContent-Type: %@\r\nContent-Length: %lu\r\nConnection: close\r\n\r\n", contentType, (unsigned long)fileData.length];
+                      NSString *header = [NSString stringWithFormat:@"HTTP/1.1 200 OK\r\nContent-Type: %@\r\nContent-Length: %lld\r\nConnection: close\r\n\r\n", contentType, fileSize];
                       send(socket, [header UTF8String], header.length, 0);
-                      send(socket, [fileData bytes], fileData.length, 0);
+                      
+                      char readBuf[32768];
+                      ssize_t r;
+                      while((r = read(fd, readBuf, sizeof(readBuf))) > 0) {
+                          ssize_t totalSent = 0;
+                          while (totalSent < r) {
+                              ssize_t s = send(socket, readBuf + totalSent, r - totalSent, 0);
+                              if (s <= 0) break;
+                              totalSent += s;
+                          }
+                          if (totalSent < r) break;
+                      }
+                      close(fd);
                   } else {
                       const char *resp500 = "HTTP/1.1 500 Internal Server Error (Permission Denied)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
                       send(socket, resp500, strlen(resp500), 0);

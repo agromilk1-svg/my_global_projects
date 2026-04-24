@@ -51,15 +51,7 @@ extern void killall(NSString *processName, BOOL softly);
 #import <SpringBoardServices/SpringBoardServices.h>
 #import <libroot.h>
 
-// isLdidInstalled: 检查 ldid 二进制是否存在于 TrollStore App Bundle 中
-BOOL isLdidInstalled(void) {
-  NSString *ldidPath =
-      [trollStoreAppPath() stringByAppendingPathComponent:@"ldid"];
-  BOOL exists = [[NSFileManager defaultManager] fileExistsAtPath:ldidPath];
-  NSLog(@"[RootHelper] isLdidInstalled? Path: %@ | Exists: %@", ldidPath,
-        exists ? @"YES" : @"NO");
-  return exists;
-}
+
 
 // --- libproc definitions (Manually declared for compatibility) ---
 #define PROC_PIDLISTFDS 1

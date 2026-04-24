@@ -1,0 +1,543 @@
+$s12TUXSwiftBase0A12ProvisioningP
+$s16GBLInAppPurchase17ReceiptDataLoaderP
+$s16GBLInAppPurchase24GBLIAPEntitlementServiceP
+$s16GBLInAppPurchase29GBLContractEntitlementServiceP
+%@/passport/mobile/is_unusable_by_receipt/
+-[HybridIESWebView webView:didReceiveServerRedirectForProvisionalNavigation:]
+-[IESLiveMTChargeManager didFindUnverifiedTransactionWithOrderID:receipt:transaction:iapID:skProduct:]
+-[IESLiveMTChargeManager didSendTransactionToServerSuccessWithOrderID:receipt:transactionId:]
+-[TTKCommerceIAPNetworkRequestManager uploadReceiptWithURL:method:params:completionBlock:]
+-[TTKCommerceIAPStoreKitHelper sendReceiptWithTransaction:paymentQueue:]
+-[TTKCommerceIAPStoreManager sendTransactionWithOrderID:receipt:transaction:completion:]
+-[TTKCommerceIAPStoreManager sendTransactionWithOrderID:receipt:transaction:completion:]_block_invoke
+<key>TeamIdentifier</key>\s*<array>\s*<string>(\w+)</string>\s*</array>
+@"<FBSDKAppStoreReceiptProviding>"
+@"<TUXSwiftProvisioning><TUXCapabilityProviding>"
+@"GBLExternalIAPEntitlement"
+@"GBLExternalIAPEntitlementPrecheckResult"
+@"SKReceiptRefreshRequest"
+@"TTKCommerceIAPValidateReceiptResponseData"
+@"TTKIAPEntitlement"
+@"_TtC16GBLInAppPurchase17GBLIAPEntitlement"
+Abort connection: stream %llu is in %s state: receipt of STOP_SENDING frame is a violation
+Added AppStore Receipt!
+App Store Receipt URL doesn't exist
+AppStore Receipt URL: %@
+AppStore Receipt: %@
+B32@0:8@"GBLExternalIAPEntitlementPrecheckResult"16d24
+CreateReceiptRequest
+DecodeReceiptResult
+DeleteReceiptsRequest
+DonateReceiptRequest
+FBSDKAppStoreReceiptProviding
+FairPlay certificateData is nil
+FairPlayLicense
+FirebaseAppStoreReceiptURLCheckEnabled
+GBLContractEntitlementData
+GBLContractEntitlementResponse
+GBLContractEntitlementService
+GBLEntitlementPrecheckErrorCode
+GBLEntitlementPrecheckService
+GBLExternalEntitlementPrecheckParams
+GBLExternalIAPEntitlement
+GBLExternalIAPEntitlementPrecheckResult
+GBLIAPEntitlement
+GBLIAPEntitlementAllowedPath
+GBLIAPEntitlementPrecheckResult
+GBLIAPEntitlementPrecheckStatus
+GBLIAPEntitlementSKUResult
+GBLIAPEntitlementService
+GBLIAPIAPEntitlementData
+GBLIAPIAPEntitlementResponse
+GBLInAppPurchase.DecodeReceiptResult
+GBLInAppPurchase.GBLEntitlementPrecheckService
+GBLInAppPurchase.GBLIAPEntitlement
+GBLInAppPurchase.GBLIAPEntitlementPrecheckResult
+GBLInAppPurchase.GBLIAPEntitlementSKUResult
+GBLInAppPurchase.GBLSKPaymentQueueSK2InvalidReceiptFilter
+GBLInAppPurchase.GBLSKPaymentQueueSK2RenewalReceiptFilter
+GBLSKPaymentQueueSK2InvalidReceiptFilter
+GBLSKPaymentQueueSK2RenewalReceiptFilter
+GBLServerContractEntitlement
+GBLServerIAPEntitlement
+GBLUploadReceiptResult
+Get AppStore Receipt
+GetReceiptUserConsentRequest
+IAP netWorkService send receipt: %@
+IAP start send receipt
+IAP start uploading receipt with URL: %@, order ID: %@
+IAP validate receipt success
+Invalid Receipt: Error unknown
+Invalid Receipt: Receipt belongs to product identifier to be ignored
+Invalid Receipt: Receipt belongs to uuid to be filtered
+Invalid Receipt: Receipt expired
+Invalid Receipt: Receipt is old
+Invalid Receipt: Receipt is renewal receipt
+Invalid Receipt: Receipt revoked
+Invalid Receipt: Receipt unverified
+Invalid Receipt: Receipt upgraded
+Invalid parameters in RTCP mux provisional answer
+Invalid state for RTCP mux provisional answer
+InvalidReceiptError
+KERN_CODESIGN_ERROR
+KPIPOCacheUploadReceiptURL
+MarkPhotoAsReceiptRequest
+Meta of receipt is bad formatted!
+NotificationsDroppedExpiredOnReceipt
+PIPOIAPReceiptRefreshDelegate
+PIPOIAPUploadReceiptRequest
+Packet receipt time:
+Parsed purchase items from receipt
+ReadReceiptBottomBannerNoticeElement
+Receipt
+ReceiptDataLoader
+ReceiptDataLoaderImplementation
+ReceiptDecoder
+ReceiptDecoderError
+RequestPerformanceClientServerTimeDifferenceMarkPhotoAsReceipt
+RequestPerformanceEndToEndLatencyMarkPhotoAsReceipt
+RequestPerformanceEndToEndSuccessLatencyMarkPhotoAsReceipt
+RequestPerformanceGRPCStatusMarkPhotoAsReceipt
+RequestPerformanceNetworkLatencyMarkPhotoAsReceipt
+RequestPerformanceNumTriesMarkPhotoAsReceipt
+RequestPerformanceReceivedBytesMarkPhotoAsReceipt
+RequestPerformanceSentBytesMarkPhotoAsReceipt
+RequestPerformanceServerTimeMarkPhotoAsReceipt
+RequestPerformanceServerTimePercentageOfTotalRequestLatencyMarkPhotoAsReceipt
+RequestPerformanceStatusMarkPhotoAsReceipt
+RewardEntitlement
+So29FBSDKAppStoreReceiptProviding_p
+So39GBLExternalIAPEntitlementPrecheckResultCSg
+Subscription transaction missing in receipt will be reported as invalid
+T@"<FBSDKAppStoreReceiptProviding>",R,N,V_appStoreReceiptProvider
+T@"<TUXCapabilityProviding><TUXSwiftProvisioning>",N,R
+T@"GBLExternalIAPEntitlement",&,N,V_entitlement
+T@"GBLExternalIAPEntitlementPrecheckResult",&,N,V_entitlementPrecheckResult
+T@"GPBInt64Int64Dictionary",&,N,V_visibleRankFromTeamID
+T@"NSArray",C,N,V_readReceiptStackConstraints
+T@"NSDate",&,N,V_sendReceiptTime
+T@"NSError",&,N,V_uploadReceiptError
+T@"NSError",R,C,N,V_invalidReceiptError
+T@"NSMutableDictionary",&,N,V_receiptRefreshDelegateDic
+T@"NSNumber",&,N,V_teamID
+T@"NSSet",&,N,V_eventsWithReceipt
+T@"NSString",C,N,V_decodedReceipt
+T@"NSString",C,N,V_fairPlayLicense
+T@"NSString",C,N,V_receipt
+T@"NSString",C,N,V_validateReceiptURL
+T@"SKReceiptRefreshRequest",&,N,V_request
+T@"TTKCommerceIAPValidateReceiptResponseData",&,N,V_data
+T@"TTKIAPEntitlement",&,N,V_ttkIAPEntitlement
+T@"UIStackView",&,N,V_readReceiptStackView
+T@"VBadgeEntitlementInfo",&,D,N
+T@"_TtC16GBLInAppPurchase17GBLIAPEntitlement",N,R,Ventitlement
+T@?,C,N,V_refreshReceiptCompletion
+TB,N,R,VenableFixRestoreSubscriptionUploadReceiptSuccess
+TB,N,R,VenableGetTransactionReasonFromReceipt
+TB,N,R,VenableSk2FilterInvalidReceipt
+TB,N,V_enableDelayRefreshReceipt
+TB,N,V_enableReceiptDecoding
+TB,N,V_enableRefreshingReceiptAfterValidation
+TB,N,V_isFromRefreshReceipt
+TB,N,V_removeSk1ReceiptFromValidateReceiptRequest
+TB,N,V_useReceiptValidationSandbox
+TB,N,VenableRenewalReceiptFilter
+TIM_Read_Receipt
+TSPKPumbaaVersionCodeSignal
+TTKCommerceIAPValidateReceiptResponse
+TTKCommerceIAPValidateReceiptResponseData
+TTKIAPEntitlement
+TTKIAPEntitlementPrecheckParams
+TTKIAPEntitlementPrecheckResult
+TTLH muteAuxStreamAudioWithSteamId: %@ ,mute: %d
+TTNET_FT_INVALID_STREAM_RECEIPT
+TUXSwiftProvision
+TUXSwiftProvisioning
+Td,N,V_entitlementPrecheckDuration
+Td,N,V_sendReceiptEndTime
+Td,N,V_sendReceiptStartTime
+Td,N,V_uploadReceiptEndTime
+TetheringEntitlement
+TikTokIMImplSwift.ReadReceiptBottomBannerNoticeElement
+Tq,N,R,VcrossScreenToTeamId
+Tq,N,V_entitlementState
+Tq,N,V_leftTeamId
+Tq,N,V_receiptTime
+Tq,N,V_rightTeamId
+Tq,N,V_send2TeamId
+Tq,N,V_teamId
+Tq,N,VteamId
+Transaction missing in receipt will be reported as invalid
+TutorialTimelineReceiptUploadPromoDisplayTime
+Unknown error occurred when parsing IAP entitlements
+UpdateReceiptUserConsentRequest
+VBadgeEntitlementInfo
+[chat read receipt] p_updateMessageStatusAtChats count: 
+[dm archive - chat read receipt] p_updateMessageStatusAtChats count: 
+_TtC16GBLInAppPurchase14ReceiptDecoder
+_TtC16GBLInAppPurchase17GBLIAPEntitlement
+_TtC16GBLInAppPurchase19DecodeReceiptResult
+_TtC16GBLInAppPurchase26GBLIAPEntitlementSKUResult
+_TtC16GBLInAppPurchase29GBLEntitlementPrecheckService
+_TtC16GBLInAppPurchase31GBLIAPEntitlementPrecheckResult
+_TtC16GBLInAppPurchase31ReceiptDataLoaderImplementation
+_TtC16GBLInAppPurchase40GBLSKPaymentQueueSK2InvalidReceiptFilter
+_TtC16GBLInAppPurchase40GBLSKPaymentQueueSK2RenewalReceiptFilter
+_TtC17TikTokIMImplSwift36ReadReceiptBottomBannerNoticeElement
+_appStoreReceiptProvider
+_decodedReceipt
+_enableDelayRefreshReceipt
+_enableReceiptDecoding
+_enableRefreshingReceiptAfterValidation
+_entitlement
+_entitlementPrecheckDuration
+_entitlementPrecheckResult
+_entitlementState
+_eventsWithReceipt
+_fairPlayLicense
+_invalidReceiptError
+_isFromRefreshReceipt
+_leftTeamId
+_pipo_getUploadReceiptURL:
+_pipo_refreshReceiptWithCacheProduct:completion:
+_pipo_sendNewReceiptWithProduct:completion:
+_readReceiptStackConstraints
+_readReceiptStackView
+_receipt
+_receiptRefreshDelegateDic
+_receiptTime
+_refreshReceiptCompletion
+_removeSk1ReceiptFromValidateReceiptRequest
+_rightTeamId
+_send2TeamId
+_sendReceiptEndTime
+_sendReceiptStartTime
+_sendReceiptTime
+_teamID
+_teamId
+_ttkIAPEntitlement
+_uploadReceiptEndTime
+_uploadReceiptError
+_uploadReceiptWithIapTransaction:extraParams:queryParameters:removeReceiptFromRequestBody:completionBlock:
+_useReceiptValidationSandbox
+_validateReceiptURL
+_visibleRankFromTeamID
+afsdk_appStoreReceipt
+appStoreReceiptProvider
+appStoreReceiptURL
+apple_call_back_to_send_receipt
+bdw_mainFrameReceiveServerRedirectForProvisionalNavigation
+bdw_mainFrameStartProvisionalNavigation
+checkLocalTransactionReceiptIfNeeded
+checkMobileUnusableByReceipt:finishBlock:
+contentKeyResponseWithFairPlayStreamingKeyResponseData:
+crossScreenToTeamId
+currentTeamId
+debugInterceptReceipt
+decodeReceiptData:
+decodedReceipt
+decoded_receipt
+decryptReceiptURL
+delay refresh receipt, delay time is %@
+didEndUploadReceiptWithOrder:error:
+didFailProvisionalNavigation
+didFindUnverifiedTransactionWithOrderID:receipt:transaction:iapID:skProduct:
+didSendTransactionToServerSuccessWithOrderID:receipt:transactionId:
+did_fail_provisional_navigation
+enableConsumerBusinessMessagingReadReceipts
+enableDelayRefreshReceipt
+enableFixRestoreSubscriptionUploadReceiptSuccess
+enableGetTransactionReasonFromReceipt
+enableIMReadReceiptOptimization
+enableMerchantBusinessMessagingReadReceipts
+enableProvisionalNotification
+enableReadReceiptLogicInGroupChat
+enableReadReceiptPolling
+enableReadReceiptUIInGroupChat
+enableReceiptDecoding
+enableRefreshingReceiptAfterValidation
+enableRenewalReceiptFilter
+enableSk2FilterInvalidReceipt
+enable_read_receipt_polling
+enable_receipt_decoding
+enable_refreshing_receipt_after_validation
+enable_renewal_receipt_filter
+encodeSignalEvent:value:
+end refresh receipt: failed
+end refresh receipt: success
+entitlement
+entitlementMismatchStoreAccount
+entitlementMismatchTikTokAccount
+entitlementPaymentMethodMismatch
+entitlementPrecheckDuration
+entitlementPrecheckResult
+entitlementPrecheckWithMerchantID:isExternalEligible:subMerchantID:userID:toUserID:productIDs:completion:
+entitlementState
+entitlement_mismatch_store
+entitlement_mismatch_tiktok
+entitlement_payment_method_mismatch
+entitlements
+eventsWithReceipt
+extractReceiptData
+fairPlayLicense
+fairPlayLicense is nil
+fairPlayLicense queryItem found bid
+fairplay
+fetchDeviceReceipt
+fp_sdk_rd_pipo_hybrid_sdk_webview_provisionalNavigation_fail
+getCardFieldByTeamId:
+getFairPlayCertificate
+getFairPlayLog
+getIAPEntitlementSKUs:completion:
+getIAPEntitlementSKUsWithMerchantID:completion:
+getIapTransactionWithTransaction:decodeReceipt:
+getStoreReceipt
+getTeamIdForFEWithUid:isSelfTeam:
+getTeamIdForLinkmicId:
+getTeamScoreFromTeamArmies:withOwnerTeamId:leftScore:rightScore:
+getTeamScoreFromTeamArmiesArray:withOwnerTeamId:leftScore:rightScore:
+handleUploadReceiptFailedWithOrder:
+hasDiff:newVisibleRankFromTeamID:
+hasEnableConsumerBusinessMessagingReadReceipts
+hasEnableMerchantBusinessMessagingReadReceipts
+hasTeamId
+hasVbadgeEntitlement
+has_receipt
+hostVisibleRankFromTeamId
+hostVisibleRankFromTeamId_Count
+https://%@ars.%@/api/v1/ios/decrypt_cached_receipt
+https://%@sdk-services.%@/validate-ios-receipt-server?app_id=%@&appsflyer_id=%@&dev_key=%@&sandbox=%@&tran_id=%@&JBDevice=%@
+iapServerEntitlementPrecheck()
+iap_ios_enable_filter_invalid_receipt
+iap_ios_enable_fix_restore_subscription_upload_receipt_success
+iap_ios_enable_get_transaction_reason_from_receipt
+imReadReceiptOptimizationSetting
+im_expand_read_receipt_to_group_chat
+im_read_receipt_optimization_setting
+im_read_receipt_optimization_test
+inAppReceiptValidationURL:appleAppID:libraryVersion:
+inAppReceiptValidationV2URL:
+inAppReceiptValidationV4URLForPurchaseType:appID:
+incentive_module_interact_receipt
+initWithDelayQueryTradeDict:sk2SettingDict:restoreOrderSettingsDict:orderMatchingOptSettings:sk2OSPaymentLogsSetting:enableDuplicateTransactionSkipProcessing:enableGetTransactionReasonFromReceipt:enableFixRestoreSubscriptionUploadReceiptSuccess:enableSK2UnderlyingErrorTracking:enableFinishOrderOpimize:mpURLSettingsDict:mpDefaultHost:keychainConfig:iapStorefrontConfig:bizTrackParamsSetting:errorMessageMap:sk2ErrorCodeSettings:enableTransactionUpdatesStreamAbstraction:enableTransactionUnfinishedStreamAbstraction:sk2OptimizeProductFetchingConfig:iapProductFetchingUsingSk2:enableSk2FilterInvalidReceipt:
+initWithEntitlement:error:
+initWithEntitlements:error:
+initWithGBLExternalIAPEntitlement:error:
+initWithMatchType:monitor:itemFactory:effectService:containerProvider:dataProvider:outerServices:cardGuideViewProvider:linkmicIds:linkmicId:teamId:
+initWithPrecheckStatus:productID:entitlementState:allowedPath:message:
+initWithStoreKitVersion:productType:reason:invalidReceiptError:productIdentifiers:transactionState:transactionIdentifier:transactionDate:isSupplement:
+initWithTTKIAPEntitlement:error:
+initWithTeamId:score:index:
+initWithTeamIdentity:
+initWithTeamIdentity:matchType:DIProvider:
+initWithTransaction:settings:eventLogger:gateKeeperManager:store:loggerFactory:productsRequestFactory:appStoreReceiptProvider:
+initialTeamWithTeamId:
+installReceiptData
+invalidReceiptError
+invalid_receipt_filter
+isAppStoreReceiptSandbox
+isFairPlay=%d, playerType=%@, expectedPlayerType=%@
+isFairPlayDrm
+isFairPlayDrmStream
+isFromRefreshReceipt
+isTeamAndBaseTeamAreEqual:baseTeam:includeTeamId:
+latestSubscriptionTransactionWithReceiptData:transactionIdentifier:
+leftTeamId
+live_sub_entitlement_precheck
+livesdk_iap_check_order_receipt
+livesdk_iap_check_order_receipt_fail
+livesdk_iap_check_order_receipt_fail_for_charge
+livesdk_iap_check_order_receipt_success
+livesdk_iap_check_order_receipt_success_for_charge
+livesdk_iap_check_receipt_fail_original
+livesdk_iap_get_iap_entitlement_sku_result
+livesdk_iap_get_subscription_entitlement_result
+livesdk_iap_get_subscription_entitlement_start
+livesdk_iap_refresh_receipt_failed
+livesdk_iap_refresh_receipt_success
+livesdk_iap_send_receipt
+livesdk_iap_send_receipt_request_fail
+livesdk_iap_send_receipt_request_success
+livesdk_iap_start_check_order_receipt
+loadFairPlayCertificate
+match:contributorsDidChange:forTeamId:
+mergeTeamContributors:forTeamId:
+meta.ReceiptMeta
+meta.ReceiptMeta.ExtEntry.key
+meta.ReceiptMeta.ExtEntry.value
+meta.ReceiptMeta.cursor_file_name
+meta.ReceiptMeta.log_id
+meta.ReceiptMeta.msg_id
+meta.ReceiptMeta.server_timing
+microsoftgraduallydiscussedhe becameexecutivejquery.jshouseholdconfirmedpurchasedliterallydestroyedup to thevariationremainingit is notcenturiesJapanese among thecompletedalgorithminterestsrebellionundefinedencourageresizableinvolvingsensitiveuniversalprovision(althoughfeaturingconducted), which continued-header">February numerous overflow:componentfragmentsexcellentcolspan="technicalnear the Advanced source ofexpressedHong Kong Facebookmultiple mechanismelevationoffensive</form>
+mobileUnusalbeByReceipt
+mobileprovision
+money/iap/v1/validate_receipt
+muteAuxStreamAudioWithSteamId
+muteAuxStreamAudioWithSteamId:mute:
+newReceipt: %@...
+oldReceipt: %@...
+p_groupChatReadReceiptStrategy
+p_presentReadReceiptModalForGroupChatWithUIDs:
+p_trackReadReceiptDisplayCost:
+p_trackReadReceiptMarkReadCost:
+parsePurchasedItemsFromReceipt
+parseTeamBattleResultFromMessage:teamID:uid:
+parseTeamBattleResultFromResultDic:teamID:uid:
+passEntitlementPrecheck
+paymentQueue:didRevokeEntitlementsForProductIdentifiers:
+performEntitlementPrecheckWithProductIDs:toUserID:merchantID:subMerchantID:userID:completion:
+pgc.resubscribe.entitlement.precheck.failed
+pipo.receipt.check
+pipo/inner/receipt/v1
+pipo_webview_provisionalNavigation_fail
+precheckEntitlementWith:completion:
+precheckEntitlementWith:isExternalEligible:subMerchantID:userID:toUserID:productIDs:completion:
+produceEntitlementPrecheckResultsFrom:
+produceGBLExternalEntitlementAllowedPathFrom:
+produceGBLExternalEntitlementPrecheckStatusFrom:
+produceGBLExternalEntitlementStateFrom:
+produceIAPEntitlementPrecheckResult:
+produceIAPEntitlementPrecheckResultFrom:
+produceIAPEntitlementPrecheckResultFromEnvPrecheck:
+produceTTKEntitlementAllowedPathFrom:
+produceTTKEntitlementPrecheckStatusFrom:
+produceTTKEntitlementStateFrom:
+promote_IAP_send_receipt
+provisional
+push_provisional_permission_open
+qos_read_receipt_perf
+readReceiptPollingTimeInterval
+readReceiptStackConstraints
+readReceiptStackView
+read_receipt
+read_receipt_polling_max_count
+read_receipt_polling_time_interval
+read_receipt_pop_up_close
+read_receipt_pop_up_show
+receipt
+receipt-data
+receiptData
+receiptRefreshDelegateDic
+receiptTime
+receiptToken
+receiptValidationURL:appsFlyerUID:appsFlyerDevKey:isSandbox:transactionId:skipAdvancedJailbreakValidation:
+receipt_%ld
+receipt_count
+receipt_data
+receipt_id
+refreshReceiptCompletion
+removeSk1ReceiptFromValidateReceiptRequest
+remove_sk1_receipt_from_validate_receipt_request
+reportTransactionWithProduct:paymentQuantity:transactionIdentifier:originalTransactionIdentifier:transactionDate:verifyReceipt:environment:storeKitVersion:
+response_receipt_to_check_mp_order
+restoreCardArray:itemType:send2TeamId:
+restore_order_verify_receipt_retry_count
+resubscribePassEntitlementPrecheck:startTime:
+rightTeamId
+sandboxReceipt
+send new receipt %@, %@
+send new receipt platform url is %@
+send2TeamId
+sendDecryptReceiptRequestWithEnvironment:receipt:completionHandler:
+sendEntitlementRequest(params:)
+sendReceiptEndTime
+sendReceiptStartTime
+sendReceiptTime
+sendReceiptWithTransaction:paymentQueue:
+sendTransactionWithOrderID error: transaction/receipt is nil
+sendTransactionWithOrderID:receipt:transaction:completion:
+send_receipt_duration
+send_to_response_receipt
+server validate receipt status failed
+setDecodedReceipt:
+setEnableDelayRefreshReceipt:
+setEnableReceiptDecoding:
+setEnableRefreshingReceiptAfterValidation:
+setEnableRenewalReceiptFilter:
+setEntitlement:
+setEntitlementPrecheckDuration:
+setEntitlementPrecheckResult:
+setEntitlementState:
+setEventsWithReceipt:
+setFairPlayLicense:
+setIsFromRefreshReceipt:
+setLeftTeamId:
+setLeftTeamId:rightTeamId:
+setReadReceiptStackConstraints:
+setReadReceiptStackView:
+setReceipt:
+setReceiptRefreshDelegateDic:
+setReceiptTime:
+setRefreshReceiptCompletion:
+setRemoveSk1ReceiptFromValidateReceiptRequest:
+setRightTeamId:
+setSend2TeamId:
+setSendReceiptEndTime:
+setSendReceiptStartTime:
+setSendReceiptTime:
+setTeamID:
+setTeamId:
+setTeamWithTeamId:uids:
+setTeamWithTeamId:uids:source:
+setToUserTeamId:
+setTtkIAPEntitlement:
+setUploadReceiptEndTime:
+setUploadReceiptError:
+setUseReceiptValidationSandbox:
+setValidateReceiptURL:
+setVisibleRankFromTeamID:
+sk2_renewal_receipt_filter
+sk2_restore_order_verify_receipt_retry_count
+start refresh receipt
+startSfxTeamIdArray
+startSfxTeamIdArrayJSONTransformer
+startSfxTeamIdArray_Count
+startVerifyEmailCodeSignInForTicketWithEmail:code:type:finishBlock:
+stream %llu is in %s state: receipt of STOP_SENDING frame is a violation
+submit_receipt
+t have the appropriate entitlements to use the functionality.
+teamID
+teamId
+teamIdStr
+teamResultStringFromTeamResult:withTeamId:
+teamResultStringFromTeamResultArray:withTeamId:
+teamWithTeamId:
+toUserTeamId
+ttkIAPEntitlement
+ttlive_recharge_send_receipt
+updateTeamContributors:forTeamId:
+uploadReceiptEndTime
+uploadReceiptError
+uploadReceiptWithBaseURL:path:serverMethod:sign:merchantID:method:params:queryParameters:completionBlock:
+uploadReceiptWithIapProduct:amountValue:currency:merchantSubcriptionId:orderFromOtherSystem:isRenewToken:completionBlock:
+uploadReceiptWithIapProduct:product:trackData:completion:
+uploadReceiptWithIapTransaction:price:priceLocale:isSupplementOrder:featureKeys:completionBlock:
+uploadReceiptWithURL:method:params:completionBlock:
+upload_receipt_duration
+upload_receipt_result
+upload_receipt_status
+upload_receipt_url
+useReceiptValidationSandbox
+v16@?0@"GBLExternalIAPEntitlementPrecheckResult"8
+v16@?0@"_TtC16GBLInAppPurchase31GBLIAPEntitlementPrecheckResult"8
+v24@0:8@"GBLExternalIAPEntitlementPrecheckResult"16
+v24@?0@"TTKCommerceIAPValidateReceiptResponse"8@"NSError"16
+v32@0:8@"GBLExternalEntitlementPrecheckParams"16@?<v@?@"GBLExternalIAPEntitlementPrecheckResult">24
+v32@0:8@"NSString"16@?<v@?@"_TtC16GBLInAppPurchase26GBLIAPEntitlementSKUResult">24
+v32@0:8@"TTKIAPEntitlementPrecheckParams"16@?<v@?@"TTKIAPEntitlementPrecheckResult">24
+v64@0:8@"NSSet"16@"NSString"24@"NSString"32@"NSString"40@"NSString"48@?<v@?@"GBLExternalIAPEntitlementPrecheckResult">56
+v68@0:8@"NSString"16B24@"NSString"28@"NSString"36@"NSString"44@"NSSet"52@?<v@?@"_TtC16GBLInAppPurchase31GBLIAPEntitlementPrecheckResult">60
+validateInAppPurchase couldn't get store receipt. Event has'n been sent
+validateReceiptURL
+validateReceiptURLStorageKey
+validateReceiptURL_%@
+validateReceiptUrl
+validate_receipt_url
+vbadgeEntitlement
+visibleRankFromTeamID
+web view web content process did receive server redirect for provisional navigation
+webView:didFailProvisionalNavigation:withError:
+webView:didProvisionNavigation:
+webView:didReceiveServerRedirectForProvisionalNavigation:
+webView:didStartProvisionalNavigation:

@@ -778,22 +778,18 @@ def package_all(app_path, helper_path, dylib_path=None, persistence_helper_path=
     final_app = os.path.join(staging_dir, "ECMAIN.app")
     shutil.copytree(app_path, final_app)
     
-    # 1.5 Embed Mihomo.framework (Required for VPN Tunnel)
-    mihomo_src = os.path.join(DERIVED_DATA_DIR, f"Build/Products/{config_str}-iphoneos/Mihomo.framework")
-    if not os.path.exists(mihomo_src):
-        # Try alternate location
-        mihomo_src = os.path.join(PROJECT_ROOT, "ECMAIN/Frameworks/Mihomo.xcframework/ios-arm64/Mihomo.framework")
-    
-    if os.path.exists(mihomo_src):
-        log(f"Embedding Mihomo.framework from {mihomo_src}...")
-        frameworks_dir = os.path.join(final_app, "Frameworks")
-        os.makedirs(frameworks_dir, exist_ok=True)
-        dest_mihomo = os.path.join(frameworks_dir, "Mihomo.framework")
-        if os.path.exists(dest_mihomo): shutil.rmtree(dest_mihomo)
-        shutil.copytree(mihomo_src, dest_mihomo)
-        log("Mihomo.framework embedded successfully")
-    else:
-        log("WARNING: Mihomo.framework not found! VPN may not work.")
+    # [EBADEXEC FIX] Mihomo.framework is a STATIC library (ar archive), NOT a dynamic framework.
+    # iOS 15 AMFI rejects app bundles containing non-Mach-O files in Frameworks/.
+    # Mihomo is already statically linked into the ECMAIN binary, so embedding it is both
+    # unnecessary and fatal. We must remove it if Xcode auto-embedded it.
+    mihomo_in_frameworks = os.path.join(final_app, "Frameworks", "Mihomo.framework")
+    if os.path.exists(mihomo_in_frameworks):
+        log("Removing static Mihomo.framework from Frameworks/ (ar archive causes EBADEXEC on iOS 15)...")
+        shutil.rmtree(mihomo_in_frameworks)
+    # Also remove empty Frameworks/ directory if nothing else is in it
+    frameworks_dir = os.path.join(final_app, "Frameworks")
+    if os.path.exists(frameworks_dir) and not os.listdir(frameworks_dir):
+        os.rmdir(frameworks_dir)
     
     # 2. Inject Helper (The critical step!)
     dest_helper = os.path.join(final_app, "echelper")
@@ -837,16 +833,7 @@ def package_all(app_path, helper_path, dylib_path=None, persistence_helper_path=
     # 4. Sign
     entitlements = os.path.join(PROJECT_ROOT, "ECMAIN/ECMAIN.entitlements")
     
-    # 4. Sign Mihomo Framework first (must be signed before main app)
-    mihomo_framework = os.path.join(final_app, "Frameworks/Mihomo.framework")
-    if os.path.exists(mihomo_framework):
-        log("Signing Mihomo.framework...")
-        mihomo_binary = os.path.join(mihomo_framework, "Mihomo")
-        run_cmd(f"codesign -f -s - '{mihomo_binary}'", ignore_error=True)
-        # Apply CT bypass
-        fastpathsign = os.path.join(BUILD_ROOT, "Source/Exploits/fastPathSign/fastPathSign")
-        if os.path.exists(fastpathsign):
-            run_cmd(f"'{fastpathsign}' '{mihomo_binary}'", ignore_error=True)
+
 
     # Copy the pre-generated pair record with PrivateKey into the App Bundle
     pair_record_src = os.path.join(PROJECT_ROOT, "ECMAIN", "RootHelper", "ecwda_pair_record.plist")
