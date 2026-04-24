@@ -793,13 +793,11 @@ void handleRequest(int socket) {
       [request hasPrefix:@"POST /run_script"]) {
     NSLog(@"[ECWebServer] Matched: POST /task or /run_script");
 
-    // Find body (after double newline)
-    NSRange bodyRange = [request rangeOfString:@"\r\n\r\n"];
-    if (bodyRange.location != NSNotFound) {
-      NSString *body = [request substringFromIndex:bodyRange.location + 4];
-      NSLog(@"[ECWebServer] Request body: %@", body);
+    // Find body (after double newline) — 使用正确的二进制 bodyData，而非字符串截割
+    // 旧写法 [request substringFromIndex:...] 在含 Unicode 字符时会截断字节导致 JSON 解析失败
+    NSLog(@"[ECWebServer] Request body: %@", [[NSString alloc] initWithData:bodyData encoding:NSUTF8StringEncoding] ?: @"<binary/non-utf8>");
 
-      NSData *bodyData = [body dataUsingEncoding:NSUTF8StringEncoding];
+    if (bodyData.length > 0) {
       NSError *jsonError = nil;
       NSDictionary *json = [NSJSONSerialization JSONObjectWithData:bodyData
                                                            options:0
@@ -881,7 +879,7 @@ void handleRequest(int socket) {
         NSLog(@"[ECWebServer] !!! Failed to parse JSON");
       }
     } else {
-      NSLog(@"[ECWebServer] !!! No body found in request");
+      NSLog(@"[ECWebServer] !!! Empty body in request (bodyData.length == 0)");
     }
   } else {
     NSLog(@"[ECWebServer] !!! Unknown path, returning 404");

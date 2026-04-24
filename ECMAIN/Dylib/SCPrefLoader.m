@@ -1,17 +1,17 @@
 //
-//  ECDeviceSpoofConfig.m
+//  SCPrefLoader.m
 //  ECDeviceSpoof
 //
 //  配置读取模块实现 - 支持按 Bundle ID + Clone ID 读取配置
 //
 
-#import "ECDeviceSpoofConfig.h"
+#import "SCPrefLoader.h"
 
 // 文件日志（与 ECDeviceSpoof.m 共享同一个日志文件）
 // ⚠️ 2026-02-03: 禁用文件写入，避免高频调用导致 I/O 性能问题
 static void ECConfigLog(NSString *format, ...) NS_FORMAT_FUNCTION(1, 2);
 static void ECConfigLog(NSString *format, ...) {
-#if 0 // 临时禁用日志
+#if 1 // 开启日志以排查分身隔离失效问题
   va_list args;
   va_start(args, format);
   NSString *logMsg = [[NSString alloc] initWithFormat:format arguments:args];
@@ -21,19 +21,19 @@ static void ECConfigLog(NSString *format, ...) {
 #endif
 }
 
-@interface ECDeviceSpoofConfig ()
+@interface SCPrefLoader ()
 @property(nonatomic, strong) NSDictionary *config;
 @property(nonatomic, strong) NSString *currentBundleId;
 @property(nonatomic, strong) NSString *currentCloneId;
 @end
 
-@implementation ECDeviceSpoofConfig
+@implementation SCPrefLoader
 
 + (instancetype)shared {
-  static ECDeviceSpoofConfig *instance = nil;
+  static SCPrefLoader *instance = nil;
   static dispatch_once_t onceToken;
   dispatch_once(&onceToken, ^{
-    instance = [[ECDeviceSpoofConfig alloc] init];
+    instance = [[SCPrefLoader alloc] init];
   });
   return instance;
 }
@@ -42,22 +42,27 @@ static void ECConfigLog(NSString *format, ...) {
   // 异步初始化，避免阻塞主线程或 constructor
   dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
                  ^{
-                   [[ECDeviceSpoofConfig shared] originalBundleId];
+                   [[SCPrefLoader shared] originalBundleId];
                  });
 }
 
 - (instancetype)init {
   self = [super init];
   if (self) {
-    // 获取当前 Bundle ID (直接从 infoDictionary 读取，避免触发 Hook 递归)
-    _currentBundleId = [[NSBundle mainBundle]
-                           infoDictionary][@"CFBundleIdentifier"] ?: @"unknown";
+    // [v2254 致命漏洞修复]: 在极早期的 C constructor 中，[[NSBundle mainBundle] infoDictionary]
+    // 往往返回缓存甚至原版的数据。为了获取克隆包被修改后的绝对真实 Bundle ID，
+    // 我们必须直接从磁盘读取 Info.plist 以绕过内存缓存和潜在的 Hook 冲突！
+    NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
+    NSString *infoPlistPath = [bundlePath stringByAppendingPathComponent:@"Info.plist"];
+    NSDictionary *physicalInfo = [NSDictionary dictionaryWithContentsOfFile:infoPlistPath];
+    
+    _currentBundleId = physicalInfo[@"CFBundleIdentifier"] ?: @"unknown";
 
-    // 获取 Clone ID（从环境变量或启动参数）
+    // 获取 Clone ID（从环境变量或启动参数或正则表达式）
     _currentCloneId = [self detectCloneId];
 
-    ECConfigLog(@" Bundle ID: %@", _currentBundleId);
-    ECConfigLog(@" Clone ID: %@", _currentCloneId ?: @"(主应用)");
+    ECConfigLog(@" 物理读取 Bundle ID: %@", _currentBundleId);
+    ECConfigLog(@" 解析出 Clone ID: %@", _currentCloneId ?: @"(主应用/无分身标志)");
 
     [self reloadConfig];
   }
@@ -189,60 +194,34 @@ static void ECConfigLog(NSString *format, ...) {
   }
 
   dispatch_once(&onceToken, ^{
-    // ⚠️ 关键修复：不能调用 NSSearchPathForDirectoriesInDomains 或
-    // NSHomeDirectory 因为它们已经被 ECDeviceSpoof.m Hook 了，而 Hook
-    // 内部又调用了本方法 (cloneDataDirectory) 这会导致无限递归死锁
-    // (EXC_BREAKPOINT / SIGTRAP)
-    //
-    // 解决方案：使用底层的 getenv("HOME") 获取真实的沙盒根目录，避开 Hook。
+    // [v2260] 修复 Sandbox deny 问题
+    // 之前使用 /var/mobile/Documents/ 会被 App Sandbox 策略拒绝写入
+    // 现在改用 App 自身沙盒的 Documents 目录（getenv("HOME")/Documents/）
+    // TrollStore 安装的 App 对自身沙盒有完整读写权限
     const char *homeEnv = getenv("HOME");
-    NSString *realHomeDir =
-        homeEnv ? [NSString stringWithUTF8String:homeEnv] : nil;
-
-    if (realHomeDir) {
-      // 优先使用 Library/Application Support (更隐蔽)
-      NSString *basePath = [realHomeDir
-          stringByAppendingPathComponent:
-              @"Library/Application Support/.com.apple.UIKit.pboard"];
-      cachedDataDir = [NSString
-          stringWithFormat:@"%@/session_%@", basePath, self.currentCloneId];
+    NSString *sandboxPath;
+    if (homeEnv) {
+      sandboxPath = [[NSString stringWithUTF8String:homeEnv]
+          stringByAppendingPathComponent:@"Documents/.ecdata"];
     } else {
-      // 降级硬编码 (极少发生)
-      cachedDataDir = [NSString
-          stringWithFormat:
-              @"/var/mobile/Documents/.com.apple.UIKit.pboard/%@/session_%@",
-              self.currentBundleId, self.currentCloneId];
+      // 兜底：使用 NSSearchPath
+      NSString *docDir = [NSSearchPathForDirectoriesInDomains(
+          NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+      sandboxPath = [docDir stringByAppendingPathComponent:@".ecdata"];
     }
-
-    // 确保目录存在
+    cachedDataDir = [NSString stringWithFormat:@"%@/session_%@", sandboxPath, self.currentCloneId];
+    
     NSFileManager *fm = [NSFileManager defaultManager];
     if (![fm fileExistsAtPath:cachedDataDir]) {
-      NSError *error;
-      [fm createDirectoryAtPath:cachedDataDir
-          withIntermediateDirectories:YES
-                           attributes:nil
-                                error:&error];
-      if (error) {
-        ECConfigLog(@" 创建分身数据目录失败: %@", error);
-        // 如果失败，尝试降级到 Documents (主要针对旧设备或权限问题)
-        if (realHomeDir) {
-          NSString *docPath =
-              [realHomeDir stringByAppendingPathComponent:
-                               @"Documents/.com.apple.UIKit.pboard"];
-          cachedDataDir = [NSString
-              stringWithFormat:@"%@/session_%@", docPath, self.currentCloneId];
-          [fm createDirectoryAtPath:cachedDataDir
-              withIntermediateDirectories:YES
-                               attributes:nil
-                                    error:nil];
-          ECConfigLog(@" 重试使用 Documents 目录: %@", cachedDataDir);
-        }
+      NSError *createErr = nil;
+      [fm createDirectoryAtPath:cachedDataDir withIntermediateDirectories:YES attributes:nil error:&createErr];
+      if (createErr) {
+        ECConfigLog(@" ❌ 创建分身数据目录失败: %@ 错误: %@", cachedDataDir, createErr);
       } else {
         ECConfigLog(@" ✅ 创建分身数据目录: %@", cachedDataDir);
       }
     }
   });
-
   return cachedDataDir;
 }
 

@@ -51,7 +51,15 @@ extern void killall(NSString *processName, BOOL softly);
 #import <SpringBoardServices/SpringBoardServices.h>
 #import <libroot.h>
 
-extern BOOL isLdidInstalled(void);
+// isLdidInstalled: 检查 ldid 二进制是否存在于 TrollStore App Bundle 中
+BOOL isLdidInstalled(void) {
+  NSString *ldidPath =
+      [trollStoreAppPath() stringByAppendingPathComponent:@"ldid"];
+  BOOL exists = [[NSFileManager defaultManager] fileExistsAtPath:ldidPath];
+  NSLog(@"[RootHelper] isLdidInstalled? Path: %@ | Exists: %@", ldidPath,
+        exists ? @"YES" : @"NO");
+  return exists;
+}
 
 // --- libproc definitions (Manually declared for compatibility) ---
 #define PROC_PIDLISTFDS 1
@@ -2237,32 +2245,145 @@ int installTrollStore(NSString *pathToTar) {
   return ret;
 }
 
-void refreshAppRegistrations(BOOL system) {
-  // ECMAIN itself is always System
-  registerPath(trollStoreAppPath(), NO, YES);
+// ECMAIN 管理的应用 Bundle ID 列表
+// 刷新注册时，会自动查找这些应用并重新注册到 LaunchServices
+// 新增应用时只需在此数组中添加 bundle ID 即可
+// ============================================================
+static NSArray *ecmainManagedAppBundleIDs(void) {
+  NSMutableArray *managedList = [NSMutableArray arrayWithArray:@[
+    @"com.ss.iphone.ugc.Ame3",
+    @"com.ss.iphone.ugc.Ame4",
+    @"com.ss.iphone.ugc.Ame6",
+    @"com.ss.iphone.ugc.Ame8",
+    @"com.ss.iphone.ugc.Ame9",
+    @"com.ss.iphone.ugc.Ame10",
+    @"com.apple.accessibility.ecwda",
+  ]];
+  
+  NSString *plistPath = @"/var/mobile/Media/ECMAIN/managed_apps.plist";
+  if ([[NSFileManager defaultManager] fileExistsAtPath:plistPath]) {
+      NSArray *dynamicList = [NSArray arrayWithContentsOfFile:plistPath];
+      if (dynamicList && [dynamicList isKindOfClass:[NSArray class]]) {
+          for (NSString *bundleId in dynamicList) {
+              if (![managedList containsObject:bundleId]) {
+                  [managedList addObject:bundleId];
+              }
+          }
+      }
+  }
+  
+  return managedList;
+}
 
-  // For installed apps, check entitlements to decide System vs User
-  for (NSString *appPath in trollStoreInstalledAppBundlePaths()) {
-    NSString *executablePath =
-        [[NSBundle bundleWithPath:appPath] executablePath];
+void refreshAppRegistrations(BOOL forceSystemRefresh) {
+  NSLog(@"========== [refreshAppRegistrations] START ==========");
+  NSLog(@"[refresh] forceSystemRefresh = %@",
+        forceSystemRefresh ? @"YES" : @"NO");
+
+  // === 第一步：注册 ECMAIN 自身 ===
+  NSString *tsAppPath = trollStoreAppPath();
+  NSLog(@"[refresh] trollStoreAppPath() = %@", tsAppPath ?: @"(null)");
+
+  if (tsAppPath &&
+      [[NSFileManager defaultManager] fileExistsAtPath:tsAppPath]) {
+    bool regResult = registerPath(tsAppPath, NO, YES);
+    NSLog(@"[refresh] ECMAIN register = %@",
+          regResult ? @"OK" : @"FAIL");
+  } else {
+    NSLog(@"[refresh] ⚠️ ECMAIN path not found, skipping self-registration");
+  }
+
+  // === 第二步：处理已知的 ECMAIN 管理应用（通过 bundle ID 查找） ===
+  // 这些应用可能缺少 _ECStore 标记文件，通过 LSApplicationProxy 直接查找
+  NSArray *managedIDs = ecmainManagedAppBundleIDs();
+  NSLog(@"[refresh] Processing %lu managed app bundle IDs",
+        (unsigned long)managedIDs.count);
+
+  NSMutableSet *processedPaths = [NSMutableSet set];
+
+  for (NSString *bundleID in managedIDs) {
+    LSApplicationProxy *proxy =
+        [LSApplicationProxy applicationProxyForIdentifier:bundleID];
+    if (!proxy || !proxy.bundleURL) {
+      NSLog(@"[refresh] [%@] NOT installed, skipping", bundleID);
+      continue;
+    }
+
+    NSString *appPath = proxy.bundleURL.path;
+    NSLog(@"[refresh] [%@] found at: %@", bundleID, appPath);
+
+    // 自动补上缺失的 _ECStore 标记
+    NSString *containerPath =
+        [appPath stringByDeletingLastPathComponent];
+    NSString *markerPath =
+        [containerPath stringByAppendingPathComponent:TS_ACTIVE_MARKER];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:markerPath]) {
+      NSData *emptyData = [NSData data];
+      BOOL created = [emptyData writeToFile:markerPath atomically:YES];
+      NSLog(@"[refresh] [%@] Created missing marker %@ = %@", bundleID,
+            TS_ACTIVE_MARKER, created ? @"OK" : @"FAIL");
+    }
+
+    // 读取 entitlements 决定注册类型
+    NSString *executablePath = appMainExecutablePathForAppPath(appPath);
     NSDictionary *entitlements =
         dumpEntitlementsFromBinaryAtPath(executablePath);
 
-    // If has no-sandbox, it's a System app. Otherwise, treat as User app.
     BOOL isSystemApp = NO;
     if (entitlements &&
         entitlements[@"com.apple.private.security.no-sandbox"]) {
       isSystemApp = YES;
     }
+    BOOL finalIsSystem = isSystemApp || forceSystemRefresh;
 
-    NSLog(@"[refresh] App: %@ | no-sandbox: %@ -> Register as: %@",
+    NSLog(@"[refresh] [%@] no-sandbox=%@ force=%@ -> %@", bundleID,
+          isSystemApp ? @"Y" : @"N", forceSystemRefresh ? @"Y" : @"N",
+          finalIsSystem ? @"System" : @"User");
+
+    // 先卸载再注册
+    bool unregOk = registerPath(appPath, YES, finalIsSystem);
+    bool regOk = registerPath(appPath, NO, finalIsSystem);
+    NSLog(@"[refresh] [%@] unreg=%@ reg=%@", bundleID,
+          unregOk ? @"OK" : @"FAIL", regOk ? @"OK" : @"FAIL");
+
+    [processedPaths addObject:appPath];
+  }
+
+  // === 第三步：处理有 _ECStore 标记但不在已知列表中的应用 ===
+  // 兼容通过 ECMAIN UI 安装的其他应用
+  NSArray *markerAppPaths = trollStoreInstalledAppBundlePaths();
+  NSLog(@"[refresh] Marker-based apps found: %lu",
+        (unsigned long)markerAppPaths.count);
+
+  for (NSString *appPath in markerAppPaths) {
+    if ([processedPaths containsObject:appPath]) {
+      NSLog(@"[refresh] [marker] %@ already processed, skipping",
+            appPath.lastPathComponent);
+      continue;
+    }
+
+    NSString *executablePath = appMainExecutablePathForAppPath(appPath);
+    NSDictionary *entitlements =
+        dumpEntitlementsFromBinaryAtPath(executablePath);
+
+    BOOL isSystemApp = NO;
+    if (entitlements &&
+        entitlements[@"com.apple.private.security.no-sandbox"]) {
+      isSystemApp = YES;
+    }
+    BOOL finalIsSystem = isSystemApp || forceSystemRefresh;
+
+    NSLog(@"[refresh] [marker] App: %@ | no-sandbox: %@ force=%@ -> %@",
           appPath.lastPathComponent, isSystemApp ? @"YES" : @"NO",
-          isSystemApp ? @"System" : @"User");
+          forceSystemRefresh ? @"YES" : @"NO", finalIsSystem ? @"System" : @"User");
 
-    // 【Antigravity 修复】强效修复机制：先卸载再注册
-    // 强制清除LaunchServices中可能存在的因之前的Bug造成的残余损坏状态
-    registerPath(appPath, YES, isSystemApp); // Unregister first
-    registerPath(appPath, NO, isSystemApp);  // Register clean
+    // 先卸载再注册
+    bool unregOk = registerPath(appPath, YES, finalIsSystem);
+    bool regOk = registerPath(appPath, NO, finalIsSystem);
+    NSLog(@"[refresh] [marker] %@ unreg=%@ reg=%@", appPath.lastPathComponent,
+          unregOk ? @"OK" : @"FAIL", regOk ? @"OK" : @"FAIL");
+          
+    [processedPaths addObject:appPath];
   }
 }
 
@@ -2972,6 +3093,258 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
       // 4. Force restart securityd so Keychain changes take immediate effect
       killall(@"securityd", NO);
 
+      return 0;
+    } else if ([cmd isEqualToString:@"scan-orphaned"]) {
+      NSArray *basePaths = @[
+          @"/var/mobile/Containers/Data/Application",
+          @"/var/containers/Bundle/Application",
+          @"/var/containers/Bundle/TrollStore"
+      ];
+      NSFileManager *fm = [NSFileManager defaultManager];
+      NSMutableArray *orphaned = [NSMutableArray array];
+      NSMutableSet *seenPaths = [NSMutableSet set];
+      
+      for (NSString *basePath in basePaths) {
+          NSArray *uuids = [fm contentsOfDirectoryAtPath:basePath error:nil];
+          for (NSString *uuid in uuids) {
+              NSString *fullPath = [basePath stringByAppendingPathComponent:uuid];
+              if ([seenPaths containsObject:fullPath]) continue;
+              
+              BOOL isDir = NO;
+              if ([fm fileExistsAtPath:fullPath isDirectory:&isDir] && isDir) {
+                  NSString *bundleId = nil;
+                  NSString *plistPath = [fullPath stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"];
+                  if ([fm fileExistsAtPath:plistPath]) {
+                      NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:plistPath];
+                      bundleId = dict[@"MCMMetadataIdentifier"];
+                  } else {
+                      NSArray *subdirs = [fm contentsOfDirectoryAtPath:fullPath error:nil];
+                      for (NSString *sub in subdirs) {
+                          if ([sub hasSuffix:@".app"]) {
+                              NSString *infoPlist = [[fullPath stringByAppendingPathComponent:sub] stringByAppendingPathComponent:@"Info.plist"];
+                              NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:infoPlist];
+                              bundleId = info[@"CFBundleIdentifier"];
+                              break;
+                          }
+                      }
+                  }
+                  
+                  if (bundleId && bundleId.length > 0) {
+                      id proxy = [NSClassFromString(@"LSApplicationProxy") applicationProxyForIdentifier:bundleId];
+                      if (!proxy || ![proxy valueForKey:@"bundleURL"]) {
+                          NSString *tsAppPath = appPathForAppId(bundleId);
+                          if (!tsAppPath) {
+                              [seenPaths addObject:fullPath];
+                              NSDictionary *orphanInfo = @{
+                                  @"bundleId": bundleId,
+                                  @"path": fullPath,
+                                  @"uuid": uuid
+                              };
+                              [orphaned addObject:orphanInfo];
+                          }
+                      }
+                  }
+              }
+          }
+      }
+      NSData *jsonData = [NSJSONSerialization dataWithJSONObject:orphaned options:0 error:nil];
+      if (jsonData) {
+          NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+          printf("%s\n", [jsonString UTF8String]);
+      } else {
+          printf("[]\n");
+      }
+      return 0;
+    } else if ([cmd isEqualToString:@"delete-orphaned"]) {
+      if (args.count < 3) return -3;
+      NSString *path = args[1];
+      NSString *bundleId = args[2];
+      
+      if (![path hasPrefix:@"/var/mobile/Containers/Data/Application/"] &&
+          ![path hasPrefix:@"/var/containers/Bundle/Application/"] &&
+          ![path hasPrefix:@"/var/containers/Bundle/TrollStore/"]) {
+          NSLog(@"[RootHelper] Invalid orphaned path: %@", path);
+          return -1;
+      }
+      
+      NSFileManager *fm = [NSFileManager defaultManager];
+      NSError *error;
+      
+      // 1. Delete the Data Container
+      BOOL success = [fm removeItemAtPath:path error:&error];
+      if (!success) {
+          NSLog(@"[RootHelper] Failed to delete orphaned container: %@", error);
+          // Don't return here, try to clean up other stuff anyway
+      } else {
+          NSLog(@"[RootHelper] Successfully deleted orphaned container: %@", path);
+      }
+      
+      // 2. Try to find and delete group containers and plugin data using LSApplicationProxy (if it still knows about them)
+      id appProxy = [NSClassFromString(@"LSApplicationProxy") applicationProxyForIdentifier:bundleId];
+      if (appProxy) {
+          NSDictionary *groupContainers = [appProxy valueForKey:@"groupContainerURLs"];
+          if (groupContainers) {
+              for (NSString *key in groupContainers) {
+                  NSURL *url = groupContainers[key];
+                  if (url) {
+                      // Check if other apps share this group container before deleting
+                      NSArray *appsWithGroup = applicationsWithGroupId(key);
+                      if (appsWithGroup.count <= 1) {
+                         [fm removeItemAtURL:url error:nil];
+                         NSLog(@"[RootHelper] Deleted orphaned group container for %@: %@", bundleId, url.path);
+                      } else {
+                         NSLog(@"[RootHelper] Orphaned group container %@ is shared by %lu apps, skipping deletion", key, (unsigned long)appsWithGroup.count);
+                      }
+                  }
+              }
+          }
+          
+          NSArray *plugins = [appProxy valueForKey:@"plugInKitPlugins"];
+          if (plugins) {
+              for (id pluginProxy in plugins) {
+                  NSURL *pluginURL = [pluginProxy valueForKey:@"dataContainerURL"];
+                  if (pluginURL) {
+                      [fm removeItemAtURL:pluginURL error:nil];
+                      NSLog(@"[RootHelper] Deleted orphaned plugin container for %@: %@", bundleId, pluginURL.path);
+                  }
+              }
+          }
+      }
+      
+      // 3. Try to clean up from Keychain
+      void *sqlite = dlopen("/usr/lib/libsqlite3.dylib", RTLD_LAZY);
+      if (sqlite) {
+        int (*_sqlite3_open)(const char *filename, void **ppDb) = dlsym(sqlite, "sqlite3_open");
+        int (*_sqlite3_exec)(void *, const char *, int (*callback)(void *, int, char **, char **), void *, char **) = dlsym(sqlite, "sqlite3_exec");
+        int (*_sqlite3_close)(void *) = dlsym(sqlite, "sqlite3_close");
+        void (*_sqlite3_free)(void *) = dlsym(sqlite, "sqlite3_free");
+
+        if (_sqlite3_open && _sqlite3_exec && _sqlite3_close) {
+          void *db = NULL;
+          int rc = _sqlite3_open("/private/var/Keychains/keychain-2.db", &db);
+          if (rc == 0) {
+            NSString *likeStr = [NSString stringWithFormat:@"%%%@%%", bundleId];
+            NSString *sql = [NSString stringWithFormat:
+                    @"DELETE FROM genp WHERE agrp LIKE '%@'; DELETE FROM cert "
+                    @"WHERE agrp LIKE '%@'; DELETE FROM keys WHERE agrp LIKE "
+                    @"'%@'; DELETE FROM inet WHERE agrp LIKE '%@';",
+                    likeStr, likeStr, likeStr, likeStr];
+            char *err_msg = 0;
+            _sqlite3_exec(db, sql.UTF8String, 0, 0, &err_msg);
+            if (err_msg && _sqlite3_free) _sqlite3_free(err_msg);
+            _sqlite3_close(db);
+            killall(@"securityd", NO);
+            NSLog(@"[RootHelper] Keychain cleaned for orphaned app %@", bundleId);
+          }
+        }
+        dlclose(sqlite);
+      }
+      
+      return 0;
+    } else if ([cmd isEqualToString:@"clean-system-data"]) {
+      NSFileManager *fm = [NSFileManager defaultManager];
+      unsigned long long totalFreed = 0;
+      
+      // 1. 清理 /tmp 下的残留安装目录
+      NSArray *tmpContents = [fm contentsOfDirectoryAtPath:@"/tmp" error:nil];
+      for (NSString *item in tmpContents) {
+          NSString *fullPath = [@"/tmp" stringByAppendingPathComponent:item];
+          NSDictionary *attrs = [fm attributesOfItemAtPath:fullPath error:nil];
+          if ([attrs[NSFileType] isEqualToString:NSFileTypeDirectory]) {
+              // 跳过系统关键目录
+              if ([item hasPrefix:@"com.apple."] || [item isEqualToString:@"mobile"]) continue;
+              unsigned long long dirSize = 0;
+              NSDirectoryEnumerator *enumerator = [fm enumeratorAtPath:fullPath];
+              NSString *file;
+              while ((file = [enumerator nextObject])) {
+                  NSDictionary *fileAttrs = [enumerator fileAttributes];
+                  dirSize += [fileAttrs fileSize];
+              }
+              [fm removeItemAtPath:fullPath error:nil];
+              totalFreed += dirSize;
+              NSLog(@"[clean-system-data] Removed /tmp/%@ (%.2f MB)", item, dirSize / 1024.0 / 1024.0);
+          }
+      }
+      
+      // 2. 清理 iOS 统一日志数据库 (NSLog 输出的终极归宿)
+      NSArray *logPaths = @[
+          @"/private/var/db/diagnostics",
+          @"/private/var/db/uuidtext",
+          @"/private/var/installd/Library/Logs",
+          @"/private/var/log/asl",
+          @"/private/var/log/DiagnosticMessages"
+      ];
+      for (NSString *logPath in logPaths) {
+          if ([fm fileExistsAtPath:logPath]) {
+              NSDirectoryEnumerator *enumerator = [fm enumeratorAtPath:logPath];
+              NSString *file;
+              while ((file = [enumerator nextObject])) {
+                  NSString *fullPath = [logPath stringByAppendingPathComponent:file];
+                  NSDictionary *attrs = [fm attributesOfItemAtPath:fullPath error:nil];
+                  if (![attrs[NSFileType] isEqualToString:NSFileTypeDirectory]) {
+                      totalFreed += [attrs fileSize];
+                      [fm removeItemAtPath:fullPath error:nil];
+                  }
+              }
+              NSLog(@"[clean-system-data] Cleaned: %@", logPath);
+          }
+      }
+      
+      // 3. 清理各 App 的 Caches 和 tmp 目录 (被系统计入 System Data)
+      NSString *dataBase = @"/var/mobile/Containers/Data/Application";
+      NSArray *appUUIDs = [fm contentsOfDirectoryAtPath:dataBase error:nil];
+      for (NSString *uuid in appUUIDs) {
+          NSString *appDataPath = [dataBase stringByAppendingPathComponent:uuid];
+          NSArray *cleanableDirs = @[@"Library/Caches", @"tmp"];
+          for (NSString *subdir in cleanableDirs) {
+              NSString *cleanPath = [appDataPath stringByAppendingPathComponent:subdir];
+              if ([fm fileExistsAtPath:cleanPath]) {
+                  NSDirectoryEnumerator *enumerator = [fm enumeratorAtPath:cleanPath];
+                  NSString *file;
+                  while ((file = [enumerator nextObject])) {
+                      NSString *fullPath = [cleanPath stringByAppendingPathComponent:file];
+                      NSDictionary *attrs = [fm attributesOfItemAtPath:fullPath error:nil];
+                      if (![attrs[NSFileType] isEqualToString:NSFileTypeDirectory]) {
+                          totalFreed += [attrs fileSize];
+                      }
+                  }
+                  // 删除内容但保留目录本身
+                  NSArray *contents = [fm contentsOfDirectoryAtPath:cleanPath error:nil];
+                  for (NSString *item in contents) {
+                      [fm removeItemAtPath:[cleanPath stringByAppendingPathComponent:item] error:nil];
+                  }
+              }
+          }
+      }
+      
+      // 4. 清理 Webkit/WebView 缓存
+      NSArray *webkitPaths = @[
+          @"/private/var/mobile/Containers/Data/InternalDaemon",
+          @"/private/var/mobile/Library/Caches/com.apple.WebKit.Networking",
+          @"/private/var/mobile/Library/WebKit"
+      ];
+      for (NSString *wkPath in webkitPaths) {
+          if ([fm fileExistsAtPath:wkPath]) {
+              NSDirectoryEnumerator *enumerator = [fm enumeratorAtPath:wkPath];
+              NSString *file;
+              while ((file = [enumerator nextObject])) {
+                  NSString *fullPath = [wkPath stringByAppendingPathComponent:file];
+                  NSDictionary *attrs = [fm attributesOfItemAtPath:fullPath error:nil];
+                  if (![attrs[NSFileType] isEqualToString:NSFileTypeDirectory]) {
+                      totalFreed += [attrs fileSize];
+                  }
+              }
+              NSArray *contents = [fm contentsOfDirectoryAtPath:wkPath error:nil];
+              for (NSString *item in contents) {
+                  [fm removeItemAtPath:[wkPath stringByAppendingPathComponent:item] error:nil];
+              }
+              NSLog(@"[clean-system-data] Cleaned WebKit cache: %@", wkPath);
+          }
+      }
+      
+      // 输出清理总量 (JSON)
+      printf("{\"freed\":%llu}\n", totalFreed);
+      NSLog(@"[clean-system-data] Total freed: %.2f MB", totalFreed / 1024.0 / 1024.0);
       return 0;
     } else if ([cmd isEqualToString:@"set-static-ip"]) {
       NSLog(@"[RootHelper] Command received: set-static-ip");
@@ -3712,7 +4085,146 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
 
       NSLog(@"[RootHelper] 清理名单执行完毕，共发送 %d 次 killall", killCount);
       ret = 0;
+    } else if ([cmd isEqualToString:@"batch-exec"]) {
+      // [性能优化] 批量执行多条轻量指令，整个批次只 Fork 一次进程
+      // Usage: batch-exec '<JSON_ARRAY>'
+      // JSON 格式: [{"cmd":"kill-all-apps","args":["App1"]},{"cmd":"copy-file","args":["/src","/dst"]}]
+      // 返回: stdout 输出 [{"cmd":"xxx","ret":0},...]
+      if (args.count < 2) {
+        fprintf(stderr, "[RootHelper] batch-exec: 缺少 JSON 参数\n");
+        return -3;
+      }
+      NSString *jsonStr = args[1];
+      NSData *jsonData = [jsonStr dataUsingEncoding:NSUTF8StringEncoding];
+      NSError *parseError = nil;
+      NSArray *commands = [NSJSONSerialization JSONObjectWithData:jsonData
+                                                          options:0
+                                                            error:&parseError];
+      if (!commands || parseError || ![commands isKindOfClass:[NSArray class]]) {
+        fprintf(stderr, "[RootHelper] batch-exec: JSON 解析失败: %s\n",
+                parseError.localizedDescription.UTF8String ?: "unknown");
+        return -3;
+      }
+
+      NSMutableArray *results = [NSMutableArray arrayWithCapacity:commands.count];
+
+      for (NSDictionary *item in commands) {
+        if (![item isKindOfClass:[NSDictionary class]]) continue;
+        NSString *subCmd  = item[@"cmd"]  ?: @"";
+        NSArray  *subArgs = item[@"args"] ?: @[];
+        int subRet = 0;
+        NSString *subError = nil;
+
+        if ([subCmd isEqualToString:@"kill-all-apps"]) {
+          // args: ["ProcName1", "ProcName2", ...]
+          for (NSString *procName in subArgs) {
+            if ([procName isKindOfClass:[NSString class]] && procName.length > 0) {
+              killall(procName, NO); // SIGKILL
+            }
+          }
+
+        } else if ([subCmd isEqualToString:@"copy-file"]) {
+          // args: ["/src", "/dst"]
+          if (subArgs.count >= 2) {
+            NSFileManager *fm = [NSFileManager defaultManager];
+            NSError *err = nil;
+            NSString *src = subArgs[0], *dst = subArgs[1];
+            if ([fm fileExistsAtPath:dst]) [fm removeItemAtPath:dst error:nil];
+            if (![fm copyItemAtPath:src toPath:dst error:&err]) {
+              subRet = 1;
+              subError = err.localizedDescription ?: @"copy 失败";
+            }
+          } else {
+            subRet = -1; subError = @"参数不足，需要 src dst";
+          }
+
+        } else if ([subCmd isEqualToString:@"chmod-file"]) {
+          // args: ["644", "/path"]
+          if (subArgs.count >= 2) {
+            mode_t mode = (mode_t)strtol([subArgs[0] UTF8String], NULL, 8);
+            if (chmod([subArgs[1] UTF8String], mode) != 0) {
+              subRet = 1;
+              subError = [NSString stringWithUTF8String:strerror(errno)] ?: @"chmod 失败";
+            }
+          } else {
+            subRet = -1; subError = @"参数不足，需要 mode path";
+          }
+
+        } else if ([subCmd isEqualToString:@"remove-file"]) {
+          // args: ["/path"]
+          if (subArgs.count >= 1) {
+            [[NSFileManager defaultManager] removeItemAtPath:subArgs[0] error:nil];
+          } else {
+            subRet = -1; subError = @"参数不足，需要 path";
+          }
+
+        } else if ([subCmd isEqualToString:@"move-file"]) {
+          // args: ["/src", "/dst"]
+          if (subArgs.count >= 2) {
+            NSFileManager *fm = [NSFileManager defaultManager];
+            NSError *err = nil;
+            NSString *src = subArgs[0], *dst = subArgs[1];
+            if ([fm fileExistsAtPath:dst]) [fm removeItemAtPath:dst error:nil];
+            if (![fm moveItemAtPath:src toPath:dst error:&err]) {
+              subRet = 1;
+              subError = err.localizedDescription ?: @"move 失败";
+            }
+          } else {
+            subRet = -1; subError = @"参数不足，需要 src dst";
+          }
+
+        } else if ([subCmd isEqualToString:@"mkdir"]) {
+          // args: ["/path"]
+          if (subArgs.count >= 1) {
+            NSError *err = nil;
+            if (![[NSFileManager defaultManager] createDirectoryAtPath:subArgs[0]
+                                         withIntermediateDirectories:YES
+                                                          attributes:nil
+                                                               error:&err]) {
+              subRet = 1;
+              subError = err.localizedDescription ?: @"mkdir 失败";
+            }
+          } else {
+            subRet = -1; subError = @"参数不足，需要 path";
+          }
+
+        } else if ([subCmd isEqualToString:@"toggle-wifi"]) {
+          // 通过 SCPreferences 切换 Wi-Fi 开关，无需额外参数
+          // 复用现有 toggle-wifi 逻辑：直接调用 SCNetworkService API
+          // 注意：此处采用最简 kill -HUP wifid 方式触发重连（不依赖私有 API）
+          killall(@"wifid", YES); // SIGHUP，让 wifid 重新读取配置
+          NSLog(@"[RootHelper] batch-exec: toggle-wifi 已发送 SIGHUP 给 wifid");
+
+        } else {
+          subRet = -2;
+          subError = [NSString stringWithFormat:@"batch-exec 不支持的命令: %@", subCmd];
+          NSLog(@"[RootHelper] batch-exec 跳过不支持的命令: %@", subCmd);
+        }
+
+        // 构建单条结果
+        NSMutableDictionary *result = [NSMutableDictionary dictionaryWithObjectsAndKeys:
+            subCmd,    @"cmd",
+            @(subRet), @"ret",
+            nil];
+        if (subError) result[@"error"] = subError;
+        [results addObject:result];
+        NSLog(@"[RootHelper] batch-exec [%@] ret=%d%@", subCmd, subRet,
+              subError ? [NSString stringWithFormat:@" err=%@", subError] : @"");
+      }
+
+      // 将结果 JSON 输出到 stdout，供上层 batchSpawnRoot 解析
+      NSData *outputData = [NSJSONSerialization dataWithJSONObject:results
+                                                           options:0
+                                                             error:nil];
+      if (outputData) {
+        NSString *outputStr = [[NSString alloc] initWithData:outputData
+                                                    encoding:NSUTF8StringEncoding];
+        printf("%s\n", outputStr.UTF8String);
+      }
+      ret = 0;
+
     } else if ([cmd isEqualToString:@"copy-file"]) {
+
       // Usage: copy-file <source> <destination>
       if (argc >= 4) {
         NSString *src = [NSString stringWithUTF8String:argv[2]];

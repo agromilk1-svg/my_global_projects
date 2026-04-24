@@ -7,7 +7,8 @@
 //
 
 #import "ECDeviceSpoof.h"
-#import "ECDeviceSpoofConfig.h"
+#import "SCPrefLoader.h"
+#import "ECObfuscation.h"
 #import "fishhook.h"
 #import <AdSupport/ASIdentifierManager.h>
 #import <CoreTelephony/CTCarrier.h>
@@ -44,6 +45,138 @@ static void setupSafeHooks(void);
 #ifndef PT_DENY_ATTACH
 #define PT_DENY_ATTACH 31
 #endif
+
+// ===================================
+// 防御性机制 - 防止 TikTok SDK 初始化时的类型错乱崩溃 (v2240)
+// ===================================
+// 根因：TikTok 内部 SDK（ByteDance 崩溃/监控组件）在初始化时查找配置对象，
+// 返回了 @[]（全局空数组单例 __NSArray0 0x1fabfb4e8），
+// 然后依次调用大量 setter 和 getter。
+//
+// v2239 的 setter-only 拦截解决了 setter 崩溃，但 TikTok 随后调用 getter
+// 读取配置值（如 [config appID]），在 @[] 上返回后解引用 nil 导致 SIGSEGV。
+//
+// v2240 终极方案：将 resolveInstanceMethod 缩窄到 __NSArray0 类，
+// 同时处理 setter（no-op）和 getter（返回 nil），让 @[] 伪装成"空配置对象"。
+
+// 通用 no-op setter — void(id, SEL, id)
+static void ec_noop_setter(id self, SEL _cmd, id value) {
+    // 静默忽略
+}
+
+// ⚠️ [v2253 致命架构修复] 废弃对 __NSArray0 的全局 getter 兜底！
+// 原有的 resolveInstanceMethod 会污染 respondsToSelector: 的结果，导致
+// TikTok 底层 KVC/KVO 误认为该空数组具备真实模型的所有属性，进而引发
+// Foundation 内部的严重崩溃（如 _unionOfArraysForKeyPath: -> characterAtIndex: 越界）。
+// 现在我们只保留最基本的 setter 防护（防止意外赋值闪退），对所有 getter
+// 保持原样，让系统的 respondsToSelector: 正常返回 NO，以触发 TikTok 自带的安全降级分支。
+
+// 原始的 +[__NSArray0 resolveInstanceMethod:]
+static BOOL (*_orig_EmptyArray_resolveInstanceMethod)(id, SEL, SEL) = NULL;
+
+static BOOL ec_EmptyArray_resolveInstanceMethod(id self, SEL _cmd, SEL sel) {
+    const char *selName = sel_getName(sel);
+    if (selName && selName[0] != '_') {
+        size_t len = strlen(selName);
+        // 只保留对 setter 的兜底拦截（防止对降级的空数组调用 setAppID: 等赋值操作导致闪退）
+        if (len > 4 && strncmp(selName, "set", 3) == 0) {
+            if (!class_getInstanceMethod([NSArray class], sel)) {
+                class_addMethod(self, sel, (IMP)ec_noop_setter, "v@:@");
+                NSLog(@"[ECFix] 🛡️ __NSArray0 +setter: %s", selName);
+                return YES;
+            }
+        }
+    }
+    
+    if (_orig_EmptyArray_resolveInstanceMethod) {
+        return _orig_EmptyArray_resolveInstanceMethod(self, _cmd, sel);
+    }
+    return NO;
+}
+
+
+// --- Swizzle NSArray 的 KVO 方法 ---
+static IMP _orig_NSArray_addObserver = NULL;
+
+static void ec_NSArray_addObserver(id self, SEL _cmd, NSObject *observer,
+                                    NSString *keyPath, NSKeyValueObservingOptions options,
+                                    void *context) {
+    if ([self count] == 0 && [self isKindOfClass:[NSArray class]] &&
+        ![self isKindOfClass:[NSMutableArray class]]) {
+        NSLog(@"[ECFix] ⚠️ 拦截 NSArray.addObserver:forKeyPath:%@", keyPath);
+        return;
+    }
+    if (_orig_NSArray_addObserver) {
+        ((void (*)(id, SEL, NSObject *, NSString *, NSKeyValueObservingOptions, void *))
+         _orig_NSArray_addObserver)(self, _cmd, observer, keyPath, options, context);
+    }
+}
+
+// removeObserver 也要拦截，否则 dealloc 时会崩
+static IMP _orig_NSArray_removeObserver = NULL;
+
+static void ec_NSArray_removeObserver(id self, SEL _cmd, NSObject *observer,
+                                       NSString *keyPath) {
+    if ([self count] == 0 && [self isKindOfClass:[NSArray class]] &&
+        ![self isKindOfClass:[NSMutableArray class]]) {
+        return; // 静默忽略
+    }
+    if (_orig_NSArray_removeObserver) {
+        ((void (*)(id, SEL, NSObject *, NSString *))
+         _orig_NSArray_removeObserver)(self, _cmd, observer, keyPath);
+    }
+}
+
+// 安装全部防护（由 ECDeviceSpoofInitialize 调用）
+static void installTikTokCrashGuards(void) {
+    // 1. 获取 __NSArray0 类（空数组单例的真实类）
+    Class emptyArrayClass = [@[] class];
+    NSLog(@"[ECFix] 空数组类: %@", NSStringFromClass(emptyArrayClass));
+
+    // 2. 在 __NSArray0 的**元类**上添加 +resolveInstanceMethod:
+    //    ⚠️ 不能用 method_setImplementation！因为 class_getClassMethod 会沿元类链
+    //    找到 NSObject 的方法，setImplementation 会修改 NSObject → 影响所有类！
+    //    必须用 class_addMethod 在 __NSArray0 元类上新增方法，仅覆盖继承。
+    Method origResolve = class_getClassMethod(emptyArrayClass, @selector(resolveInstanceMethod:));
+    if (origResolve) {
+        _orig_EmptyArray_resolveInstanceMethod =
+            (BOOL (*)(id, SEL, SEL))method_getImplementation(origResolve);
+    }
+    Class emptyArrayMeta = object_getClass(emptyArrayClass);
+    BOOL added = class_addMethod(emptyArrayMeta,
+                                  @selector(resolveInstanceMethod:),
+                                  (IMP)ec_EmptyArray_resolveInstanceMethod,
+                                  "B@::");
+    if (added) {
+        NSLog(@"[ECFix] ✅ 已在 %@ 元类添加 +resolveInstanceMethod:", NSStringFromClass(emptyArrayClass));
+    } else {
+        NSLog(@"[ECFix] ⚠️ %@ 元类已有 +resolveInstanceMethod:，使用 swizzle 替换",
+              NSStringFromClass(emptyArrayClass));
+        // 如果 __NSArray0 自己已经有了（不太可能），才用 method_setImplementation
+        Method existingMethod = class_getClassMethod(emptyArrayClass, @selector(resolveInstanceMethod:));
+        if (existingMethod) {
+            method_setImplementation(existingMethod, (IMP)ec_EmptyArray_resolveInstanceMethod);
+        }
+    }
+
+    // 3. Swizzle NSArray 的 addObserver / removeObserver
+    Method addM = class_getInstanceMethod([NSArray class],
+                @selector(addObserver:forKeyPath:options:context:));
+    if (addM) {
+        _orig_NSArray_addObserver = method_getImplementation(addM);
+        method_setImplementation(addM, (IMP)ec_NSArray_addObserver);
+    }
+
+    Method removeM = class_getInstanceMethod([NSArray class],
+                @selector(removeObserver:forKeyPath:));
+    if (removeM) {
+        _orig_NSArray_removeObserver = method_getImplementation(removeM);
+        method_setImplementation(removeM, (IMP)ec_NSArray_removeObserver);
+    }
+
+    NSLog(@"[ECFix] ✅ 全部防护已安装");
+}
+
 
 // ===================================
 // 全局状态 - 纯净化 Hook 专用
@@ -159,6 +292,8 @@ static void setupMethodSwizzling(void);
 static void setupSysctlHook(void);
 static void setupMobileGestaltHook(void);
 static void setupLoginDiagnosticHooks(void);
+static void setupCloneDetectionBypass(void);
+static void setupDeepProtection(void);
 
 // ============================================================================
 // 全局 rebind_symbols 合并机制
@@ -174,8 +309,7 @@ static int g_pending_rebinding_count = 0;
 static void ec_register_rebinding(const char *name, void *replacement,
                                   void **replaced) {
   if (g_pending_rebinding_count >= EC_MAX_REBINDINGS) {
-    NSLog(@"[ECDeviceSpoof] ⚠️ rebinding 数组已满 (%d)，跳过 %s",
-          EC_MAX_REBINDINGS, name);
+    // 静默跳过，不输出日志
     return;
   }
   g_pending_rebindings[g_pending_rebinding_count++] =
@@ -185,19 +319,11 @@ static void ec_register_rebinding(const char *name, void *replacement,
 // 统一执行所有注册的 rebind（只遍历一次所有 images）
 static void performMergedRebind(void) {
   if (g_pending_rebinding_count == 0) {
-    NSLog(@"[ECDeviceSpoof] ⚠️ [MergedRebind] 没有待 rebind 的符号");
+    // 无待处理符号
     return;
   }
-  NSLog(@"[ECDeviceSpoof] 🎣 [MergedRebind] 正在统一 rebind %d 个 C "
-        @"函数（一次遍历）...",
-        g_pending_rebinding_count);
   int result = rebind_symbols(g_pending_rebindings, g_pending_rebinding_count);
-  if (result == 0) {
-    NSLog(@"[ECDeviceSpoof] ✅ [MergedRebind] 统一 rebind 成功！(%d 个函数)",
-          g_pending_rebinding_count);
-  } else {
-    NSLog(@"[ECDeviceSpoof] ❌ [MergedRebind] 统一 rebind 失败: %d", result);
-  }
+  (void)result; // 静默执行
   // 清零计数器（防止重复 rebind）
   g_pending_rebinding_count = 0;
 }
@@ -308,7 +434,7 @@ static void swizzleInstanceMethod(Class cls, SEL original, SEL replacement) {
 // 避免了跨类 swizzle 的问题
 
 static id hooked_NSCFLocale_objectForKey(id self, SEL _cmd, NSLocaleKey key) {
-    ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
+    SCPrefLoader *config = [SCPrefLoader shared];
 
     if ([key isEqualToString:NSLocaleCountryCode]) {
       NSString *spoofed = [config spoofValueForKey:@"countryCode"];
@@ -338,7 +464,7 @@ static id hooked_NSCFLocale_objectForKey(id self, SEL _cmd, NSLocaleKey key) {
 
 static NSString *hooked_NSCFLocale_localeIdentifier(id self, SEL _cmd) {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"localeIdentifier"];
+        [[SCPrefLoader shared] spoofValueForKey:@"localeIdentifier"];
     if (spoofed)
       return spoofed;
 
@@ -351,7 +477,7 @@ static NSString *hooked_NSCFLocale_localeIdentifier(id self, SEL _cmd) {
 
 static NSString *hooked_NSCFLocale_countryCode(id self, SEL _cmd) {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"countryCode"];
+        [[SCPrefLoader shared] spoofValueForKey:@"countryCode"];
     if (spoofed)
       return spoofed;
 
@@ -364,7 +490,7 @@ static NSString *hooked_NSCFLocale_countryCode(id self, SEL _cmd) {
 
 static NSString *hooked_NSCFLocale_languageCode(id self, SEL _cmd) {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"languageCode"];
+        [[SCPrefLoader shared] spoofValueForKey:@"languageCode"];
     if (spoofed)
       return spoofed;
 
@@ -377,7 +503,7 @@ static NSString *hooked_NSCFLocale_languageCode(id self, SEL _cmd) {
 
 static NSString *hooked_NSCFLocale_currencyCode(id self, SEL _cmd) {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"currencyCode"];
+        [[SCPrefLoader shared] spoofValueForKey:@"currencyCode"];
     if (spoofed)
       return spoofed;
 
@@ -390,7 +516,7 @@ static NSString *hooked_NSCFLocale_currencyCode(id self, SEL _cmd) {
 
 // 设置 __NSCFLocale hooks 的函数
 static void setupNSCFLocaleHooks(void) {
-    Class nscfLocaleClass = NSClassFromString(@"__NSCFLocale");
+    Class nscfLocaleClass = NSClassFromString(EC_CLS_NSCFLocale);
     if (!nscfLocaleClass) {
       ECLog(@" __NSCFLocale class not found, skipping locale hooks");
       return;
@@ -451,7 +577,7 @@ static id hooked_NSUserDefaults_objectForKey_tiktok(id self, SEL _cmd,
         [key containsString:@"preferredLanguage"] ||
         [key containsString:@"currentLanguage"]) {
       NSString *spoofedLang =
-          [[ECDeviceSpoofConfig shared] spoofValueForKey:@"preferredLanguage"];
+          [[SCPrefLoader shared] spoofValueForKey:@"preferredLanguage"];
       if (spoofedLang) {
         // ECLog(@" [TikTok] Intercepted key: %@ -> %@", key, spoofedLang);
         return spoofedLang;
@@ -462,7 +588,7 @@ static id hooked_NSUserDefaults_objectForKey_tiktok(id self, SEL _cmd,
     if ([key containsString:@"installID"] ||
         [key containsString:@"install_id"]) {
       NSString *spoofedId =
-          [[ECDeviceSpoofConfig shared] spoofValueForKey:@"installId"];
+          [[SCPrefLoader shared] spoofValueForKey:@"installId"];
       if (spoofedId) {
         // ECLog(@" [TikTok] Intercepted install ID key: %@ -> %@", key,
         // spoofedId);
@@ -488,7 +614,7 @@ static BOOL hooked_isOfficialBundleId(id self, SEL _cmd) {
 // Hook: awe_vendorID - 返回伪装的厂商 ID
 static NSString *hooked_awe_vendorID(id self, SEL _cmd) {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"vendorId"];
+        [[SCPrefLoader shared] spoofValueForKey:@"vendorId"];
     if (spoofed) {
       // ECLog(@" [TikTok] awe_vendorID -> %@", spoofed);
       return spoofed;
@@ -504,7 +630,7 @@ static NSString *hooked_awe_vendorID(id self, SEL _cmd) {
 // Hook: awe_installID - 返回伪装的安装 ID
 static NSString *hooked_awe_installID(id self, SEL _cmd) {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"installId"];
+        [[SCPrefLoader shared] spoofValueForKey:@"installId"];
     if (spoofed) {
       // ECLog(@" [TikTok] awe_installID -> %@", spoofed);
       return spoofed;
@@ -520,7 +646,7 @@ static NSString *hooked_awe_installID(id self, SEL _cmd) {
 // Hook: tspk_idfa_advertisingIdentifier - 返回伪装的广告 ID
 static NSString *hooked_tspk_idfa(id self, SEL _cmd) {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"tiktokIdfa"];
+        [[SCPrefLoader shared] spoofValueForKey:@"tiktokIdfa"];
     if (spoofed && spoofed.length > 0) {
       // ECLog(@" [TikTok] tspk_idfa -> %@", spoofed);
       return spoofed;
@@ -534,7 +660,7 @@ static NSString *hooked_tspk_idfa(id self, SEL _cmd) {
 // Hook: resetedVendorID - 返回伪装的重置后厂商 ID
 static NSString *hooked_resetedVendorID(id self, SEL _cmd) {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"resetedVendorId"];
+        [[SCPrefLoader shared] spoofValueForKey:@"resetedVendorId"];
     if (spoofed && spoofed.length > 0) {
       // ECLog(@" [TikTok] resetedVendorID -> %@", spoofed);
       return spoofed;
@@ -548,7 +674,7 @@ static NSString *hooked_resetedVendorID(id self, SEL _cmd) {
 // Hook: fakedBundleID - 返回空值表示非伪造
 static NSString *hooked_fakedBundleID(id self, SEL _cmd) {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"fakedBundleId"];
+        [[SCPrefLoader shared] spoofValueForKey:@"fakedBundleId"];
     if (spoofed && spoofed.length > 0) {
       // ECLog(@" [TikTok] fakedBundleID -> %@", spoofed);
       return spoofed;
@@ -561,14 +687,14 @@ static NSString *hooked_fakedBundleID(id self, SEL _cmd) {
 // Hook: btd_bundleIdentifier - 返回官方 Bundle ID
 static NSString *hooked_btd_bundleIdentifier(id self, SEL _cmd) {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"btdBundleId"];
+        [[SCPrefLoader shared] spoofValueForKey:@"btdBundleId"];
     if (spoofed && spoofed.length > 0) {
       // ECLog(@" [TikTok] btd_bundleIdentifier -> %@", spoofed);
       return spoofed;
     }
     
     // 动态获取：优先获取去除了分身后缀的原始应用包名
-    NSString *inferredOriginal = [[ECDeviceSpoofConfig shared] originalBundleId];
+    NSString *inferredOriginal = [[SCPrefLoader shared] originalBundleId];
     if (inferredOriginal && inferredOriginal.length > 0) {
        return inferredOriginal;
     }
@@ -580,13 +706,13 @@ static NSString *hooked_btd_bundleIdentifier(id self, SEL _cmd) {
     }
 
     // 终极兜底策略
-    return @"com.zhiliaoapp.musically";
+    return EC_STR_officialBundleId;
 }
 
 // Hook: systemLanguage - 返回伪装的系统语言
 static NSString *hooked_systemLanguage(id self, SEL _cmd) {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"systemLanguage"];
+        [[SCPrefLoader shared] spoofValueForKey:@"systemLanguage"];
     if (spoofed && spoofed.length > 0) {
       return spoofed;
     }
@@ -595,14 +721,14 @@ static NSString *hooked_systemLanguage(id self, SEL _cmd) {
     }
     // 回退: 从 languageCode 获取，避免硬编码 "en" 导致与目标区域矛盾
     NSString *langFallback =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"languageCode"];
+        [[SCPrefLoader shared] spoofValueForKey:@"languageCode"];
     return langFallback ?: @"en";
 }
 
 // Hook: btd_currentLanguage - 返回伪装的 ByteDance 当前语言
 static NSString *hooked_btd_currentLanguage(id self, SEL _cmd) {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"btdCurrentLanguage"];
+        [[SCPrefLoader shared] spoofValueForKey:@"btdCurrentLanguage"];
     if (spoofed && spoofed.length > 0) {
       return spoofed;
     }
@@ -611,10 +737,10 @@ static NSString *hooked_btd_currentLanguage(id self, SEL _cmd) {
     }
     // 回退: 从 preferredLanguage 获取，避免硬编码 "en"
     NSString *langFallback =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"preferredLanguage"];
+        [[SCPrefLoader shared] spoofValueForKey:@"preferredLanguage"];
     if (!langFallback) {
       langFallback =
-          [[ECDeviceSpoofConfig shared] spoofValueForKey:@"languageCode"];
+          [[SCPrefLoader shared] spoofValueForKey:@"languageCode"];
     }
     return langFallback ?: @"en";
 }
@@ -622,7 +748,7 @@ static NSString *hooked_btd_currentLanguage(id self, SEL _cmd) {
 // Hook: storeRegion - 返回伪装的商店区域 (PNSStoreRegionSource)
 static NSString *hooked_storeRegion(id self, SEL _cmd) {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"storeRegion"];
+        [[SCPrefLoader shared] spoofValueForKey:@"storeRegion"];
     if (spoofed && spoofed.length > 0) {
       return spoofed;
     }
@@ -631,14 +757,14 @@ static NSString *hooked_storeRegion(id self, SEL _cmd) {
     }
     // 回退: 从 countryCode 获取，避免硬编码 "US"
     NSString *regionFallback =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"countryCode"];
+        [[SCPrefLoader shared] spoofValueForKey:@"countryCode"];
     return regionFallback ?: @"US";
 }
 
 // Hook: priorityRegion - 返回伪装的优先区域 (PNSPriorityRegionSource)
 static NSString *hooked_priorityRegion(id self, SEL _cmd) {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"priorityRegion"];
+        [[SCPrefLoader shared] spoofValueForKey:@"priorityRegion"];
     if (spoofed && spoofed.length > 0) {
       return spoofed;
     }
@@ -647,7 +773,7 @@ static NSString *hooked_priorityRegion(id self, SEL _cmd) {
     }
     // 回退: 从 countryCode 获取
     NSString *regionFallback =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"countryCode"];
+        [[SCPrefLoader shared] spoofValueForKey:@"countryCode"];
     return regionFallback ?: @"US";
 }
 
@@ -655,10 +781,10 @@ static NSString *hooked_priorityRegion(id self, SEL _cmd) {
 static NSString *hooked_currentRegion(id self, SEL _cmd) {
     // 优先使用 storeRegion，因为 currentRegion 和 storeRegion 语义相同
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"storeRegion"];
+        [[SCPrefLoader shared] spoofValueForKey:@"storeRegion"];
     if (!spoofed || spoofed.length == 0) {
       // 回退到 countryCode
-      spoofed = [[ECDeviceSpoofConfig shared] spoofValueForKey:@"countryCode"];
+      spoofed = [[SCPrefLoader shared] spoofValueForKey:@"countryCode"];
     }
     if (spoofed && spoofed.length > 0) {
       return spoofed;
@@ -668,7 +794,7 @@ static NSString *hooked_currentRegion(id self, SEL _cmd) {
     }
     // 最终回退
     NSString *regionFallback =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"countryCode"];
+        [[SCPrefLoader shared] spoofValueForKey:@"countryCode"];
     return regionFallback ?: @"US";
 }
 
@@ -686,10 +812,10 @@ static void setupTikTokHooks(void) {
     Method m;
 
     // Hook AWEFakeBundleIDManager 的 isOfficialBundleId 方法
-    Class fakeBundleIdClass = NSClassFromString(@"AWEFakeBundleIDManager");
+    Class fakeBundleIdClass = NSClassFromString(EC_CLS_AWEFakeBundleIDManager);
     if (fakeBundleIdClass) {
       m = class_getInstanceMethod(fakeBundleIdClass,
-                                  NSSelectorFromString(@"isOfficialBundleId"));
+                                  NSSelectorFromString(EC_SEL_isOfficialBundleId));
       if (m) {
         _orig_isOfficialBundleId = method_getImplementation(m);
         method_setImplementation(m, (IMP)hooked_isOfficialBundleId);
@@ -697,7 +823,7 @@ static void setupTikTokHooks(void) {
       }
       // 也尝试类方法
       m = class_getClassMethod(fakeBundleIdClass,
-                               NSSelectorFromString(@"isOfficialBundleId"));
+                               NSSelectorFromString(EC_SEL_isOfficialBundleId));
       if (m) {
         method_setImplementation(m, (IMP)hooked_isOfficialBundleId);
         ECLog(@" Hooked: AWEFakeBundleIDManager +isOfficialBundleId");
@@ -706,7 +832,7 @@ static void setupTikTokHooks(void) {
 
     // Hook NSUserDefaults 的 awe_vendorID 属性 (可能是分类方法)
     m = class_getInstanceMethod([NSUserDefaults class],
-                                NSSelectorFromString(@"awe_vendorID"));
+                                NSSelectorFromString(EC_SEL_awe_vendorID));
     if (m) {
       _orig_awe_vendorID = method_getImplementation(m);
       method_setImplementation(m, (IMP)hooked_awe_vendorID);
@@ -715,7 +841,7 @@ static void setupTikTokHooks(void) {
 
     // Hook awe_installID
     m = class_getInstanceMethod([NSUserDefaults class],
-                                NSSelectorFromString(@"awe_installID"));
+                                NSSelectorFromString(EC_SEL_awe_installID));
     if (m) {
       _orig_awe_installID = method_getImplementation(m);
       method_setImplementation(m, (IMP)hooked_awe_installID);
@@ -723,17 +849,17 @@ static void setupTikTokHooks(void) {
     }
 
     // 也尝试 Hook AWELanguageManager
-    Class aweLanguageManagerClass = NSClassFromString(@"AWELanguageManager");
+    Class aweLanguageManagerClass = NSClassFromString(EC_CLS_AWELanguageManager);
     if (aweLanguageManagerClass) {
       ECLog(@" Found AWELanguageManager class");
       // 尝试 Hook currentLanguage 方法
       m = class_getInstanceMethod(aweLanguageManagerClass,
-                                  NSSelectorFromString(@"currentLanguage"));
+                                  NSSelectorFromString(EC_SEL_currentLanguage));
       if (m) {
         _orig_AWELanguageManager_currentLanguage = method_getImplementation(m);
         // 使用通用语言返回
         IMP newImp = imp_implementationWithBlock(^NSString *(id self) {
-          NSString *spoofed = [[ECDeviceSpoofConfig shared]
+          NSString *spoofed = [[SCPrefLoader shared]
               spoofValueForKey:@"preferredLanguage"];
           if (spoofed) {
             // ECLog(@" [TikTok] AWELanguageManager.currentLanguage -> %@",
@@ -743,11 +869,11 @@ static void setupTikTokHooks(void) {
           if (_orig_AWELanguageManager_currentLanguage) {
             return ((NSString * (*)(id, SEL))
                         _orig_AWELanguageManager_currentLanguage)(
-                self, NSSelectorFromString(@"currentLanguage"));
+                self, NSSelectorFromString(EC_SEL_currentLanguage));
           }
           // 回退: 从 languageCode 获取，避免硬编码 "en"
           NSString *langFb =
-              [[ECDeviceSpoofConfig shared] spoofValueForKey:@"languageCode"];
+              [[SCPrefLoader shared] spoofValueForKey:@"languageCode"];
           return langFb ?: @"en";
         });
         method_setImplementation(m, newImp);
@@ -756,7 +882,7 @@ static void setupTikTokHooks(void) {
 
       // Hook systemLanguage
       m = class_getInstanceMethod(aweLanguageManagerClass,
-                                  NSSelectorFromString(@"systemLanguage"));
+                                  NSSelectorFromString(EC_SEL_systemLanguage));
       if (m) {
         _orig_systemLanguage = method_getImplementation(m);
         method_setImplementation(m, (IMP)hooked_systemLanguage);
@@ -769,10 +895,10 @@ static void setupTikTokHooks(void) {
     // if (tspkClass) { ... tspk_idfa_advertisingIdentifier ... }
 
     // Hook AWEDeviceManager 相关方法
-    Class deviceManagerClass = NSClassFromString(@"AWEDeviceManager");
+    Class deviceManagerClass = NSClassFromString(EC_CLS_AWEDeviceManager);
     if (deviceManagerClass) {
       m = class_getInstanceMethod(deviceManagerClass,
-                                  NSSelectorFromString(@"resetedVendorID"));
+                                  NSSelectorFromString(EC_SEL_resetedVendorID));
       if (m) {
         _orig_resetedVendorID = method_getImplementation(m);
         method_setImplementation(m, (IMP)hooked_resetedVendorID);
@@ -783,7 +909,7 @@ static void setupTikTokHooks(void) {
     // Hook fakedBundleID getter
     if (fakeBundleIdClass) {
       m = class_getInstanceMethod(fakeBundleIdClass,
-                                  NSSelectorFromString(@"fakedBundleID"));
+                                  NSSelectorFromString(EC_SEL_fakedBundleID));
       if (m) {
         _orig_fakedBundleID = method_getImplementation(m);
         method_setImplementation(m, (IMP)hooked_fakedBundleID);
@@ -793,7 +919,7 @@ static void setupTikTokHooks(void) {
 
     // Hook btd_bundleIdentifier (NSBundle 分类方法)
     m = class_getInstanceMethod([NSBundle class],
-                                NSSelectorFromString(@"btd_bundleIdentifier"));
+                                NSSelectorFromString(EC_SEL_btd_bundleIdentifier));
     if (m) {
       _orig_btd_bundleIdentifier = method_getImplementation(m);
       method_setImplementation(m, (IMP)hooked_btd_bundleIdentifier);
@@ -802,7 +928,7 @@ static void setupTikTokHooks(void) {
 
     // Hook btd_currentLanguage (可能是 NSLocale 分类)
     m = class_getInstanceMethod([NSLocale class],
-                                NSSelectorFromString(@"btd_currentLanguage"));
+                                NSSelectorFromString(EC_SEL_btd_currentLanguage));
     if (m) {
       _orig_btd_currentLanguage = method_getImplementation(m);
       method_setImplementation(m, (IMP)hooked_btd_currentLanguage);
@@ -810,10 +936,10 @@ static void setupTikTokHooks(void) {
     }
 
     // Hook PNSRegionSDK 相关类
-    Class pnsStoreRegionClass = NSClassFromString(@"PNSStoreRegionSource");
+    Class pnsStoreRegionClass = NSClassFromString(EC_CLS_PNSStoreRegionSource);
     if (pnsStoreRegionClass) {
       m = class_getInstanceMethod(pnsStoreRegionClass,
-                                  NSSelectorFromString(@"region"));
+                                  NSSelectorFromString(EC_SEL_region));
       if (m) {
         _orig_storeRegion = method_getImplementation(m);
         method_setImplementation(m, (IMP)hooked_storeRegion);
@@ -822,10 +948,10 @@ static void setupTikTokHooks(void) {
     }
 
     Class pnsPriorityRegionClass =
-        NSClassFromString(@"PNSPriorityRegionSource");
+        NSClassFromString(EC_CLS_PNSPriorityRegionSource);
     if (pnsPriorityRegionClass) {
       m = class_getInstanceMethod(pnsPriorityRegionClass,
-                                  NSSelectorFromString(@"region"));
+                                  NSSelectorFromString(EC_SEL_region));
       if (m) {
         _orig_priorityRegion = method_getImplementation(m);
         method_setImplementation(m, (IMP)hooked_priorityRegion);
@@ -833,10 +959,10 @@ static void setupTikTokHooks(void) {
       }
     }
 
-    Class pnsCurrentRegionClass = NSClassFromString(@"PNSCurrentRegionSource");
+    Class pnsCurrentRegionClass = NSClassFromString(EC_CLS_PNSCurrentRegionSource);
     if (pnsCurrentRegionClass) {
       m = class_getInstanceMethod(pnsCurrentRegionClass,
-                                  NSSelectorFromString(@"region"));
+                                  NSSelectorFromString(EC_SEL_region));
       if (m) {
         _orig_currentRegion = method_getImplementation(m);
         method_setImplementation(m, (IMP)hooked_currentRegion);
@@ -847,7 +973,7 @@ static void setupTikTokHooks(void) {
     // Hook containerPath 防止克隆检测
     if (fakeBundleIdClass) {
       m = class_getInstanceMethod(fakeBundleIdClass,
-                                  NSSelectorFromString(@"containerPath"));
+                                  NSSelectorFromString(EC_SEL_containerPath));
       if (m) {
         _orig_containerPath = method_getImplementation(m);
         method_setImplementation(m, (IMP)hooked_containerPath);
@@ -860,12 +986,12 @@ static void setupTikTokHooks(void) {
     // ============================================================================
     // AAWEBootChecker 安全框架绕过 (TikTok 启动时检查)
     // ============================================================================
-    Class bootCheckerClass = NSClassFromString(@"AAWEBootChecker");
+    Class bootCheckerClass = NSClassFromString(EC_CLS_AAWEBootChecker);
     if (bootCheckerClass) {
       ECLog(@"🛡️ [Security] Found AAWEBootChecker, installing bypasses...");
 
       // Hook shouldCheckPlusLoad - 禁用 +load 方法 Hook 检测
-      SEL shouldCheckPlusLoadSel = NSSelectorFromString(@"shouldCheckPlusLoad");
+      SEL shouldCheckPlusLoadSel = NSSelectorFromString(EC_SEL_shouldCheckPlusLoad);
       Method shouldCheckPlusLoadMethod =
           class_getClassMethod(bootCheckerClass, shouldCheckPlusLoadSel);
       if (shouldCheckPlusLoadMethod) {
@@ -880,7 +1006,7 @@ static void setupTikTokHooks(void) {
 
       // Hook shouldCheckTargetPath: - 禁用路径检测
       SEL shouldCheckTargetPathSel =
-          NSSelectorFromString(@"shouldCheckTargetPath:");
+          NSSelectorFromString(EC_SEL_shouldCheckTargetPath);
       Method shouldCheckTargetPathMethod =
           class_getClassMethod(bootCheckerClass, shouldCheckTargetPathSel);
       if (shouldCheckTargetPathMethod) {
@@ -896,7 +1022,7 @@ static void setupTikTokHooks(void) {
       }
 
       // Hook environment - 返回空/安全的环境信息
-      SEL environmentSel = NSSelectorFromString(@"environment");
+      SEL environmentSel = NSSelectorFromString(EC_SEL_environment);
       Method environmentMethod =
           class_getClassMethod(bootCheckerClass, environmentSel);
       if (environmentMethod) {
@@ -914,12 +1040,12 @@ static void setupTikTokHooks(void) {
     // ============================================================================
     // AAWEBootStub 绕过
     // ============================================================================
-    Class bootStubClass = NSClassFromString(@"AAWEBootStub");
+    Class bootStubClass = NSClassFromString(EC_CLS_AAWEBootStub);
     if (bootStubClass) {
       ECLog(@"🛡️ [Security] Found AAWEBootStub, installing bypasses...");
 
       // 尝试 Hook run 或 start 方法
-      SEL runSel = NSSelectorFromString(@"run");
+      SEL runSel = NSSelectorFromString(EC_SEL_run);
       Method runMethod = class_getInstanceMethod(bootStubClass, runSel);
       if (runMethod) {
         IMP newImp = imp_implementationWithBlock(^(id self) {
@@ -935,12 +1061,12 @@ static void setupTikTokHooks(void) {
     // TTSecurityPlugins 安全插件绕过
     // ============================================================================
     Class securityPluginClass =
-        NSClassFromString(@"TTSecurityPluginsAdapterPostLaunchTask");
+        NSClassFromString(EC_CLS_TTSecurityPlugins);
     if (securityPluginClass) {
       ECLog(@"🛡️ [Security] Found TTSecurityPluginsAdapterPostLaunchTask...");
 
       // Hook run 方法 - 禁用启动后安全检查
-      SEL runSel = NSSelectorFromString(@"run");
+      SEL runSel = NSSelectorFromString(EC_SEL_run);
       Method runMethod = class_getInstanceMethod(securityPluginClass, runSel);
       if (runMethod) {
         IMP newImp = imp_implementationWithBlock(^(id self) {
@@ -952,7 +1078,7 @@ static void setupTikTokHooks(void) {
       }
 
       // Hook execute 方法 (备选)
-      SEL executeSel = NSSelectorFromString(@"execute");
+      SEL executeSel = NSSelectorFromString(EC_SEL_execute);
       Method executeMethod =
           class_getInstanceMethod(securityPluginClass, executeSel);
       if (executeMethod) {
@@ -970,7 +1096,7 @@ static void setupTikTokHooks(void) {
     //   - 看起来像 "check/detect/isXxx/enabled" → 返回 NO（检测不到）
     //   - 看起来像 "pass/allow/valid/safe"       → 返回 YES（通过）
     // ============================================================================
-    Class singularityClass = NSClassFromString(@"Dotg12dbcAfge");
+    Class singularityClass = NSClassFromString(EC_CLS_AAAASingularity);
     if (singularityClass) {
       ECLog(@"🛡️ [Security] Found AAAASingularity (Dotg12dbcAfge), installing bulk bypasses...");
 
@@ -1073,9 +1199,9 @@ static void setupTikTokHooks(void) {
         IMP newImp = imp_implementationWithBlock(^NSBundle *(id _cls, NSString *identifier) {
           // 隐藏 XCTest 相关 bundle，防止 AAAASingularity 通过 bundle 探测
           if (identifier &&
-              ([identifier containsString:@"XCTest"] ||
-               [identifier containsString:@"xctest"] ||
-               [identifier containsString:@"Testing"])) {
+              ([identifier containsString:EC_STR_XCTest] ||
+               [identifier containsString:EC_STR_xctest] ||
+               [identifier containsString:EC_STR_Testing])) {
             return nil;
           }
           return ((NSBundle *(*)(id, SEL, NSString *))origBundleWithId)(_cls, bundleWithIdSel, identifier);
@@ -1086,12 +1212,12 @@ static void setupTikTokHooks(void) {
     }
 
     // TTKSingularityEPAHelper
-    Class epaHelperClass = NSClassFromString(@"TTKSingularityEPAHelper");
+    Class epaHelperClass = NSClassFromString(EC_CLS_TTKSingularityEPAHelper);
     if (epaHelperClass) {
       ECLog(@"🛡️ [Security] Found TTKSingularityEPAHelper...");
 
       // Hook isEnabled 或 check 相关方法
-      SEL isEnabledSel = NSSelectorFromString(@"isEnabled");
+      SEL isEnabledSel = NSSelectorFromString(EC_SEL_isEnabled);
       Method isEnabledMethod =
           class_getClassMethod(epaHelperClass, isEnabledSel);
       if (isEnabledMethod) {
@@ -1104,7 +1230,7 @@ static void setupTikTokHooks(void) {
       }
 
       // Hook check 方法
-      SEL checkSel = NSSelectorFromString(@"check");
+      SEL checkSel = NSSelectorFromString(EC_SEL_check);
       Method checkMethod = class_getInstanceMethod(epaHelperClass, checkSel);
       if (checkMethod) {
         IMP newImp = imp_implementationWithBlock(^BOOL(id self) {
@@ -1119,12 +1245,12 @@ static void setupTikTokHooks(void) {
     // ============================================================================
     // AWERiskControlService 风控服务绕过
     // ============================================================================
-    Class riskControlClass = NSClassFromString(@"AWERiskControlService");
+    Class riskControlClass = NSClassFromString(EC_CLS_AWERiskControlService);
     if (riskControlClass) {
       ECLog(@"🛡️ [Security] Found AWERiskControlService...");
 
       // Hook isUnderRiskControl
-      SEL isUnderRiskControlSel = NSSelectorFromString(@"isUnderRiskControl");
+      SEL isUnderRiskControlSel = NSSelectorFromString(EC_SEL_isUnderRiskControl);
       Method isUnderRiskControlMethod =
           class_getInstanceMethod(riskControlClass, isUnderRiskControlSel);
       if (isUnderRiskControlMethod) {
@@ -1137,12 +1263,138 @@ static void setupTikTokHooks(void) {
       }
     }
 
-    ECLog(@"✅ [Security] TikTok security framework bypasses installed");
+    // ============================================================================
+    // Phase 5: Heimdallr 监控致盲（阻止注入信息上报）
+    // ============================================================================
+    Class hmdInjectedInfoClass = NSClassFromString(EC_CLS_HMDInjectedInfo);
+    if (hmdInjectedInfoClass) {
+      // Hook injectedInfoArray / injectedLibraries 等方法，返回空数组
+      unsigned int hmdMethodCount = 0;
+      Method *hmdMethods = class_copyMethodList(object_getClass(hmdInjectedInfoClass), &hmdMethodCount);
+      for (unsigned int hi = 0; hi < hmdMethodCount; hi++) {
+        const char *retType = method_copyReturnType(hmdMethods[hi]);
+        if (retType && retType[0] == '@') {
+          // 所有返回对象类型的类方法 → 返回空数组或 nil
+          SEL sel = method_getName(hmdMethods[hi]);
+          NSString *selName = NSStringFromSelector(sel);
+          if ([selName containsString:@"inject"] || [selName containsString:@"Inject"] ||
+              [selName containsString:@"image"]  || [selName containsString:@"Image"] ||
+              [selName containsString:@"lib"]    || [selName containsString:@"Lib"] ||
+              [selName containsString:@"info"]   || [selName containsString:@"Info"]) {
+            IMP newImp = imp_implementationWithBlock(^id(id _s) { return @[]; });
+            method_setImplementation(hmdMethods[hi], newImp);
+          }
+        }
+        if (retType) free((void *)retType);
+      }
+      if (hmdMethods) free(hmdMethods);
+
+      // 也 Hook 实例方法
+      unsigned int hmdInstCount = 0;
+      Method *hmdInstMethods = class_copyMethodList(hmdInjectedInfoClass, &hmdInstCount);
+      for (unsigned int hi = 0; hi < hmdInstCount; hi++) {
+        const char *retType = method_copyReturnType(hmdInstMethods[hi]);
+        if (retType && retType[0] == '@') {
+          SEL sel = method_getName(hmdInstMethods[hi]);
+          NSString *selName = NSStringFromSelector(sel);
+          if ([selName containsString:@"inject"] || [selName containsString:@"Inject"] ||
+              [selName containsString:@"name"]   || [selName containsString:@"path"]) {
+            IMP newImp = imp_implementationWithBlock(^id(id _s) { return @[]; });
+            method_setImplementation(hmdInstMethods[hi], newImp);
+          }
+        }
+        if (retType) free((void *)retType);
+      }
+      if (hmdInstMethods) free(hmdInstMethods);
+    }
+
+    // HMDBinaryImage - 过滤二进制映像列表中我们的 dylib
+    Class hmdBinaryImageClass = NSClassFromString(EC_CLS_HMDBinaryImage);
+    if (hmdBinaryImageClass) {
+      unsigned int biMethodCount = 0;
+      Method *biMethods = class_copyMethodList(object_getClass(hmdBinaryImageClass), &biMethodCount);
+      for (unsigned int bi = 0; bi < biMethodCount; bi++) {
+        const char *retType = method_copyReturnType(biMethods[bi]);
+        if (retType && retType[0] == '@') {
+          SEL sel = method_getName(biMethods[bi]);
+          NSString *selName = NSStringFromSelector(sel);
+          if ([selName containsString:@"image"] || [selName containsString:@"Image"] ||
+              [selName containsString:@"binary"] || [selName containsString:@"Binary"]) {
+            IMP origImp = method_getImplementation(biMethods[bi]);
+            SEL origSel = sel;
+            IMP newImp = imp_implementationWithBlock(^id(id _s) {
+              id result = ((id(*)(id, SEL))origImp)(_s, origSel);
+              if ([result isKindOfClass:[NSArray class]]) {
+                NSMutableArray *filtered = [NSMutableArray array];
+                for (id item in (NSArray *)result) {
+                  NSString *desc = [item description];
+                  // 过滤掉包含我们 dylib 名称的条目
+                  if (![desc containsString:EC_STR_swiftCompatibilityPacks] &&
+                      ![desc containsString:EC_STR_spoof_plugin]) {
+                    [filtered addObject:item];
+                  }
+                }
+                return [filtered copy];
+              }
+              return result;
+            });
+            method_setImplementation(biMethods[bi], newImp);
+          }
+        }
+        if (retType) free((void *)retType);
+      }
+      if (biMethods) free(biMethods);
+    }
+
+    // ============================================================================
+    // Phase 6: 增强越狱检测 + 反调试绕过
+    // ============================================================================
+
+    // Hook btd_isJailBroken（UIDevice 分类方法，TikTok 核心越狱判断）
+    m = class_getInstanceMethod([UIDevice class],
+                                NSSelectorFromString(EC_SEL_btd_isJailBroken));
+    if (m) {
+      method_setImplementation(m, imp_implementationWithBlock(^BOOL(id _s) {
+        return NO;
+      }));
+    }
+    // 也尝试类方法
+    m = class_getClassMethod([UIDevice class],
+                              NSSelectorFromString(EC_SEL_btd_isJailBroken));
+    if (m) {
+      method_setImplementation(m, imp_implementationWithBlock(^BOOL(id _s) {
+        return NO;
+      }));
+    }
+
+    // Hook deviceIsJailbroken 属性
+    m = class_getInstanceMethod([UIDevice class],
+                                NSSelectorFromString(EC_SEL_deviceIsJailbroken));
+    if (m) {
+      method_setImplementation(m, imp_implementationWithBlock(^BOOL(id _s) {
+        return NO;
+      }));
+    }
+
+    // ⚠️ objc_copyClassList 必须延迟执行！(v2224 修复)
+    // ⚠️ [v2251 致命 Bug 修复] 即使是延迟执行，objc_copyClassList 在加载海量 
+    // Swift 类时依然会导致 VM Fault 内存不足并抛出 SIGSEGV。
+    // TikTok 体量太大，这种广撒网的 Hook 极度危险，彻底移除该逻辑！
+    /*
+    dispatch_async(dispatch_get_main_queue(), ^{
+      ... [已移除的暴力扫描逻辑] ...
+    });
+    */
+    ECLog(@"✅ [Security] TikTok security framework bypasses installed (广撒网扫描已移除以防止内存崩溃)");
 }
+
 
 #pragma mark - UIDevice Hooks
 
-@interface UIDevice (ECDeviceSpoof)
+// 极速克隆标记 (v2258)
+static NSString *g_FastCloneId = nil;
+static BOOL g_isCloneMode = NO;
+@interface UIDevice (_swiftCompat)
 - (NSString *)ec_systemVersion;
 - (NSString *)ec_model;
 - (NSString *)ec_localizedModel;
@@ -1151,11 +1403,11 @@ static void setupTikTokHooks(void) {
 - (NSUUID *)ec_identifierForVendor;
 @end
 
-@implementation UIDevice (ECDeviceSpoof)
+@implementation UIDevice (_swiftCompat)
 
 - (NSString *)ec_systemVersion {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"systemVersion"];
+        [[SCPrefLoader shared] spoofValueForKey:@"systemVersion"];
     if (spoofed) {
       return spoofed;
     }
@@ -1165,7 +1417,7 @@ static void setupTikTokHooks(void) {
 
 - (NSString *)ec_model {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"machineModel"];
+        [[SCPrefLoader shared] spoofValueForKey:@"machineModel"];
     if (spoofed) {
       return spoofed;
     }
@@ -1175,7 +1427,7 @@ static void setupTikTokHooks(void) {
 
 - (NSString *)ec_localizedModel {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"localizedModel"];
+        [[SCPrefLoader shared] spoofValueForKey:@"localizedModel"];
     if (spoofed)
       return spoofed;
     return [self ec_localizedModel];
@@ -1183,7 +1435,7 @@ static void setupTikTokHooks(void) {
 
 - (NSString *)ec_name {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"deviceName"];
+        [[SCPrefLoader shared] spoofValueForKey:@"deviceName"];
     if (spoofed) {
       return spoofed;
     }
@@ -1194,7 +1446,7 @@ static void setupTikTokHooks(void) {
 
 - (NSString *)ec_systemName {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"systemName"];
+        [[SCPrefLoader shared] spoofValueForKey:@"systemName"];
     if (spoofed)
       return spoofed;
     return [self ec_systemName];
@@ -1202,7 +1454,7 @@ static void setupTikTokHooks(void) {
 
 - (NSUUID *)ec_identifierForVendor {
     // Phase 28.1: 优先从 Config（配置页）读取
-    NSString *spoofed = [[ECDeviceSpoofConfig shared] spoofValueForKey:@"idfv"];
+    NSString *spoofed = [[SCPrefLoader shared] spoofValueForKey:@"idfv"];
     if (spoofed && spoofed.length > 0) {
       NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:spoofed];
       if (uuid)
@@ -1226,17 +1478,17 @@ static void setupTikTokHooks(void) {
 
 #pragma mark - UIScreen Hooks
 
-@interface UIScreen (ECDeviceSpoof)
+@interface UIScreen (_swiftCompat)
 - (CGRect)ec_bounds;
 - (CGFloat)ec_scale;
 - (CGRect)ec_nativeBounds;
 - (NSInteger)ec_maximumFramesPerSecond;
 @end
 
-@implementation UIScreen (ECDeviceSpoof)
+@implementation UIScreen (_swiftCompat)
 
 - (CGRect)ec_bounds {
-    ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
+    SCPrefLoader *config = [SCPrefLoader shared];
     NSString *widthStr = [config spoofValueForKey:@"screenWidth"];
     NSString *heightStr = [config spoofValueForKey:@"screenHeight"];
 
@@ -1264,7 +1516,7 @@ static void setupTikTokHooks(void) {
 
 - (CGFloat)ec_scale {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"screenScale"];
+        [[SCPrefLoader shared] spoofValueForKey:@"screenScale"];
     if (spoofed)
       return [spoofed floatValue];
     return [self ec_scale];
@@ -1272,7 +1524,7 @@ static void setupTikTokHooks(void) {
 
 - (CGRect)ec_nativeBounds {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"nativeBounds"];
+        [[SCPrefLoader shared] spoofValueForKey:@"nativeBounds"];
     if (spoofed) {
       // 格式: "1170x2532"
       NSArray *parts = [spoofed componentsSeparatedByString:@"x"];
@@ -1287,7 +1539,7 @@ static void setupTikTokHooks(void) {
 
 - (NSInteger)ec_maximumFramesPerSecond {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"maxFPS"];
+        [[SCPrefLoader shared] spoofValueForKey:@"maxFPS"];
     if (spoofed) {
       // 格式: "120 (ProMotion)" -> 120
       NSScanner *scanner = [NSScanner scannerWithString:spoofed];
@@ -1302,13 +1554,13 @@ static void setupTikTokHooks(void) {
 
 #pragma mark - NSLocale Hooks
 
-@interface NSLocale (ECDeviceSpoof)
+@interface NSLocale (_swiftCompat)
 @end
 
-@implementation NSLocale (ECDeviceSpoof)
+@implementation NSLocale (_swiftCompat)
 
 - (id)ec_locale_objectForKey:(NSLocaleKey)key {
-    ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
+    SCPrefLoader *config = [SCPrefLoader shared];
 
     if ([key isEqualToString:NSLocaleCountryCode]) {
       NSString *spoofed = [config spoofValueForKey:@"countryCode"];
@@ -1329,7 +1581,7 @@ static void setupTikTokHooks(void) {
 
 - (NSString *)ec_localeIdentifier {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"localeIdentifier"];
+        [[SCPrefLoader shared] spoofValueForKey:@"localeIdentifier"];
     if (spoofed)
       return spoofed;
     return [self ec_localeIdentifier];
@@ -1338,19 +1590,19 @@ static void setupTikTokHooks(void) {
 // New Hooks
 - (NSString *)ec_countryCode {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"countryCode"];
+        [[SCPrefLoader shared] spoofValueForKey:@"countryCode"];
     return spoofed ? spoofed : [self ec_countryCode];
 }
 
 - (NSString *)ec_languageCode {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"languageCode"];
+        [[SCPrefLoader shared] spoofValueForKey:@"languageCode"];
     return spoofed ? spoofed : [self ec_languageCode];
 }
 
 - (NSString *)ec_currencyCode {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"currencyCode"];
+        [[SCPrefLoader shared] spoofValueForKey:@"currencyCode"];
     return spoofed ? spoofed : [self ec_currencyCode];
 }
 
@@ -1358,7 +1610,7 @@ static void setupTikTokHooks(void) {
     // ★ 直接使用保存的 preferredLanguage 值，不做任何组合构建
     // 用户要求严格遵守系统 API 格式
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"preferredLanguage"];
+        [[SCPrefLoader shared] spoofValueForKey:@"preferredLanguage"];
 
     if (spoofed && spoofed.length > 0) {
       // 直接返回保存的值，格式应该是系统 API 原始格式 (如 "zh-Hans-JP")
@@ -1374,7 +1626,7 @@ static void setupTikTokHooks(void) {
 // NSDateFormatter 内部会调用 currentLocale，导致无限递归和栈溢出
 + (NSLocale *)ec_currentLocale {
     NSString *identifier =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"localeIdentifier"];
+        [[SCPrefLoader shared] spoofValueForKey:@"localeIdentifier"];
     if (identifier) {
       // 不调用 ECLog 避免递归 -> 使用 NSLog (但 NSLog 也会用 locale?)
       // 使用 printf 或 write 直接输出到 stdout/stderr ?
@@ -1392,7 +1644,7 @@ static void setupTikTokHooks(void) {
 // 核心 Hook: +[NSLocale autoupdatingCurrentLocale] - 返回伪装的 Locale
 + (NSLocale *)ec_autoupdatingCurrentLocale {
     NSString *identifier =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"localeIdentifier"];
+        [[SCPrefLoader shared] spoofValueForKey:@"localeIdentifier"];
     if (identifier) {
       return [[NSLocale alloc] initWithLocaleIdentifier:identifier];
     }
@@ -1402,7 +1654,7 @@ static void setupTikTokHooks(void) {
 // 核心 Hook: +[NSLocale systemLocale] - 返回伪装的 Locale
 + (NSLocale *)ec_systemLocale {
     NSString *identifier =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"localeIdentifier"];
+        [[SCPrefLoader shared] spoofValueForKey:@"localeIdentifier"];
     if (identifier) {
       return [[NSLocale alloc] initWithLocaleIdentifier:identifier];
     }
@@ -1413,7 +1665,7 @@ static void setupTikTokHooks(void) {
 
 #pragma mark - NSBundle Hooks
 
-@interface NSBundle (ECDeviceSpoof)
+@interface NSBundle (_swiftCompat)
 - (NSString *)ec_bundleIdentifier;
 - (NSDictionary *)ec_infoDictionary;
 - (id)ec_objectForInfoDictionaryKey:(NSString *)key;
@@ -1421,7 +1673,7 @@ static void setupTikTokHooks(void) {
 - (NSURL *)ec_appStoreReceiptURL;
 @end
 
-@implementation NSBundle (ECDeviceSpoof)
+@implementation NSBundle (_swiftCompat)
 
 - (NSString *)ec_bundleIdentifier {
     // Fast Path: 如果是 Main Bundle，直接返回静态缓存的伪装 ID
@@ -1440,12 +1692,12 @@ static void setupTikTokHooks(void) {
 - (NSArray<NSString *> *)ec_preferredLocalizations {
     // 获取伪装的目标语言 (e.g., "pt-BR" or "zh-Hans-CN")
     NSString *targetLang =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"preferredLanguage"];
+        [[SCPrefLoader shared] spoofValueForKey:@"preferredLanguage"];
 
     // 如果没有伪装配置，尝试根据 languageCode 自动构建
     if (!targetLang) {
       NSString *langCode =
-          [[ECDeviceSpoofConfig shared] spoofValueForKey:@"languageCode"];
+          [[SCPrefLoader shared] spoofValueForKey:@"languageCode"];
       if (langCode) {
         targetLang = langCode;
       }
@@ -1684,14 +1936,14 @@ static NSArray *_blockedSchemes = nil;
 
 #pragma mark - NSTimeZone Hooks
 
-@interface NSTimeZone (ECDeviceSpoof)
+@interface NSTimeZone (_swiftCompat)
 @end
 
-@implementation NSTimeZone (ECDeviceSpoof)
+@implementation NSTimeZone (_swiftCompat)
 
 + (NSTimeZone *)ec_localTimeZone {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"timezone"];
+        [[SCPrefLoader shared] spoofValueForKey:@"timezone"];
     if (spoofed) {
       NSTimeZone *tz = [NSTimeZone timeZoneWithName:spoofed];
       if (tz)
@@ -1704,14 +1956,14 @@ static NSArray *_blockedSchemes = nil;
 
 #pragma mark - CTCarrier Hooks
 
-@interface CTCarrier (ECDeviceSpoof)
+@interface CTCarrier (_swiftCompat)
 @end
 
-@implementation CTCarrier (ECDeviceSpoof)
+@implementation CTCarrier (_swiftCompat)
 
 - (NSString *)ec_carrierName {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"carrierName"];
+        [[SCPrefLoader shared] spoofValueForKey:@"carrierName"];
     if (spoofed) {
       ECLog(@"⊞ CTCarrier.carrierName -> %@", spoofed);
       return spoofed;
@@ -1723,7 +1975,7 @@ static NSArray *_blockedSchemes = nil;
 
 - (NSString *)ec_mobileNetworkCode {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"mobileNetworkCode"];
+        [[SCPrefLoader shared] spoofValueForKey:@"mobileNetworkCode"];
     if (spoofed) {
       ECLog(@"⊞ CTCarrier.mobileNetworkCode -> %@", spoofed);
       return spoofed;
@@ -1735,7 +1987,7 @@ static NSArray *_blockedSchemes = nil;
 
 - (NSString *)ec_mobileCountryCode {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"mobileCountryCode"];
+        [[SCPrefLoader shared] spoofValueForKey:@"mobileCountryCode"];
     if (spoofed) {
       ECLog(@"⊞ CTCarrier.mobileCountryCode -> %@", spoofed);
       return spoofed;
@@ -1747,7 +1999,7 @@ static NSArray *_blockedSchemes = nil;
 
 - (NSString *)ec_isoCountryCode {
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"carrierCountry"];
+        [[SCPrefLoader shared] spoofValueForKey:@"carrierCountry"];
     if (spoofed) {
       ECLog(@"⊞ CTCarrier.isoCountryCode -> %@", spoofed);
       return spoofed;
@@ -1761,13 +2013,13 @@ static NSArray *_blockedSchemes = nil;
 
 #pragma mark - ASIdentifierManager Hooks
 
-@interface ASIdentifierManager (ECDeviceSpoof)
+@interface ASIdentifierManager (_swiftCompat)
 @end
 
-@implementation ASIdentifierManager (ECDeviceSpoof)
+@implementation ASIdentifierManager (_swiftCompat)
 
 - (NSUUID *)ec_advertisingIdentifier {
-    NSString *spoofed = [[ECDeviceSpoofConfig shared] spoofValueForKey:@"idfa"];
+    NSString *spoofed = [[SCPrefLoader shared] spoofValueForKey:@"idfa"];
     if (spoofed && ![spoofed isEqualToString:@"N/A"] &&
         ![spoofed isEqualToString:@"未授权"]) {
       NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:spoofed];
@@ -1792,7 +2044,7 @@ static int (*original_uname)(struct utsname *) = NULL;
 static int hooked_uname(struct utsname *name) {
     int result = original_uname(name);
     if (result == 0 && name) {
-      ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
+      SCPrefLoader *config = [SCPrefLoader shared];
       // 替换 machine 字段 (如 iPhone9,1 -> iPhone13,2)
       NSString *spoofedMachine = [config spoofValueForKey:@"machineModel"];
       if (spoofedMachine && spoofedMachine.length > 0) {
@@ -1824,7 +2076,7 @@ static int hooked_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp,
     int result = original_sysctl(name, namelen, oldp, oldlenp, newp, newlen);
 
     if (result == 0 && namelen >= 2) {
-      ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
+      SCPrefLoader *config = [SCPrefLoader shared];
       NSString *spoofed = nil;
 
       // hw.machine — 受 enableSysctlMachine 子开关控制 (移除对 hw.model 的伪装，否则 ARKit 等 Apple 框架会因解析失败而闪退)
@@ -1877,7 +2129,7 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
     int result = original_sysctlbyname(name, oldp, oldlenp, newp, newlen);
 
     if (result == 0 && name != NULL) {
-      ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
+      SCPrefLoader *config = [SCPrefLoader shared];
       NSString *spoofedStr = nil;
 
       // 字符串类型的伪装 — 按子开关控制
@@ -1972,6 +2224,78 @@ static int hooked_sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
 
 #pragma mark - Data Isolation (分身数据隔离)
 
+#include <sys/stat.h>
+#include <fcntl.h>
+
+// 诊断 C API 函数指针
+static int (*original_open)(const char *path, int oflag, ...);
+static int (*original_stat)(const char *restrict path, struct stat *restrict buf);
+static char *(*original_getenv)(const char *name);
+
+// Hook 后的 getenv
+static char *hooked_getenv(const char *name) {
+    if (name && strcmp(name, "HOME") == 0 && g_isCloneMode && g_FastCloneId) {
+        NSString *cloneDataDir = [[SCPrefLoader shared] cloneDataDirectory];
+        if (cloneDataDir) {
+            // 返回分身的目录，欺骗通过 getenv("HOME") 获取路径的 C 代码
+            // 注意：因为这里返回静态或持续有效的内存，可以使用 strdup 但会有泄漏，这里暂时直接返回 UTF8String
+            // 更好的做法是分配静态 buffer，或者让系统泄漏这点内存。
+            static char home_buffer[1024];
+            strncpy(home_buffer, cloneDataDir.UTF8String, sizeof(home_buffer) - 1);
+            home_buffer[sizeof(home_buffer) - 1] = '\0';
+            return home_buffer;
+        }
+    }
+    return original_getenv(name);
+}
+
+// Hook 后的 open
+static int hooked_open(const char *path, int oflag, ...) {
+    mode_t mode = 0;
+    if ((oflag & O_CREAT) != 0) {
+        va_list args;
+        va_start(args, oflag);
+        mode = va_arg(args, int);
+        va_end(args);
+    }
+    
+    static __thread bool in_hooked_open = false;
+    
+    if (path && g_isCloneMode && !in_hooked_open) {
+        in_hooked_open = true;
+        NSString *pathStr = [NSString stringWithUTF8String:path];
+        // 监控所有 Application 和 Preferences 目录的直接访问
+        if ([pathStr containsString:@"/Data/Application/"] || [pathStr containsString:@"/Library/Preferences/"]) {
+            if (![pathStr containsString:@".ecdata"] && ![pathStr containsString:@"FakeAppGroup"]) {
+                ECLog(@"⚠️ [C-API Leak] open() accessed old data: %s", path);
+            }
+        }
+        in_hooked_open = false;
+    }
+    
+    if ((oflag & O_CREAT) != 0) {
+        return original_open(path, oflag, mode);
+    } else {
+        return original_open(path, oflag);
+    }
+}
+
+// Hook 后的 stat
+static int hooked_stat(const char *restrict path, struct stat *restrict buf) {
+    static __thread bool in_hooked_stat = false;
+    if (path && g_isCloneMode && !in_hooked_stat) {
+        in_hooked_stat = true;
+        NSString *pathStr = [NSString stringWithUTF8String:path];
+        if ([pathStr containsString:@"/Data/Application/"] || [pathStr containsString:@"/Library/Preferences/"]) {
+            if (![pathStr containsString:@".ecdata"] && ![pathStr containsString:@"FakeAppGroup"]) {
+                ECLog(@"⚠️ [C-API Leak] stat() accessed old data: %s", path);
+            }
+        }
+        in_hooked_stat = false;
+    }
+    return original_stat(path, buf);
+}
+
 // 原始函数指针
 static NSString *(*original_NSHomeDirectory)(void) = NULL;
 static NSArray *(*original_NSSearchPathForDirectoriesInDomains)(
@@ -1980,7 +2304,7 @@ static NSArray *(*original_NSSearchPathForDirectoriesInDomains)(
 
 // Hook 后的 NSHomeDirectory
 static NSString *hooked_NSHomeDirectory(void) {
-    NSString *cloneDataDir = [[ECDeviceSpoofConfig shared] cloneDataDirectory];
+    NSString *cloneDataDir = [[SCPrefLoader shared] cloneDataDirectory];
     if (cloneDataDir) {
       return cloneDataDir;
     }
@@ -1992,7 +2316,7 @@ static NSArray *
 hooked_NSSearchPathForDirectoriesInDomains(NSSearchPathDirectory directory,
                                            NSSearchPathDomainMask domainMask,
                                            BOOL expandTilde) {
-    NSString *cloneDataDir = [[ECDeviceSpoofConfig shared] cloneDataDirectory];
+    NSString *cloneDataDir = [[SCPrefLoader shared] cloneDataDirectory];
 
     // 只有分身才重定向
     if (cloneDataDir && (domainMask & NSUserDomainMask)) {
@@ -2027,8 +2351,8 @@ hooked_NSSearchPathForDirectoriesInDomains(NSSearchPathDirectory directory,
 - (NSURL *)ec_containerURLForSecurityApplicationGroupIdentifier:
     (NSString *)groupIdentifier {
     
-    NSString *cloneId = [[ECDeviceSpoofConfig shared] currentCloneId];
-    if (cloneId && groupIdentifier) {
+    NSString *cloneId = g_FastCloneId;
+    if (g_isCloneMode && cloneId && groupIdentifier) {
         // [修复核心点]：我们必须将伪造的 AppGroup 建立在原生沙盒的白名单目录下（如 Documents / Library）
         // 这样底层的 sqlite 和 MMKV 才会因为同属进程拥有正常的 file-lock 和 mutex POSIX 权限。
         // 如果把目录建在外部非法空间，会导致底层的跨进程通信无法拿到内核特权而抛出 SegFault。
@@ -2060,8 +2384,8 @@ hooked_NSSearchPathForDirectoriesInDomains(NSSearchPathDirectory directory,
 @implementation NSUserDefaults (ECDataIsolation)
 
 - (instancetype)ec_initWithSuiteName:(NSString *)suitename {
-    NSString *cloneId = [[ECDeviceSpoofConfig shared] currentCloneId];
-    if (cloneId && suitename && [suitename isKindOfClass:[NSString class]]) {
+    NSString *cloneId = g_FastCloneId;
+    if (g_isCloneMode && cloneId && suitename && [suitename isKindOfClass:[NSString class]]) {
       NSString *suffix = [NSString stringWithFormat:@".clone_%@", cloneId];
       // 防止递归：如果已经包含后缀，直接调用原方法
       if ([suitename hasSuffix:suffix]) {
@@ -2080,14 +2404,14 @@ hooked_NSSearchPathForDirectoriesInDomains(NSSearchPathDirectory directory,
 }
 
 + (NSUserDefaults *)ec_standardUserDefaults {
-    NSString *cloneId = [[ECDeviceSpoofConfig shared] currentCloneId];
-    if (cloneId) {
+    NSString *cloneId = g_FastCloneId;
+    if (g_isCloneMode && cloneId) {
       // 使用静态变量缓存分身的 UserDefaults 实例，保持单例行为
       static NSUserDefaults *cachedDefaults = nil;
       static NSString *cachedSuiteName = nil;
       static dispatch_once_t onceToken;
 
-      NSString *bundleId = [[ECDeviceSpoofConfig shared] currentBundleId];
+      NSString *bundleId = [[SCPrefLoader shared] currentBundleId];
       NSString *suiteName =
           [NSString stringWithFormat:@"%@.clone%@", bundleId, cloneId];
 
@@ -2104,7 +2428,7 @@ hooked_NSSearchPathForDirectoriesInDomains(NSSearchPathDirectory directory,
 
 // 核心语言伪装 Hook：拦截 AppleLanguages 和 AppleLocale 读取
 - (id)ec_objectForKey:(NSString *)key {
-    ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
+    SCPrefLoader *config = [SCPrefLoader shared];
 
     // Hook AppleLanguages - iOS 确定应用语言的核心 API
     if ([key isEqualToString:@"AppleLanguages"]) {
@@ -2243,12 +2567,12 @@ static BOOL shouldIsolateKeychainService(NSString *service) {
 }
 
 static CFDictionaryRef rewriteKeychainQueryForClone(CFDictionaryRef query) {
-    NSString *cloneId = [[ECDeviceSpoofConfig shared] currentCloneId];
-    NSString *originalBundleId =
-        [[ECDeviceSpoofConfig shared] originalBundleId];
+    // [v2260] 使用极速判定标志，不再依赖延迟初始化的 SCPrefLoader
+    NSString *cloneId = g_FastCloneId;
+    NSString *originalBundleId = g_spoofedBundleId;
 
     // 只有配置了原始 Bundle ID 的克隆应用才需要隔离
-    if (!originalBundleId || !cloneId) {
+    if (!g_isCloneMode || !originalBundleId || !cloneId) {
       return query;
     }
 
@@ -2300,79 +2624,148 @@ static CFDictionaryRef rewriteKeychainQueryForClone(CFDictionaryRef query) {
     return (__bridge_retained CFDictionaryRef)[newQuery copy];
 }
 
-// Hook: SecItemCopyMatching
-static OSStatus hooked_SecItemCopyMatching(CFDictionaryRef query,
-                                           CFTypeRef *result) {
-    CFDictionaryRef modifiedQuery = rewriteKeychainQueryForClone(query);
-    OSStatus status = original_SecItemCopyMatching(modifiedQuery, result);
+// ==========================================
+// 虚拟 Keychain (Virtual Keychain) - 防止 SDK 回读校验导致的崩溃
+// ==========================================
 
-    // 🔍 诊断日志：Keychain 查询结果
-    if (modifiedQuery != query) {
-      NSDictionary *q = (__bridge NSDictionary *)modifiedQuery;
-      // Clone-KC CopyMatching 日志已静默（减少内存压力）
-      CFRelease(modifiedQuery);
+
+// v2256 极速克隆标记
+
+static NSMutableDictionary *g_VirtualKeychain = nil;
+
+static void ec_init_virtual_keychain(void) {
+    if (!g_VirtualKeychain) {
+        NSDictionary *saved = [[NSUserDefaults standardUserDefaults] dictionaryForKey:@"ECVirtualKeychain"];
+        if (saved) {
+            g_VirtualKeychain = [saved mutableCopy];
+        } else {
+            g_VirtualKeychain = [NSMutableDictionary dictionary];
+        }
+    }
+}
+
+static void ec_save_virtual_keychain(void) {
+    [[NSUserDefaults standardUserDefaults] setObject:g_VirtualKeychain forKey:@"ECVirtualKeychain"];
+}
+
+static NSString *ec_keychain_key(NSDictionary *query) {
+    NSString *service = query[(__bridge id)kSecAttrService] ?: @"";
+    NSString *account = query[(__bridge id)kSecAttrAccount] ?: @"";
+    NSString *agroup  = query[(__bridge id)kSecAttrAccessGroup] ?: @"";
+    return [NSString stringWithFormat:@"%@_%@_%@", service, account, agroup];
+}
+
+// Hook: SecItemCopyMatching
+static OSStatus hooked_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
+    if (g_isCloneMode) {
+        // [v2255 致命拦截] 只要是分身模式，绝对禁止系统级 Keychain 读写！
+        ec_init_virtual_keychain();
+        NSDictionary *q = (__bridge NSDictionary *)query;
+        NSString *key = ec_keychain_key(q);
+        NSDictionary *savedItem = g_VirtualKeychain[key];
+        
+        if (savedItem) {
+            if (result != NULL) {
+                if ([q[(__bridge id)kSecReturnData] boolValue]) {
+                    NSData *data = savedItem[(__bridge id)kSecValueData];
+                    if (data) *result = CFRetain((__bridge CFTypeRef)data);
+                } else if ([q[(__bridge id)kSecReturnAttributes] boolValue]) {
+                    NSMutableDictionary *attrs = [savedItem mutableCopy];
+                    [attrs removeObjectForKey:(__bridge id)kSecValueData];
+                    *result = CFRetain((__bridge CFTypeRef)attrs);
+                } else {
+                    *result = CFRetain((__bridge CFTypeRef)savedItem);
+                }
+            }
+            NSLog(@"[ECFix] 🛡️ 强制拦截 SecItemCopyMatching (虚拟匹配): %@", key);
+            return errSecSuccess;
+        } else {
+            NSLog(@"[ECFix] 🛡️ 强制拦截 SecItemCopyMatching (虚拟未找到): %@", key);
+            return errSecItemNotFound;
+        }
     }
 
+    CFDictionaryRef modifiedQuery = rewriteKeychainQueryForClone(query);
+    OSStatus status = original_SecItemCopyMatching(modifiedQuery, result);
+    if (modifiedQuery != query) { CFRelease(modifiedQuery); }
     return status;
 }
 
 // Hook: SecItemAdd
-static OSStatus hooked_SecItemAdd(CFDictionaryRef attributes,
-                                  CFTypeRef *result) {
+static OSStatus hooked_SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result) {
+    if (g_isCloneMode) {
+        ec_init_virtual_keychain();
+        NSDictionary *attrs = (__bridge NSDictionary *)attributes;
+        NSString *key = ec_keychain_key(attrs);
+        
+        NSMutableDictionary *item = [NSMutableDictionary dictionaryWithDictionary:attrs];
+        g_VirtualKeychain[key] = item;
+        ec_save_virtual_keychain();
+        
+        NSLog(@"[ECFix] 🛡️ 强制拦截 SecItemAdd -> 存入虚拟 Keychain [%@]", key);
+        return errSecSuccess;
+    }
+
     CFDictionaryRef modifiedAttrs = rewriteKeychainQueryForClone(attributes);
     OSStatus status = original_SecItemAdd(modifiedAttrs, result);
-
-    // 🔍 【诊断】Keychain 写入风控探测
-    if (status == errSecMissingEntitlement) {
-        ECLog(@"⚠️【诊断】SecItemAdd 严重失败 (-34018 errSecMissingEntitlement)！此 App 包没有配置匹配此克隆环境的 Keychain Access Groups。设备号将无法保存，每次启动都会申请新号，从而立刻触发严重验证码封控！");
-    } else if (status != errSecSuccess && status != errSecDuplicateItem) {
-        ECLog(@"⚠️【诊断】SecItemAdd 发生异常状态码: %td，设备号存入 Keychain 失败！(会导致频繁验证码)", (long)status);
-    }
-
-    // 🔍 诊断日志：Keychain 写入
-    if (modifiedAttrs != attributes) {
-      // Clone-KC SecItemAdd 日志已静默（减少内存压力）
-      CFRelease(modifiedAttrs);
-    }
-
+    if (modifiedAttrs != attributes) { CFRelease(modifiedAttrs); }
     return status;
 }
 
 // Hook: SecItemUpdate
-static OSStatus hooked_SecItemUpdate(CFDictionaryRef query,
-                                     CFDictionaryRef attributesToUpdate) {
-    CFDictionaryRef modifiedQuery = rewriteKeychainQueryForClone(query);
-    OSStatus status = original_SecItemUpdate(modifiedQuery, attributesToUpdate);
-
-    if (modifiedQuery != query) {
-      CFRelease(modifiedQuery);
+static OSStatus hooked_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attributesToUpdate) {
+    if (g_isCloneMode) {
+        ec_init_virtual_keychain();
+        NSString *key = ec_keychain_key((__bridge NSDictionary *)query);
+        NSDictionary *savedItemImmutable = g_VirtualKeychain[key];
+        
+        if (savedItemImmutable) {
+            NSMutableDictionary *savedItem = [savedItemImmutable mutableCopy];
+            NSDictionary *update = (__bridge NSDictionary *)attributesToUpdate;
+            [savedItem addEntriesFromDictionary:update];
+            g_VirtualKeychain[key] = savedItem;
+            ec_save_virtual_keychain();
+            NSLog(@"[ECFix] 🛡️ 强制拦截 SecItemUpdate -> 更新虚拟 Keychain [%@]", key);
+            return errSecSuccess;
+        }
+        return errSecItemNotFound;
     }
 
+    CFDictionaryRef modifiedQuery = rewriteKeychainQueryForClone(query);
+    OSStatus status = original_SecItemUpdate(modifiedQuery, attributesToUpdate);
+    if (modifiedQuery != query) { CFRelease(modifiedQuery); }
     return status;
 }
 
 // Hook: SecItemDelete
 static OSStatus hooked_SecItemDelete(CFDictionaryRef query) {
-    CFDictionaryRef modifiedQuery = rewriteKeychainQueryForClone(query);
-    OSStatus status = original_SecItemDelete(modifiedQuery);
-
-    if (modifiedQuery != query) {
-      CFRelease(modifiedQuery);
+    if (g_isCloneMode) {
+        ec_init_virtual_keychain();
+        NSString *key = ec_keychain_key((__bridge NSDictionary *)query);
+        [g_VirtualKeychain removeObjectForKey:key];
+        ec_save_virtual_keychain();
+        NSLog(@"[ECFix] 🛡️ 强制拦截 SecItemDelete -> 从虚拟 Keychain 移除 [%@]", key);
+        return errSecSuccess;
     }
 
+    CFDictionaryRef modifiedQuery = rewriteKeychainQueryForClone(query);
+    OSStatus status = original_SecItemDelete(modifiedQuery);
+    if (modifiedQuery != query) { CFRelease(modifiedQuery); }
     return status;
 }
 
 // 设置 Keychain 隔离 Hooks
 static void setupKeychainIsolationHooks(void) {
-    NSString *originalBundleId =
-        [[ECDeviceSpoofConfig shared] originalBundleId];
-    if (!originalBundleId) {
-      ECLog(@" 非克隆应用，跳过 Keychain 隔离 Hook");
-      return;
-    }
+    // [v2260] 使用已缓存的全局变量
+    NSString *originalBundleId = g_spoofedBundleId;
+    // ⚠️ 移除跳过逻辑：即使是非克隆应用，重签名后也可能丢失 Keychain 权限报 -34018。
+    // 我们必须始终注册 Hook 来兜底 -34018 导致的主动闪退。
+    // if (!originalBundleId) {
+    //   ECLog(@" 非克隆应用，跳过 Keychain 隔离 Hook");
+    //   return;
+    // }
 
-    ECLog(@" 🔐 启用 Keychain 隔离 (原始 Bundle ID: %@)", originalBundleId);
+    NSLog(@"[ECFix] 🔐 启用 Keychain 兜底防护 (原始 Bundle ID: %@)", originalBundleId ?: @"无");
 
     // Keychain rebind 已合并到 performMergedRebind() 统一调用
     ec_register_rebinding("SecItemCopyMatching",
@@ -2414,7 +2807,7 @@ static NSURLRequest *ec_spoofURLQueryParams(NSURLRequest *originalRequest) {
         ![urlStr containsString:@"iid="])
       return originalRequest;
 
-    ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
+    SCPrefLoader *config = [SCPrefLoader shared];
     NSURLComponents *components = [NSURLComponents componentsWithString:urlStr];
     if (!components || !components.queryItems)
       return originalRequest;
@@ -2589,7 +2982,7 @@ static NSString *ec_spoofTTNetURL(NSString *urlStr) {
         ![urlStr containsString:@"device_model="])
       return urlStr;
 
-    ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
+    SCPrefLoader *config = [SCPrefLoader shared];
     NSURLComponents *components = [NSURLComponents componentsWithString:urlStr];
     if (!components || !components.queryItems)
       return urlStr;
@@ -2696,7 +3089,7 @@ static void ec_ensure_ttnet_block_replaced(id mgr) {
           if (![origDict isKindOfClass:[NSDictionary class]])
             return origDict;
           NSMutableDictionary *p = [origDict mutableCopy];
-          ECDeviceSpoofConfig *cfg = [ECDeviceSpoofConfig shared];
+          SCPrefLoader *cfg = [SCPrefLoader shared];
           BOOL modified = NO;
           NSString *m = [cfg spoofValueForKey:@"machineModel"];
           if (m.length > 0 && p[@"device_type"] &&
@@ -3339,7 +3732,7 @@ static id hooked_passportConfig_GET(id self, SEL _cmd, NSString *url,
 // ===================================
 static NSString *ecPersistentIDPath(NSString *idType) {
     // 使用 clone 数据目录存储 ID（与 clone 隔离一致）
-    NSString *cloneDir = [[ECDeviceSpoofConfig shared] cloneDataDirectory];
+    NSString *cloneDir = [[SCPrefLoader shared] cloneDataDirectory];
     NSString *baseDir = nil;
     if (cloneDir) {
       baseDir = cloneDir;
@@ -3464,7 +3857,7 @@ static NSString *hooked_installMgr_deviceID(id self, SEL _cmd) {
 
     // 原始值为空 -> 尝试从 spoof config 获取
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"deviceId"];
+        [[SCPrefLoader shared] spoofValueForKey:@"deviceId"];
     if (spoofed.length) {
       ECLog(
           @"📱 [TTInstallIDManager] deviceID was empty, returning spoofed: %@",
@@ -3503,7 +3896,7 @@ static NSString *hooked_installMgr_installID(id self, SEL _cmd) {
 
     // 原始值为空 -> 尝试从 spoof config 获取
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"installId"];
+        [[SCPrefLoader shared] spoofValueForKey:@"installId"];
     if (spoofed.length) {
       ECLog(
           @"📱 [TTInstallIDManager] installID was empty, returning spoofed: %@",
@@ -3944,7 +4337,7 @@ static void injectSpoofedIDs(void) {
       ECLog(@"💉 [Phase 27.1] Active Injection: OpenUDID + IDFV only.");
     });
 
-    ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
+    SCPrefLoader *config = [SCPrefLoader shared];
 
     // IDFV: Config → Persistent → Generate
     NSString *idfv = [config spoofValueForKey:@"idfv"];
@@ -3997,7 +4390,7 @@ static void hooked_idsvc_setInstallID(id self, SEL _cmd, NSString *installID) {
 
 static void hooked_passport_didFinishLogin(id self, SEL _cmd, id model,
                                            NSError *error) {
-    ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
+    SCPrefLoader *config = [SCPrefLoader shared];
     if (error) {
       ECLog(@"🔐❌ [Login] 登录失败! error=%@ code=%ld domain=%@",
             error.localizedDescription, (long)error.code, error.domain);
@@ -4363,7 +4756,7 @@ static void installTTNetHooks(Class ttNetClass) {
 
             if ([result isKindOfClass:[NSDictionary class]]) {
               NSMutableDictionary *p = [result mutableCopy];
-              ECDeviceSpoofConfig *cfg = [ECDeviceSpoofConfig shared];
+              SCPrefLoader *cfg = [SCPrefLoader shared];
 
               NSString *m = [cfg spoofValueForKey:@"machineModel"];
               if (m.length > 0 && p[@"device_type"] &&
@@ -4484,7 +4877,7 @@ static void setupLoginDiagnosticHooks(void) {
               // 修复已知的信息泄漏：ad_user_agent（真实iOS版本）、
               // os_boot_time（真实开机时间）、carrier_region/mcc_mnc（运营商信息）
               {
-                NSString *spoofedOsVer = [[ECDeviceSpoofConfig shared]
+                NSString *spoofedOsVer = [[SCPrefLoader shared]
                                              spoofValueForKey:@"systemVersion"]
                                              ?: @"16.7.10";
                 // 将 16.7.10 转换为 16_7_10 格式（WebView UA 用下划线）
@@ -4530,7 +4923,7 @@ static void setupLoginDiagnosticHooks(void) {
                   NSString *spoofedBootTime = [NSString
                       stringWithFormat:@"os_boot_time=%u",
                                        (unsigned int)(
-                                           [[[ECDeviceSpoofConfig shared]
+                                           [[[SCPrefLoader shared]
                                                spoofValueForKey:@"cdid"] hash] %
                                                900000000 +
                                            1700000000)];
@@ -4885,7 +5278,7 @@ static void setupLoginDiagnosticHooks(void) {
     static void setupNetworkInterception(void) {
     ECLog(@"🕸️ [Network] Setting up network interception...");
 
-    ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
+    SCPrefLoader *config = [SCPrefLoader shared];
 
     // ═══════════════════════════════════════════════
     // Layer 1: NSURLSession Hook (第三方 SDK 流量)
@@ -4963,7 +5356,7 @@ static void setupLoginDiagnosticHooks(void) {
     if (g_cachedDeviceID && g_cachedDeviceID.length > 0)
       return g_cachedDeviceID;
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"deviceId"];
+        [[SCPrefLoader shared] spoofValueForKey:@"deviceId"];
     if (spoofed && spoofed.length > 0)
       return spoofed;
     spoofed = ecLoadPersistentID(@"deviceId");
@@ -4988,7 +5381,7 @@ static void setupLoginDiagnosticHooks(void) {
     if (g_cachedInstallID && g_cachedInstallID.length > 0)
       return g_cachedInstallID;
     NSString *spoofed =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"installId"];
+        [[SCPrefLoader shared] spoofValueForKey:@"installId"];
     if (spoofed && spoofed.length > 0)
       return spoofed;
     spoofed = ecLoadPersistentID(@"installId");
@@ -5012,7 +5405,7 @@ static void setupLoginDiagnosticHooks(void) {
     static NSString *hooked_TTInstallIDManager_idfv(id self, SEL _cmd) {
     if (g_cachedIDFV && g_cachedIDFV.length > 0)
       return g_cachedIDFV;
-    NSString *spoofed = [[ECDeviceSpoofConfig shared] spoofValueForKey:@"idfv"];
+    NSString *spoofed = [[SCPrefLoader shared] spoofValueForKey:@"idfv"];
     if (spoofed && spoofed.length > 0)
       return spoofed;
     spoofed = ecLoadPersistentID(@"idfv");
@@ -5075,7 +5468,7 @@ static void setupLoginDiagnosticHooks(void) {
     }
 
     static void setupMethodSwizzling(void) {
-    ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
+    SCPrefLoader *config = [SCPrefLoader shared];
 
     // UIDevice hooks — 受 enableUIDeviceHooks 子开关控制
     if ([config spoofBoolForKey:@"enableUIDeviceHooks" defaultValue:YES]) {
@@ -5109,7 +5502,7 @@ static void setupLoginDiagnosticHooks(void) {
               (VersionStringIMP)method_getImplementation(versionStringMethod);
           IMP newVersionStringIMP =
               imp_implementationWithBlock(^NSString *(id self_) {
-                ECDeviceSpoofConfig *cfg = [ECDeviceSpoofConfig shared];
+                SCPrefLoader *cfg = [SCPrefLoader shared];
                 NSString *sv = [cfg spoofValueForKey:@"systemVersion"];
                 if (sv.length > 0) {
                   return [NSString stringWithFormat:@"Version %@", sv];
@@ -5129,7 +5522,7 @@ static void setupLoginDiagnosticHooks(void) {
               (OSVerIMP)method_getImplementation(osVerMethod);
           IMP newOSVerIMP =
               imp_implementationWithBlock(^NSOperatingSystemVersion(id self_) {
-                ECDeviceSpoofConfig *cfg = [ECDeviceSpoofConfig shared];
+                SCPrefLoader *cfg = [SCPrefLoader shared];
                 NSString *sv = [cfg spoofValueForKey:@"systemVersion"];
                 if (sv.length > 0) {
                   NSArray *parts = [sv componentsSeparatedByString:@"."];
@@ -5294,7 +5687,7 @@ static void setupLoginDiagnosticHooks(void) {
     }
 
     Class nscfLocaleClass =
-    NSClassFromString(@"__NSCFLocale"); if
+    NSClassFromString(EC_CLS_NSCFLocale); if
     (nscfLocaleClass && nscfLocaleClass !=
     currentLocaleClass && nscfLocaleClass !=
     systemLocaleClass && nscfLocaleClass !=
@@ -5379,7 +5772,7 @@ static void setupLoginDiagnosticHooks(void) {
 
     static CFTypeRef hooked_CFLocaleGetValue(CFLocaleRef locale,
                                              CFLocaleKey key) {
-    ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
+    SCPrefLoader *config = [SCPrefLoader shared];
 
     if (key == kCFLocaleCountryCode) {
       NSString *spoofed = [config spoofValueForKey:@"countryCode"];
@@ -5403,7 +5796,7 @@ static void setupLoginDiagnosticHooks(void) {
     }
 
     static CFArrayRef hooked_CFLocaleCopyPreferredLanguages(void) {
-    ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
+    SCPrefLoader *config = [SCPrefLoader shared];
 
     // 优先使用 preferredLanguage（完整语言标识符）
     NSString *spoofed = [config spoofValueForKey:@"preferredLanguage"];
@@ -5444,7 +5837,7 @@ static void setupLoginDiagnosticHooks(void) {
     static CFLocaleRef (*original_CFLocaleCopyCurrent)(void) = NULL;
 
     static CFLocaleRef hooked_CFLocaleCopyCurrent(void) {
-    ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
+    SCPrefLoader *config = [SCPrefLoader shared];
     NSString *identifier =
         [config spoofValueForKey:@"localeIdentifier"]; // "en_US"
     if (identifier) {
@@ -5558,7 +5951,7 @@ static void setupLoginDiagnosticHooks(void) {
     // ECLog(@"🔌 [Network] Intercepted CNCopyCurrentNetworkInfo for %@",
     // interfaceName);
 
-    ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
+    SCPrefLoader *config = [SCPrefLoader shared];
     // 如果没有启用 Wi-Fi 伪装，返回原始值
     // 但为了安全，如果有配置 SSID，直接伪装
     NSString *spoofedSSID = [config spoofValueForKey:@"wifiSSID"];
@@ -5627,7 +6020,7 @@ static void setupLoginDiagnosticHooks(void) {
     static CFStringRef (*original_MGCopyAnswer)(CFStringRef key) = NULL;
 
     static CFStringRef hooked_MGCopyAnswer(CFStringRef key) {
-    ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
+    SCPrefLoader *config = [SCPrefLoader shared];
     NSString *keyStr = (__bridge NSString *)key;
     // ECLog(@"MGCopyAnswer called for key: %@", keyStr); // Verbose log
     NSString *spoofValue = nil;
@@ -5673,7 +6066,7 @@ static void setupLoginDiagnosticHooks(void) {
     NSDictionary *orig = [self ec_attributesOfFileSystemForPath:path
                                                           error:error];
     NSString *diskSize =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"diskSize"];
+        [[SCPrefLoader shared] spoofValueForKey:@"diskSize"];
     if (diskSize && orig) {
       NSMutableDictionary *spoofed = [orig mutableCopy];
       // Parse "256GB" -> bytes
@@ -5697,12 +6090,12 @@ static void setupLoginDiagnosticHooks(void) {
 
 #pragma mark - Battery Spoofing
 
-    @implementation UIDevice (ECBatterySpoof)
+    @implementation UIDevice (_pwrMgmt)
 
     -(float)ec_batteryLevel {
     // 从配置读取电池电量（格式: "98%" → 0.98）
     NSString *val =
-        [[ECDeviceSpoofConfig shared] spoofValueForKey:@"batteryCapacity"];
+        [[SCPrefLoader shared] spoofValueForKey:@"batteryCapacity"];
     if (val.length > 0) {
       NSScanner *scanner = [NSScanner scannerWithString:val];
       double pct = 0;
@@ -5719,11 +6112,6 @@ static void setupLoginDiagnosticHooks(void) {
     -(UIDeviceBatteryState)ec_batteryState {
     // Return unplugged state to appear as normal usage
     return UIDeviceBatteryStateUnplugged;
-    }
-
-    // 越狱检测绕过 — 始终返回 NO
-    -(BOOL)ec_btd_isJailBroken {
-    return NO;
     }
 
     @end
@@ -5748,51 +6136,62 @@ static void setupLoginDiagnosticHooks(void) {
                           @selector(ec_batteryState));
     ECLog(@"  ✅ Swizzled: -[UIDevice batteryState]");
 
-    // 越狱检测绕过 — hook btd_isJailBroken (ByteDance 的越狱检测方法)
-    if (class_getInstanceMethod([UIDevice class],
-                                @selector(btd_isJailBroken))) {
-      swizzleInstanceMethod([UIDevice class], @selector(btd_isJailBroken),
-                            @selector(ec_btd_isJailBroken));
-      ECLog(@"  ✅ Swizzled: -[UIDevice btd_isJailBroken]");
-    } else {
-      // 如果方法不存在，动态添加
-      class_addMethod([UIDevice class], @selector(btd_isJailBroken),
-                      class_getMethodImplementation([UIDevice class], @selector
-                                                    (ec_btd_isJailBroken)),
-                      method_getTypeEncoding(class_getInstanceMethod(
-                          [UIDevice class], @selector(ec_btd_isJailBroken))));
-      ECLog(@"  ✅ Added: -[UIDevice btd_isJailBroken] → NO");
-    }
+    // btd_isJailBroken 已在 setupTikTokHooks Phase 6 中通过 method_setImplementation 处理
     }
 
-    static void setupDataIsolationHooks(void) {
+    
+#pragma mark - UIPasteboard Isolation
+@interface UIPasteboard (ec_Isolation)
++ (UIPasteboard *)ec_pasteboardWithName:(NSString *)pasteboardName create:(BOOL)create;
++ (UIPasteboard *)ec_generalPasteboard;
+@end
+
+@implementation UIPasteboard (ec_Isolation)
++ (UIPasteboard *)ec_pasteboardWithName:(NSString *)pasteboardName create:(BOOL)create {
+    if (g_isCloneMode && g_FastCloneId) {
+        NSString *isolatedName = [NSString stringWithFormat:@"%@_clone_%@", pasteboardName, g_FastCloneId];
+        NSLog(@"[ecwg][ECDeviceSpoof] 🛡️ 强制隔离 UIPasteboard: %@ -> %@", pasteboardName, isolatedName);
+        return [self ec_pasteboardWithName:isolatedName create:create];
+    }
+    return [self ec_pasteboardWithName:pasteboardName create:create];
+}
++ (UIPasteboard *)ec_generalPasteboard {
+    if (g_isCloneMode && g_FastCloneId) {
+        NSString *isolatedName = [NSString stringWithFormat:@"general_clone_%@", g_FastCloneId];
+        NSLog(@"[ecwg][ECDeviceSpoof] 🛡️ 强制隔离 UIPasteboard general: -> %@", isolatedName);
+        // 使用 withName 来获取一个虚假的 general
+        return [self ec_pasteboardWithName:isolatedName create:YES];
+    }
+    return [self ec_generalPasteboard];
+}
+@end
+
+static void setupDataIsolationHooks(void) {
     // 只有分身才需要数据隔离
-    NSString *cloneId = [[ECDeviceSpoofConfig shared] currentCloneId];
-    if (!cloneId) {
-      ECLog(@" 非分身模式，跳过数据隔离 Hook");
-      return;
+    NSString *cloneId = g_FastCloneId;
+    if (!g_isCloneMode || !cloneId) {
+        ECLog(@" 非分身模式，跳过数据隔离 Hook");
+        return;
     }
 
     ECLog(@" 🔀 分身模式 (Clone ID: %@)，启用数据隔离", cloneId);
 
-    /* 文件系统硬隔离已禁用以避免闪退
-    // 使用 fishhook 来 Hook 文件系统函数
-    struct rebinding rebindings[] = {
-        {"NSHomeDirectory", (void *)hooked_NSHomeDirectory,
-         (void **)&original_NSHomeDirectory},
-        {"NSSearchPathForDirectoriesInDomains",
-         (void *)hooked_NSSearchPathForDirectoriesInDomains,
-         (void **)&original_NSSearchPathForDirectoriesInDomains}};
-
-    int result =
-        rebind_symbols(rebindings, sizeof(rebindings) /
-    sizeof(rebindings[0]));
-
-    if (result == 0) {
-      ECLog(@" 文件系统 Hook 成功");
-      ECLog(@" 文件系统 Hook 失败: %d", result);
-    }
-    */
+    // [v2260] 关键修复：重新启用文件系统 Hook
+    // 这是数据隔离的核心！没有这两个 Hook，TikTok 的 MMKV、SQLite、plist
+    // 等本地持久化文件会直接从原始沙盒读取旧账号数据，导致分身"共享状态"。
+    // 使用 ec_register_rebinding 统一机制，在 performMergedRebind() 中一次性绑定。
+    ec_register_rebinding("NSHomeDirectory", (void *)hooked_NSHomeDirectory,
+                          (void **)&original_NSHomeDirectory);
+    ec_register_rebinding("NSSearchPathForDirectoriesInDomains",
+                          (void *)hooked_NSSearchPathForDirectoriesInDomains,
+                          (void **)&original_NSSearchPathForDirectoriesInDomains);
+    
+    // 注册 C API 诊断和劫持钩子
+    ec_register_rebinding("getenv", (void *)hooked_getenv, (void **)&original_getenv);
+    ec_register_rebinding("open", (void *)hooked_open, (void **)&original_open);
+    ec_register_rebinding("stat", (void *)hooked_stat, (void **)&original_stat);
+    
+    ECLog(@" ✅ 文件系统 Hook 已注册 (NSHomeDirectory + NSSearchPath + getenv + open + stat)");
 
     // NSFileManager swizzle (App Group 隔离)
     swizzleInstanceMethod(
@@ -5807,6 +6206,11 @@ static void setupLoginDiagnosticHooks(void) {
     // 额外的 suite 重定向反而导致数据分裂（BDInstall 写入的 awe_deviceID
     // 读不到）
     ECLog(@" ℹ️ standardUserDefaults: 使用系统默认 (独立沙盒天然隔离)");
+    // [NEW v2256] UIPasteboard Swizzle
+    swizzleInstanceMethod(object_getClass((id)[UIPasteboard class]), @selector(pasteboardWithName:create:), @selector(ec_pasteboardWithName:create:));
+    swizzleInstanceMethod(object_getClass((id)[UIPasteboard class]), @selector(generalPasteboard), @selector(ec_generalPasteboard));
+    ECLog(@" Swizzled: +[UIPasteboard pasteboardWithName/generalPasteboard]");
+
 
     // [NEW] initWithSuiteName 隔离 (启用 App Group 数据隔离)
     swizzleInstanceMethod([NSUserDefaults class], @selector(initWithSuiteName:),
@@ -5814,7 +6218,7 @@ static void setupLoginDiagnosticHooks(void) {
     ECLog(@" Swizzled: -[NSUserDefaults initWithSuiteName:]");
 
     // 确保分身数据目录存在
-    NSString *cloneDataDir = [[ECDeviceSpoofConfig shared] cloneDataDirectory];
+    NSString *cloneDataDir = [[SCPrefLoader shared] cloneDataDirectory];
     if (cloneDataDir) {
       NSFileManager *fm = [NSFileManager defaultManager];
       NSArray *subdirs = @[
@@ -6027,7 +6431,7 @@ static void setupLoginDiagnosticHooks(void) {
     // 综合诊断日志：真实信息 vs 伪装信息 全量对比
     // ================================================================
     static void printComprehensiveDiagnostics(void) {
-      ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
+      SCPrefLoader *config = [SCPrefLoader shared];
 
       ECLog(@"");
       ECLog(@"╔══════════════════════════════════════════════════════╗");
@@ -6127,13 +6531,17 @@ static void setupLoginDiagnosticHooks(void) {
     void ECDeviceSpoofInitialize(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+      // 🛡️ 最先安装：TikTok 类型错乱崩溃防护
+      // 必须在任何 TikTok SDK 初始化之前部署
+      installTikTokCrashGuards();
+
       ECLog(@"====================================");
       ECLog(@"ECDeviceSpoof 初始化中... (Build: Debug)");
       ECLog(@"====================================");
 
       // Phase 30 Fix B: 先加载配置，再做 ID 注入
       // 这样 injectSpoofedIDs 内部的 spoofValueForKey 能读到配置值
-      ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
+      SCPrefLoader *config = [SCPrefLoader shared];
 
       // 打印配置加载详情
       ECLog(@" 📂 配置文件路径: %@", [config configPath]);
@@ -6313,6 +6721,14 @@ static void setupLoginDiagnosticHooks(void) {
         // 比全局 rebind_symbols 更安全，避免 guard page 崩溃
         setupSafeHooks();
 
+        // [5.6] 脱壳/克隆检测绕过 (Phase 8)
+        // cryptid 伪造 + App Store Receipt + Keychain AccessGroup + appStoreReceiptURL
+        setupCloneDetectionBypass();
+
+        // [5.7] 深度防护 (Phase 9-13)
+        // IMP 越界、bdfishhook、TSPK、DeviceCheck、AppAttest
+        setupDeepProtection();
+
         // [6] Keychain 隔离 (SecItem* APIs)
         // 仅当启用反检测时检查 Keychain 隔离子开关
         if ([config spoofBoolForKey:@"enableAntiDetectionHooks"
@@ -6396,11 +6812,11 @@ static void setupLoginDiagnosticHooks(void) {
       // 读取了旧配置 此时 cloneId 已确定，cloneDataDirectory
       // 能返回正确的沙盒路径 重新加载可以从 clone 目录的 device.plist
       // 读取用户保存的最新配置
-      if ([[ECDeviceSpoofConfig shared] currentCloneId]) {
+      if (g_isCloneMode) {
         ECLog(@"🔄 [ConfigReload] Clone 初始化完成，重新加载配置...");
-        NSString *oldPath = [[ECDeviceSpoofConfig shared] configPath];
-        [[ECDeviceSpoofConfig shared] reloadConfig];
-        NSString *newPath = [[ECDeviceSpoofConfig shared] configPath];
+        NSString *oldPath = [[SCPrefLoader shared] configPath];
+        [[SCPrefLoader shared] reloadConfig];
+        NSString *newPath = [[SCPrefLoader shared] configPath];
         ECLog(@"🔄 [ConfigReload] 配置路径: %@", newPath);
         if (![oldPath isEqualToString:newPath]) {
           ECLog(@"✅ [ConfigReload] 配置路径已变更！旧: %@ → 新: %@", oldPath,
@@ -6408,13 +6824,13 @@ static void setupLoginDiagnosticHooks(void) {
         }
         // 打印重新加载后的关键配置值
         ECLog(@"🔄 [ConfigReload] machineModel: %@",
-              [[ECDeviceSpoofConfig shared] spoofValueForKey:@"machineModel"]
+              [[SCPrefLoader shared] spoofValueForKey:@"machineModel"]
                   ?: @"(无)");
         ECLog(@"🔄 [ConfigReload] systemVersion: %@",
-              [[ECDeviceSpoofConfig shared] spoofValueForKey:@"systemVersion"]
+              [[SCPrefLoader shared] spoofValueForKey:@"systemVersion"]
                   ?: @"(无)");
         ECLog(@"🔄 [ConfigReload] deviceModel: %@",
-              [[ECDeviceSpoofConfig shared] spoofValueForKey:@"deviceModel"]
+              [[SCPrefLoader shared] spoofValueForKey:@"deviceModel"]
                   ?: @"(无)");
       }
 
@@ -6525,8 +6941,8 @@ static void setupLoginDiagnosticHooks(void) {
 
     int result = original_dladdr(addr, info);
     if (result != 0 && info->dli_fname) {
-      if (strstr(info->dli_fname, "libswiftCompatibilityPacks.dylib") != NULL ||
-          strstr(info->dli_fname, "ECDeviceSpoof.dylib") != NULL) {
+      char *_dn1 = EC_CSTR_libswiftDylib;
+      if (strstr(info->dli_fname, _dn1) != NULL) {
         // 伪装成 UIKit
         info->dli_fname = "/System/Library/Frameworks/UIKit.framework/UIKit";
       }
@@ -6546,14 +6962,14 @@ static void setupLoginDiagnosticHooks(void) {
     // ============================================================================
 
     static void setupAntiDetectionHooks(void) {
-    ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
+    SCPrefLoader *config = [SCPrefLoader shared];
 
     // 1. 找到自身 dylib 的索引 (用于 dylib 隐藏)
     uint32_t count = _dyld_image_count();
     for (uint32_t i = 0; i < count; i++) {
       const char *name = _dyld_get_image_name(i);
-      if (name && (strstr(name, "libswiftCompatibilityPacks.dylib") != NULL ||
-                   strstr(name, "ECDeviceSpoof.dylib") != NULL)) {
+      char *_dn2 = EC_CSTR_libswiftDylib;
+      if (name && (strstr(name, _dn2) != NULL)) {
         g_spoof_dylib_index = i;
         ECLog(@" 🛡️ 发现自身 dylib 索引: %u, 启动隐藏模式", i);
         break;
@@ -6620,8 +7036,7 @@ static void setupLoginDiagnosticHooks(void) {
     NSString *pathStr = [NSString stringWithUTF8String:imagePath];
 
     // 跳过自身 dylib，避免不必要的 Hook
-    if ([pathStr containsString:@"libswiftCompatibilityPacks.dylib"] ||
-        [pathStr containsString:@"ECDeviceSpoof.dylib"]) {
+    if ([pathStr containsString:EC_STR_libswiftDylib]) {
       return;
     }
 
@@ -6644,7 +7059,7 @@ static void setupLoginDiagnosticHooks(void) {
     int count = 0;
 
     // 设备伪装开关状态读取
-    ECDeviceSpoofConfig *config = [ECDeviceSpoofConfig shared];
+    SCPrefLoader *config = [SCPrefLoader shared];
 
     // (1) MobileGestalt Hooks
     if ([config spoofBoolForKey:@"enableMobileGestaltHooks" defaultValue:YES]) {
@@ -6743,17 +7158,24 @@ static void setupLoginDiagnosticHooks(void) {
           (const struct mach_header_64 *)_dyld_get_image_header(0);
       if (!header || header->magic != MH_MAGIC_64) return;
 
-      // 可疑路径关键词（凡匹配的都清理）
-      const char *suspiciousKeywords[] = {
-        // 【修复 2】：移除 "libswiftCompatibilityPacks" 以及模糊匹配的 "@executable_path/Frameworks/lib"
-        // 防止误杀属于原生环境正常运行所需的 Swift 兼容库和类似于 libvcn.framework 这类的官方二方库！
-        "ECDeviceSpoof",
-        "spoof_plugin",
-        "CydiaSubstrate",     // 顺便补充一些常见越狱框架库作为靶向清理，提升隐藏深度
-        "SubstrateLoader",
-        "TweakInject",
-        NULL
-      };
+      // 可疑路径关键词（运行时 XOR 解密，避免明文出现在二进制中）
+      // "ECDeviceSpoof" XOR 0x5A
+      static const unsigned char _ek0[] = {0x1f,0x19,0x1e,0x3f,0x2c,0x33,0x39,0x3f,0x09,0x2a,0x35,0x35,0x3c};
+      // "spoof_plugin" XOR 0x5A
+      static const unsigned char _ek1[] = {0x29,0x2a,0x35,0x35,0x3c,0x05,0x2a,0x36,0x2f,0x3d,0x33,0x34};
+      // "CydiaSubstrate" XOR 0x5A
+      static const unsigned char _ek2[] = {0x19,0x23,0x3e,0x33,0x3b,0x09,0x2f,0x38,0x29,0x2e,0x28,0x3b,0x2e,0x3f};
+      // "SubstrateLoader" XOR 0x5A
+      static const unsigned char _ek3[] = {0x09,0x2f,0x38,0x29,0x2e,0x28,0x3b,0x2e,0x3f,0x16,0x35,0x3b,0x3e,0x3f,0x28};
+      // "TweakInject" XOR 0x5A
+      static const unsigned char _ek4[] = {0x0e,0x2d,0x3f,0x3b,0x31,0x13,0x34,0x30,0x3f,0x39,0x2e};
+
+      char *dk0 = ec_deobf_c(_ek0, 13);
+      char *dk1 = ec_deobf_c(_ek1, 12);
+      char *dk2 = ec_deobf_c(_ek2, 14);
+      char *dk3 = ec_deobf_c(_ek3, 15);
+      char *dk4 = ec_deobf_c(_ek4, 11);
+      const char *suspiciousKeywords[] = {dk0, dk1, dk2, dk3, dk4, NULL};
 
       uintptr_t cmdPtr = (uintptr_t)(header + 1);
       int found = 0;
@@ -6780,6 +7202,629 @@ static void setupLoginDiagnosticHooks(void) {
         ECLog(@"[Sanitize] ✅ 共清理 %d 条注入 dylib 路径", found);
       }
     }
+
+// ============================================================
+// Phase 8: 脱壳/克隆检测绕过
+// ============================================================
+
+// 8.1 LC_ENCRYPTION_INFO_64 cryptid 伪造
+// 脱壳后 cryptid=0，TikTok 通过遍历 load commands 检测此值
+// 将其修改回 1 伪装成仍处于加密状态
+#import <mach-o/loader.h>
+
+static void fixEncryptionInfo(void) {
+    const struct mach_header_64 *header =
+        (const struct mach_header_64 *)_dyld_get_image_header(0);
+    if (!header || header->magic != MH_MAGIC_64) return;
+
+    uintptr_t cmdPtr = (uintptr_t)(header + 1);
+    for (uint32_t i = 0; i < header->ncmds; i++) {
+        struct load_command *lc = (struct load_command *)cmdPtr;
+        if (lc->cmd == LC_ENCRYPTION_INFO_64) {
+            struct encryption_info_command_64 *enc =
+                (struct encryption_info_command_64 *)lc;
+            if (enc->cryptid == 0) {
+                // 解除内存写保护
+                uintptr_t pageStart = (uintptr_t)enc & ~(PAGE_SIZE - 1);
+                uintptr_t pageEnd = ((uintptr_t)enc + sizeof(*enc) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+                size_t size = pageEnd - pageStart;
+                kern_return_t kr = vm_protect(mach_task_self(),
+                    (vm_address_t)pageStart, (vm_size_t)size, FALSE,
+                    VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+                if (kr == KERN_SUCCESS) {
+                    enc->cryptid = 1;
+                    vm_protect(mach_task_self(), (vm_address_t)pageStart,
+                        (vm_size_t)size, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
+                    ECLog(@"🔐 [AntiDump] LC_ENCRYPTION_INFO_64 cryptid: 0 → 1 (伪装加密)");
+                } else {
+                    ECLog(@"🔐 [AntiDump] vm_protect 失败: %d", kr);
+                }
+            } else {
+                ECLog(@"🔐 [AntiDump] cryptid 已为 %u，无需修改", enc->cryptid);
+            }
+            break;
+        }
+        // 也处理 32 位版本（兼容性）
+        if (lc->cmd == LC_ENCRYPTION_INFO) {
+            struct encryption_info_command *enc32 =
+                (struct encryption_info_command *)lc;
+            if (enc32->cryptid == 0) {
+                uintptr_t pageStart = (uintptr_t)enc32 & ~(PAGE_SIZE - 1);
+                uintptr_t pageEnd = ((uintptr_t)enc32 + sizeof(*enc32) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+                size_t size = pageEnd - pageStart;
+                kern_return_t kr = vm_protect(mach_task_self(),
+                    (vm_address_t)pageStart, (vm_size_t)size, FALSE,
+                    VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+                if (kr == KERN_SUCCESS) {
+                    enc32->cryptid = 1;
+                    vm_protect(mach_task_self(), (vm_address_t)pageStart,
+                        (vm_size_t)size, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
+                    ECLog(@"🔐 [AntiDump] LC_ENCRYPTION_INFO cryptid: 0 → 1 (32-bit)");
+                }
+            }
+            break;
+        }
+        cmdPtr += lc->cmdsize;
+    }
+}
+
+// 8.2 App Store Receipt 占位 (v2225 修复)
+// 写入到用户可写的 tmp 目录，而非只读的 App Bundle 目录
+// Phase 8.4 的 appStoreReceiptURL Hook 负责将 TikTok 的查询路径重定向到此处
+static NSString *g_fakeReceiptPath = nil;
+
+static void fixAppStoreReceipt(void) {
+    // 使用用户沙盒可写的 tmp 目录，而非 Bundle 目录
+    NSString *tmpDir = NSTemporaryDirectory();
+    NSString *receiptDir = [tmpDir stringByAppendingPathComponent:@"_MASReceipt"];
+    NSString *receiptFile = [receiptDir stringByAppendingPathComponent:@"receipt"];
+    g_fakeReceiptPath = receiptFile; // 全局保存供 Hook 使用
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if (![fm fileExistsAtPath:receiptFile]) {
+        NSError *dirErr = nil;
+        [fm createDirectoryAtPath:receiptDir
+      withIntermediateDirectories:YES attributes:nil error:&dirErr];
+        if (dirErr) {
+            ECLog(@"🧾 [AntiClone] 创建 Receipt 目录失败: %@", dirErr);
+            return;
+        }
+        // 写入最小 PKCS7 容器占位
+        const unsigned char fakeReceipt[] = {
+            0x30, 0x80, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86,
+            0xf7, 0x0d, 0x01, 0x07, 0x02, 0xa0, 0x80, 0x30,
+            0x80, 0x02, 0x01, 0x01, 0x31, 0x00, 0x30, 0x80,
+            0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d,
+            0x01, 0x07, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x31, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        NSData *receiptData = [NSData dataWithBytes:fakeReceipt length:sizeof(fakeReceipt)];
+        BOOL ok = [receiptData writeToFile:receiptFile atomically:YES];
+        ECLog(@"🧾 [AntiClone] Receipt 占位文件 %@: %@", ok ? @"创建成功" : @"创建失败", receiptFile);
+    } else {
+        ECLog(@"🧾 [AntiClone] Receipt 占位文件已存在: %@", receiptFile);
+    }
+}
+// 8.3 Keychain Access Group 拦截
+// 已由 setupKeychainIsolationHooks() (line ~2508) 中的 rewriteKeychainQueryForClone 处理
+// 该函数在第 2432 行自动移除 kSecAttrAccessGroup，无需重复 Hook
+
+// 8.4 appStoreReceiptURL Hook — 确保返回存在的路径
+static IMP _orig_appStoreReceiptURL = NULL;
+
+static NSURL *hooked_appStoreReceiptURL(id self, SEL _cmd) {
+    // 优先返回我们写入到 tmp 目录的 receipt（v2225 修复：沙盒安全路径）
+    if (g_fakeReceiptPath && [[NSFileManager defaultManager] fileExistsAtPath:g_fakeReceiptPath]) {
+        return [NSURL fileURLWithPath:g_fakeReceiptPath];
+    }
+    // 降级：返回 Bundle 内路径（即使不存在，也比返回 nil 好）
+    NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
+    NSString *receiptPath = [bundlePath stringByAppendingPathComponent:@"_MASReceipt/receipt"];
+    return [NSURL fileURLWithPath:receiptPath];
+}
+
+static void setupCloneDetectionBypass(void) {
+    ECLog(@"🛡️ [Phase 8] 启动脱壳/克隆检测绕过...");
+
+    // 8.1 修复加密标志 — ⚠️ 已禁用 (v2227)
+    // vm_protect 修改 Mach-O 内存中 LC_ENCRYPTION_INFO_64 的 cryptid 字段，
+    // 在 iOS 16+ 的 PAC/TPRO 保护下会触发延迟内存保护错误：
+    // dyld 锁定已签名页后，任何对可执行页的写操作都会在 UIWindowScene 初始化时爆发 SIGSEGV
+    // 日志特征：client_died 紧跟 kExcludedFromBackupXattrName 之后
+    // @try { fixEncryptionInfo(); }
+    // @catch (NSException *e) { ECLog(@"❌ Phase 8.1 cryptid 异常: %@", e); }
+    ECLog(@"🛡️ [Phase 8.1] cryptid 伪装已禁用（iOS PAC/TPRO 内存保护限制）");
+
+    // 8.2 创建收据占位文件 — v2225 修复：写到 tmp 目录，安全可写
+    @try { fixAppStoreReceipt(); }
+    @catch (NSException *e) { ECLog(@"❌ Phase 8.2 receipt 异常: %@", e); }
+
+    // 8.3 Keychain AccessGroup 已由 setupKeychainIsolationHooks 处理（无需重复）
+
+    // 8.4 Hook appStoreReceiptURL — 安全的 ObjC Method Swizzle
+    @try {
+        Method m = class_getInstanceMethod([NSBundle class], @selector(appStoreReceiptURL));
+        if (m) {
+            _orig_appStoreReceiptURL = method_getImplementation(m);
+            method_setImplementation(m, (IMP)hooked_appStoreReceiptURL);
+            ECLog(@"  ✅ Hooked: -[NSBundle appStoreReceiptURL]");
+        }
+    } @catch (NSException *e) { ECLog(@"❌ Phase 8.4 receiptURL 异常: %@", e); }
+
+    ECLog(@"🛡️ [Phase 8] 脱壳/克隆检测绕过完成");
+}
+
+// ============================================================
+// Phase 9: IMP 地址越界检测绕过
+// ============================================================
+// TikTok 用 class_getMethodImplementation() 获取关键方法 IMP，
+// 校验地址是否在 TikTokCore __TEXT 段内。
+// 策略：用纯 C 数组存储 Hook 映射（避免 ObjC 递归），
+//       仅在被 Hook 的 selector 被查询时返回原始 IMP。
+
+#include <os/lock.h>
+
+// 纯 C 实现的 IMP 映射表 — 避免 NSString/NSDictionary 触发 ObjC 递归
+typedef struct {
+    Class cls;
+    SEL sel;
+    IMP origIMP;
+} ECIMPEntry;
+
+#define EC_IMP_MAP_MAX 128
+static ECIMPEntry g_impEntries[EC_IMP_MAP_MAX];
+static int g_impEntryCount = 0;
+static os_unfair_lock g_impLock = OS_UNFAIR_LOCK_INIT;
+
+// 注册原始 IMP（纯 C，线程安全）
+void ec_registerOriginalIMP(Class cls, SEL sel, IMP origIMP) {
+    os_unfair_lock_lock(&g_impLock);
+    if (g_impEntryCount < EC_IMP_MAP_MAX) {
+        g_impEntries[g_impEntryCount].cls = cls;
+        g_impEntries[g_impEntryCount].sel = sel;
+        g_impEntries[g_impEntryCount].origIMP = origIMP;
+        g_impEntryCount++;
+    }
+    os_unfair_lock_unlock(&g_impLock);
+}
+
+// 纯 C 查找（O(n) 但 n ≤ 128，无 ObjC 调用）
+static IMP ec_lookupOriginalIMP(Class cls, SEL sel) {
+    // 快速路径：如果映射表为空，立即返回
+    if (g_impEntryCount == 0) return NULL;
+
+    // 注意：读取期间不加锁（写入只发生在启动期，启动后表是只读的）
+    int count = g_impEntryCount;
+    for (int i = 0; i < count; i++) {
+        if (g_impEntries[i].cls == cls && g_impEntries[i].sel == sel) {
+            return g_impEntries[i].origIMP;
+        }
+    }
+    return NULL;
+}
+
+// 纯 C 按 selector 查找（用于 method_getImplementation 不带 class 参数）
+static IMP ec_lookupOriginalIMPBySel(SEL sel) {
+    if (g_impEntryCount == 0) return NULL;
+    int count = g_impEntryCount;
+    for (int i = 0; i < count; i++) {
+        if (g_impEntries[i].sel == sel) {
+            return g_impEntries[i].origIMP;
+        }
+    }
+    return NULL;
+}
+
+// Hook: class_getMethodImplementation — 纯 C 路径，零 ObjC 开销
+static IMP (*orig_runtime_class_getMethodImpl)(Class, SEL) = NULL;
+static IMP hooked_runtime_class_getMethodImpl(Class cls, SEL sel) {
+    IMP origIMP = ec_lookupOriginalIMP(cls, sel);
+    if (origIMP) return origIMP;
+    return orig_runtime_class_getMethodImpl(cls, sel);
+}
+
+// Hook: method_getImplementation — ⚠️ 已禁用 (v2228)
+// 根本原因：ec_lookupOriginalIMPBySel 只按 SEL 名称匹配（不区分 Class），
+// 当 TikTok analytics SDK 调用 method_getImplementation 时，若我们映射表中有
+// 同名 SEL，会错误地返回其他类的 IMP，导致运行时类型错乱。
+// 具体表现：__NSArray0 收到 setAppID: → NSInvalidArgumentException → 崩溃
+// 保留 class_getMethodImplementation Hook（使用 Class+SEL 双重匹配，安全）
+static IMP (*orig_runtime_method_getImpl)(Method) = NULL;
+
+static void setupIMPSpoofing(void) {
+    ECLog(@"🛡️ [Phase 9] IMP 地址越界检测绕过（仅 class_getMethodImplementation）...");
+
+    // v2225 修复：用 dlsym 预存原始符号作为兜底
+    if (!orig_runtime_class_getMethodImpl) {
+        orig_runtime_class_getMethodImpl =
+            (IMP (*)(Class, SEL))dlsym(RTLD_DEFAULT, "class_getMethodImplementation");
+    }
+
+    if (!orig_runtime_class_getMethodImpl) {
+        ECLog(@"  ❌ Phase 9: dlsym 获取 class_getMethodImplementation 失败，跳过");
+        return;
+    }
+
+    // v2228 修复：仅 Hook class_getMethodImplementation（Class+SEL 双重匹配，安全）
+    // method_getImplementation 已移除 — 其 SEL-only 匹配会导致返回错误 IMP
+    struct rebinding impRebindings[] = {
+        {"class_getMethodImplementation", (void *)hooked_runtime_class_getMethodImpl,
+         (void **)&orig_runtime_class_getMethodImpl},
+    };
+    rebind_symbols(impRebindings, 1);
+
+    if (!orig_runtime_class_getMethodImpl) {
+        ECLog(@"  ❌ Phase 9: rebind_symbols 后指针为 NULL");
+        return;
+    }
+    ECLog(@"  ✅ Hooked: class_getMethodImplementation (method_getImplementation 已移除)");
+}
+
+// ============================================================
+// Phase 10: bdfishhook GOT 表监控绕过
+// ============================================================
+// 禁用 TikTok 自研 bdfishhook 的 GOT 完整性校验
+
+static void setupBDFishhookBypass(void) {
+    ECLog(@"🛡️ [Phase 10] bdfishhook GOT 监控绕过...");
+
+    // 方案：Hook AWEFishhookInitTask 的所有方法，让它什么都不做
+    Class fishhookTaskCls = NSClassFromString(EC_P9_AWEFishhookInitTask);
+    if (fishhookTaskCls) {
+        // Hook 常见的 Task 启动方法
+        NSArray *taskSelectors = @[@"start", @"run", @"execute",
+                                   @"startWithCompletionHandler:",
+                                   @"runWithContext:"];
+        for (NSString *selName in taskSelectors) {
+            SEL sel = NSSelectorFromString(selName);
+            Method m = class_getInstanceMethod(fishhookTaskCls, sel);
+            if (m) {
+                method_setImplementation(m,
+                    imp_implementationWithBlock(^(id self_) {
+                        // 空实现 — 禁止 bdfishhook 初始化
+                    }));
+                ECLog(@"  ✅ Disabled: -[AWEFishhookInitTask %@]", selName);
+            }
+        }
+
+        // 也 Hook 类方法
+        for (NSString *selName in taskSelectors) {
+            SEL sel = NSSelectorFromString(selName);
+            Method m = class_getClassMethod(fishhookTaskCls, sel);
+            if (m) {
+                method_setImplementation(m,
+                    imp_implementationWithBlock(^(id self_) {
+                        // 空实现
+                    }));
+                ECLog(@"  ✅ Disabled: +[AWEFishhookInitTask %@]", selName);
+            }
+        }
+    } else {
+        ECLog(@"  ⚠️ AWEFishhookInitTask 类不存在，跳过");
+    }
+
+    // 额外：扫描 fishhookConflict 方法并致盲 — 延迟到主队列执行（避免 Swift 元数据崩溃）
+    NSString *conflictKey = EC_P9_fishhookConflictFixEnable;
+    NSString *conflictKey2 = EC_P9_fishhookConflict;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
+            unsigned int classCount = 0;
+            Class *classes = objc_copyClassList(&classCount);
+            int disabledCount = 0;
+            for (unsigned int i = 0; i < classCount; i++) {
+                unsigned int methodCount = 0;
+                Method *methods = class_copyMethodList(classes[i], &methodCount);
+                for (unsigned int j = 0; j < methodCount; j++) {
+                    NSString *methodName = NSStringFromSelector(method_getName(methods[j]));
+                    if ([methodName containsString:conflictKey] ||
+                        [methodName containsString:conflictKey2]) {
+                        method_setImplementation(methods[j],
+                            imp_implementationWithBlock(^BOOL(id self_) { return NO; }));
+                        disabledCount++;
+                    }
+                }
+                if (methods) free(methods);
+            }
+            if (classes) free(classes);
+            ECLog(@"🛡️ [Phase 10 延迟] bdfishhook conflict 方法致盲完成: %d 个", disabledCount);
+        } @catch (NSException *e) {
+            ECLog(@"❌ [Phase 10 延迟] 扫描异常: %@", e);
+        }
+    });
+
+    ECLog(@"🛡️ [Phase 10] bdfishhook 绕过完成（conflict 扫描已延迟到主队列）");
+}
+
+// ============================================================
+// Phase 11: TSPK 拦截链双向校验绕过
+// ============================================================
+
+static void setupTSPKBypass(void) {
+    ECLog(@"🛡️ [Phase 11] TSPK 拦截链校验绕过...");
+
+    // 1. Hook TSPKInterceptorCheckerImpl.isIntercepted → NO
+    Class tspkCls = NSClassFromString(EC_P9_TSPKInterceptorCheckerImpl);
+    if (tspkCls) {
+        // Hook isIntercepted 属性 getter
+        SEL isInterceptedSel = NSSelectorFromString(EC_P9_isIntercepted);
+        Method m = class_getInstanceMethod(tspkCls, isInterceptedSel);
+        if (m) {
+            method_setImplementation(m,
+                imp_implementationWithBlock(^BOOL(id self_) {
+                    return NO; // 永远报告"未被拦截"
+                }));
+            ECLog(@"  ✅ Hooked: TSPKInterceptorCheckerImpl.isIntercepted → NO");
+        }
+
+        // Hook validateModifiedDictionary 让它直接返回（不标记异常）
+        SEL validateSel = NSSelectorFromString(EC_P9_enableInterceptorCheckerReport);
+        Method mReport = class_getInstanceMethod(tspkCls, validateSel);
+        if (!mReport) mReport = class_getClassMethod(tspkCls, validateSel);
+        if (mReport) {
+            method_setImplementation(mReport,
+                imp_implementationWithBlock(^BOOL(id self_) {
+                    return NO; // 禁用上报
+                }));
+            ECLog(@"  ✅ Disabled: TSPK interceptor report");
+        }
+    } else {
+        ECLog(@"  ⚠️ TSPKInterceptorCheckerImpl 不存在，跳过");
+    }
+
+    // 2. 批量扫描 TSPK 前缀类 — 延迟到主队列执行（避免 Swift 元数据崩溃）
+    NSString *interceptedKey = EC_P9_isIntercepted;
+    NSString *interceptorCheckKey = EC_P9_interceptorCheck;
+    NSString *hookDetectKey = EC_P9_hookDetect;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
+            unsigned int classCount = 0;
+            Class *classes = objc_copyClassList(&classCount);
+            int disabledCount = 0;
+            for (unsigned int i = 0; i < classCount; i++) {
+                NSString *className = NSStringFromClass(classes[i]);
+                if (![className hasPrefix:@"TSPK"]) continue;
+
+                unsigned int methodCount = 0;
+                Method *methods = class_copyMethodList(classes[i], &methodCount);
+                for (unsigned int j = 0; j < methodCount; j++) {
+                    NSString *selName = NSStringFromSelector(method_getName(methods[j]));
+                    if ([selName containsString:interceptedKey] ||
+                        [selName containsString:interceptorCheckKey] ||
+                        [selName containsString:hookDetectKey]) {
+                        method_setImplementation(methods[j],
+                            imp_implementationWithBlock(^BOOL(id self_) { return NO; }));
+                        disabledCount++;
+                    }
+                }
+                if (methods) free(methods);
+            }
+            if (classes) free(classes);
+            ECLog(@"🛡️ [Phase 11 延迟] TSPK 拦截检测方法致盲完成: %d 个", disabledCount);
+        } @catch (NSException *e) {
+            ECLog(@"❌ [Phase 11 延迟] 扫描异常: %@", e);
+        }
+    });
+
+    ECLog(@"🛡️ [Phase 11] TSPK 绕过完成（批量扫描已延迟到主队列）");
+}
+
+// ============================================================
+// Phase 12-13: DeviceCheck + AppAttest 绕过
+// ============================================================
+
+static void setupDeviceCheckBypass(void) {
+    ECLog(@"🛡️ [Phase 12-13] DeviceCheck/AppAttest 绕过...");
+
+    // 12.1 禁用 TTKDeviceCheckInitTask（阻止 DeviceCheck 初始化）
+    Class dcTaskCls = NSClassFromString(EC_P9_TTKDeviceCheckInitTask);
+    if (dcTaskCls) {
+        NSArray *taskSels = @[@"start", @"run", @"execute",
+                              @"startWithCompletionHandler:"];
+        for (NSString *selName in taskSels) {
+            SEL sel = NSSelectorFromString(selName);
+            Method m = class_getInstanceMethod(dcTaskCls, sel);
+            if (m) {
+                method_setImplementation(m,
+                    imp_implementationWithBlock(^(id self_) {
+                        // 空实现 — 跳过 DeviceCheck
+                    }));
+                ECLog(@"  ✅ Disabled: -[TTKDeviceCheckInitTask %@]", selName);
+                break;
+            }
+        }
+    }
+
+    // 12.2 Hook DCDevice.generateTokenWithCompletionHandler:
+    // 让 completion handler 收到一个 error，TikTok 会走降级路径
+    Class dcDeviceCls = NSClassFromString(EC_P9_DCDevice);
+    if (dcDeviceCls) {
+        SEL genTokenSel = NSSelectorFromString(EC_P9_generateTokenWithCompletion);
+        Method m = class_getInstanceMethod(dcDeviceCls, genTokenSel);
+        if (m) {
+            method_setImplementation(m,
+                imp_implementationWithBlock(^(id self_, void (^completion)(NSData *token, NSError *error)) {
+                    if (completion) {
+                        // 返回"设备不支持"错误，触发 TikTok 的降级逻辑
+                        NSError *err = [NSError errorWithDomain:@"DCErrorDomain"
+                                                          code:1
+                                                      userInfo:@{NSLocalizedDescriptionKey:
+                                                                 @"Device not supported"}];
+                        completion(nil, err);
+                    }
+                }));
+            ECLog(@"  ✅ Hooked: -[DCDevice generateTokenWithCompletionHandler:] → error");
+        }
+    }
+
+    // 13.1 Hook AppAttest attestKey 和 generateAssertion
+    // 返回错误让 TikTok 走 fallback 路径
+    Class asServerCls = NSClassFromString(@"ASAuthorizationAppleIDProvider");
+    // AppAttest 更多通过 DeviceCheck framework 的 DCAppAttestService
+    Class attestCls = NSClassFromString(EC_P9_DCAppAttestService);
+    if (attestCls) {
+        // Hook attestKey:clientDataHash:completionHandler:
+        SEL attestKeySel = NSSelectorFromString(EC_P9_attestKey);
+        Method m1 = class_getInstanceMethod(attestCls, attestKeySel);
+        if (m1) {
+            method_setImplementation(m1,
+                imp_implementationWithBlock(^(id self_, NSString *keyId, NSData *hash,
+                                             void (^completion)(NSData *attestObj, NSError *error)) {
+                    if (completion) {
+                        NSError *err = [NSError errorWithDomain:@"DCErrorDomain"
+                                                          code:2
+                                                      userInfo:@{NSLocalizedDescriptionKey:
+                                                                 @"AppAttest not available"}];
+                        completion(nil, err);
+                    }
+                }));
+            ECLog(@"  ✅ Hooked: -[DCAppAttestService attestKey:...] → error");
+        }
+
+        // Hook generateAssertion:clientDataHash:completionHandler:
+        SEL genAssertSel = NSSelectorFromString(EC_P9_generateAssertion);
+        Method m2 = class_getInstanceMethod(attestCls, genAssertSel);
+        if (m2) {
+            method_setImplementation(m2,
+                imp_implementationWithBlock(^(id self_, NSString *keyId, NSData *hash,
+                                             void (^completion)(NSData *assertion, NSError *error)) {
+                    if (completion) {
+                        NSError *err = [NSError errorWithDomain:@"DCErrorDomain"
+                                                          code:3
+                                                      userInfo:@{NSLocalizedDescriptionKey:
+                                                                 @"Assertion generation failed"}];
+                        completion(nil, err);
+                    }
+                }));
+            ECLog(@"  ✅ Hooked: -[DCAppAttestService generateAssertion:...] → error");
+        }
+
+        // Hook isSupported 属性 → NO
+        SEL isSupportedSel = NSSelectorFromString(@"isSupported");
+        Method mSupported = class_getInstanceMethod(attestCls, isSupportedSel);
+        if (!mSupported) mSupported = class_getClassMethod(attestCls, isSupportedSel);
+        if (mSupported) {
+            method_setImplementation(mSupported,
+                imp_implementationWithBlock(^BOOL(id self_) {
+                    return NO; // AppAttest 不可用
+                }));
+            ECLog(@"  ✅ Hooked: DCAppAttestService.isSupported → NO");
+        }
+    }
+
+    ECLog(@"🛡️ [Phase 12-13] DeviceCheck/AppAttest 绕过完成");
+}
+
+// ============================================================
+// Phase 14: Info.plist 物理文件读取拦截
+// ============================================================
+// TikTok 的 AWEFakeBundleIDManager 会绕过 NSBundle API，
+// 直接通过 open()/read() 读取物理 Info.plist 校验 Bundle ID。
+// 方案：在启动时直接修改沙盒中的 Info.plist 文件，将
+// CFBundleIdentifier 从克隆 ID (如 com.zhiliaoapp.musically1)
+// 改为官方 ID (com.zhiliaoapp.musically)。
+// 这比 Hook open() 更安全，不会触发 GOT 监控。
+
+static void fixInfoPlistBundleId(void) {
+    ECLog(@"🛡️ [Phase 14] Info.plist 物理文件修复...");
+
+    NSString *plistPath = [[[NSBundle mainBundle] bundlePath]
+                           stringByAppendingPathComponent:@"Info.plist"];
+    NSMutableDictionary *plist =
+        [NSMutableDictionary dictionaryWithContentsOfFile:plistPath];
+    if (!plist) {
+        ECLog(@"  ⚠️ 无法读取 Info.plist: %@", plistPath);
+        return;
+    }
+
+    NSString *currentBundleId = plist[@"CFBundleIdentifier"];
+    if (!currentBundleId) return;
+
+    // 计算官方 Bundle ID（去除数字后缀）
+    NSString *officialId = nil;
+
+    // 匹配 com.zhiliaoapp.musically1 → com.zhiliaoapp.musically
+    // 匹配 com.ss.iphone.ugc.Ame2 → com.ss.iphone.ugc.Ame
+    NSRegularExpression *regex =
+        [NSRegularExpression regularExpressionWithPattern:@"^(.+?)(\\d+)$"
+                                                  options:0 error:nil];
+    NSTextCheckingResult *match =
+        [regex firstMatchInString:currentBundleId
+                          options:0
+                            range:NSMakeRange(0, currentBundleId.length)];
+    if (match && match.numberOfRanges > 1) {
+        officialId = [currentBundleId substringWithRange:[match rangeAtIndex:1]];
+    }
+
+    // 如果已经是官方 ID（无数字后缀），无需修改
+    if (!officialId || [officialId isEqualToString:currentBundleId]) {
+        ECLog(@"  ✅ Bundle ID 已是官方: %@", currentBundleId);
+        return;
+    }
+
+    // 修改 Info.plist 中的 Bundle ID
+    plist[@"CFBundleIdentifier"] = officialId;
+
+    // 同时修改 CFBundleURLTypes 中包含克隆 ID 的 URL Scheme
+    NSArray *urlTypes = plist[@"CFBundleURLTypes"];
+    if ([urlTypes isKindOfClass:[NSArray class]]) {
+        NSMutableArray *newUrlTypes = [NSMutableArray array];
+        for (NSDictionary *urlType in urlTypes) {
+            NSMutableDictionary *mutableType = [urlType mutableCopy];
+            NSArray *schemes = mutableType[@"CFBundleURLSchemes"];
+            if ([schemes isKindOfClass:[NSArray class]]) {
+                NSMutableArray *newSchemes = [NSMutableArray array];
+                for (NSString *scheme in schemes) {
+                    // 去除 scheme 中的数字后缀
+                    NSString *cleanScheme = [scheme stringByReplacingOccurrencesOfString:currentBundleId
+                                                                             withString:officialId];
+                    [newSchemes addObject:cleanScheme];
+                }
+                mutableType[@"CFBundleURLSchemes"] = newSchemes;
+            }
+            [newUrlTypes addObject:mutableType];
+        }
+        plist[@"CFBundleURLTypes"] = newUrlTypes;
+    }
+
+    // 写回文件
+    BOOL success = [plist writeToFile:plistPath atomically:YES];
+    if (success) {
+        ECLog(@"  ✅ Info.plist CFBundleIdentifier: %@ → %@", currentBundleId, officialId);
+    } else {
+        ECLog(@"  ❌ Info.plist 写入失败（可能沙盒只读）");
+    }
+}
+
+// ============================================================
+// Phase 9-14 总装入口
+// ============================================================
+static void setupDeepProtection(void) {
+    // v2229: 临时全部禁用 Phase 9-14
+    // 14:38 崩溃日志显示在 UIWindowScene 初始化后 SIGSEGV，
+    // 无法确定是哪个 Phase 导致。先建立稳定基线，后续逐个启用二分排查。
+    ECLog(@"🛡️ [Phase 9-14] 深度防护暂时全部禁用 — 二分排查崩溃源");
+
+    // 仅保留 Phase 12-13（纯 ObjC method swizzle，最安全）
+    @try { setupDeviceCheckBypass(); }
+    @catch (NSException *e) { ECLog(@"❌ Phase 12-13 异常: %@", e); }
+
+    // Phase 9 (IMP rebind) — 暂时禁用，rebind_symbols 可能破坏 GOT
+    // @try { setupIMPSpoofing(); }
+    // @catch (NSException *e) { ECLog(@"❌ Phase 9 异常: %@", e); }
+
+    // Phase 10 (bdfishhook) — 暂时禁用
+    // 静态部分 Hook AWEFishhookInitTask 是安全的，但 dispatch_async 中的 objc_copyClassList 需要验证
+    // @try { setupBDFishhookBypass(); }
+    // @catch (NSException *e) { ECLog(@"❌ Phase 10 异常: %@", e); }
+
+    // Phase 11 (TSPK) — 暂时禁用
+    // @try { setupTSPKBypass(); }
+    // @catch (NSException *e) { ECLog(@"❌ Phase 11 异常: %@", e); }
+
+    // Phase 14 — 保持禁用（写 Bundle 文件不安全）
+    // @try { fixInfoPlistBundleId(); }
+    // @catch (NSException *e) { ECLog(@"❌ Phase 14 异常: %@", e); }
+}
 
 // ============================================================
 // CTCellularData 网络权限绕过
@@ -6898,10 +7943,37 @@ static void ec_trigger_network_permission_once(void) {
 }
 
 // dylib 加载时自动执行
-    __attribute__((constructor)) static void constructor(void) {
+    __attribute__((constructor(101))) static void constructor(void) {
     @autoreleasepool {
       // 0. [CRITICAL] 立即抹除注入痕迹
       sanitizeMainBinaryHeader();
+
+      // [极速克隆标记 v2257] 在最早期拦截开始前，强制确定身份！
+      NSString *__fastBid = [[NSBundle mainBundle] bundleIdentifier];
+      if (!__fastBid) {
+          NSString *__infoPath = [[[NSBundle mainBundle] bundlePath] stringByAppendingPathComponent:@"Info.plist"];
+          NSDictionary *__infoDict = [NSDictionary dictionaryWithContentsOfFile:__infoPath];
+          __fastBid = __infoDict[@"CFBundleIdentifier"];
+      }
+      if (__fastBid) {
+          NSRegularExpression *__regex = [NSRegularExpression regularExpressionWithPattern:@"\\.([a-zA-Z]{3,})(\\d+)$" options:0 error:nil];
+          NSTextCheckingResult *__match = [__regex firstMatchInString:__fastBid options:0 range:NSMakeRange(0, __fastBid.length)];
+          if (__match && __match.numberOfRanges > 2) {
+              g_FastCloneId = [__fastBid substringWithRange:[__match rangeAtIndex:2]];
+              g_isCloneMode = YES;
+              NSLog(@"[ecwg][ECDeviceSpoof] 🚀 极速判定启动：当前是克隆环境 CloneID: %@", g_FastCloneId);
+          } else {
+              // Try .cloneX format
+              __regex = [NSRegularExpression regularExpressionWithPattern:@"\\.clone(\\d+)$" options:0 error:nil];
+              __match = [__regex firstMatchInString:__fastBid options:0 range:NSMakeRange(0, __fastBid.length)];
+              if (__match && __match.numberOfRanges > 1) {
+                  g_FastCloneId = [__fastBid substringWithRange:[__match rangeAtIndex:1]];
+                  g_isCloneMode = YES;
+                  NSLog(@"[ecwg][ECDeviceSpoof] 🚀 极速判定启动：当前是克隆环境 CloneID: %@", g_FastCloneId);
+              }
+          }
+      }
+
 
       // [Audit] 记录启动信息到隐蔽的缓存文件（异步执行，避免阻塞 constructor）
       // 首次安装时 Documents 目录可能尚未完全就绪，同步写入会增加启动延迟
@@ -6940,7 +8012,7 @@ static void ec_trigger_network_permission_once(void) {
       // 1. [FIX] 同步加载 Config - 修复竞态条件
       // 必须在 Hook 生效前完成配置加载，否则早期 Bundle 访问会返回真实包名
       {
-        NSString *spoofedId = [ECDeviceSpoofConfig shared].originalBundleId;
+        NSString *spoofedId = [SCPrefLoader shared].originalBundleId;
         if (spoofedId) {
           g_spoofedBundleId = spoofedId;
           g_spoofConfigLoaded = YES;

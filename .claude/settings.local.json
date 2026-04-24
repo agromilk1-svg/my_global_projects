@@ -17,7 +17,28 @@
       "Bash(grep -rl \"integrity\\\\|sha\\\\|checksum\\\\|hash\\\\|verify\" Payload/TikTok.app --include=*.m --include=*.h)",
       "Bash(grep -r \"libmobileg\\\\|mobileg\\\\|gmock\\\\|libfak\\\\|dyld\\\\|cptrace\" Payload/TikTok.app --include=*.framework)",
       "Bash(grep -r \"atexit\\\\|pthread\\\\|lwp\\\\|proc\\\\|task\\\\|ptrace\" Payload/TikTok.app/Frameworks --include=*.framework)",
-      "Bash(grep -r \"DYLD\\\\|LD_PRELOAD\\\\|LD_LIBRARY_PATH\" Payload/TikTok.app --include=*.m --include=*.h)"
+      "Bash(grep -r \"DYLD\\\\|LD_PRELOAD\\\\|LD_LIBRARY_PATH\" Payload/TikTok.app --include=*.m --include=*.h)",
+      "Bash(otool -l Payload/TikTok.app/TikTok)",
+      "Bash(mkdir -p /tmp/tiktok_analysis)",
+      "Read(//private/tmp/tiktok_analysis/**)",
+      "Bash(unzip -o /Users/hh/Desktop/TikTok_马来西亚.ipa)",
+      "Bash(codesign -dv --verbose Payload/TikTok.app)",
+      "Bash(grep -iE \"^[A-Z]{2,}$|tiktok|tt_|ByteDance|bytedance|TTK_|TT_|ttkit|TikTokKit|TikTokCore|TikTokCommon|ByteGPT|GPT|OpenAI|chatgpt|AI|智能|字节|火山|引擎|Engine|engine|SDK|sdk|detect|检测|安全|Security|security|安全检测|风控|Risk|risk|风控|风控引擎|反作弊|Anti|anti|cheat|作弊|外挂|挂|hack|Hack|非法|非法行为|违规|Violation|违规检测|安全策略|安全策略引擎|安全策略|安全检查\")",
+      "Bash(grep -iE \"^[A-Za-z_][A-Za-z0-9_]{4,}$\")",
+      "Bash(done)",
+      "Bash(codesign -vvv --deep Payload/TikTok.app/TikTok)",
+      "Bash(codesign -d --entitlements - Payload/TikTok.app/TikTok)",
+      "Bash(otool -L TikTok)",
+      "Bash(codesign:*)",
+      "Bash(strings /Users/hh/Desktop/Payload/TikTok.app/bmf-mods/*.model)",
+      "Bash(dsymutil -s /Users/hh/Desktop/Payload/TikTok.app/TikTok)",
+      "Bash(otool -h /Users/hh/Desktop/Payload/TikTok.app/TikTok)",
+      "Bash(otool -I /Users/hh/Desktop/Payload/TikTok.app/TikTok)",
+      "Bash(otool:*)",
+      "Bash(find /Users/hh/Desktop/Payload/TikTok.app -type f -exec file {})",
+      "Bash(2)",
+      "Bash(size:*)",
+      "Bash(nm -m /Users/hh/Desktop/Payload/TikTok.app/TikTok)"
     ]
   }
 }

@@ -153,8 +153,8 @@
   
   // ========== 第 3 步：启动 GCD 定时器自检（替代 NSTimer） ==========
   // NSTimer 依赖 RunLoop，后台 RunLoop 被冻结就失效了
-  // GCD dispatch_source_t 在内核层面调度，后台仍可触发
-  [self startSelfCheckGCDTimer];
+  // [优化] selfCheck 已合并到 ECBackgroundManager 心跳回调中，无需独立 GCD Timer
+  // [self startSelfCheckGCDTimer];
   
   NSLog(@"[ECKeepAlive] ✅ 静音播放已启动 (volume=0.01, loop=-1)");
 }

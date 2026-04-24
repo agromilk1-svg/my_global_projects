@@ -215,3 +215,33 @@ web_control_center/backend/updates/ecmain_version.json
 web_control_center/backend/updates/ecwda_version.json
 ---
 
+## Session End: 20260422_174921
+### Uncommitted Changes
+.build_number
+.claude/settings.local.json
+ECHelper_Windows_Package/build_antigravity/IPA/echelper
+ECMAIN/ECBuildInfo.h
+ECMAIN/ECMAIN/UI/ECAppListViewController.m
+ECMAIN/ECMAIN/UI/ECDumpBinary.h
+ECMAIN/Info.plist
+ECMAIN/RealHelper/TSHRootViewController.h
+ECMAIN/RealHelper/TSHRootViewController.m
+ECMAIN/RootHelper/main.m
+ECMAIN/TrollStoreCore/TSInstallationController.m
+ECMAIN/Tunnel/Info.plist
+ECMAIN/ViewController.m
+build_antigravity/IPA/echelper
+echelper/TSHRootViewController.h
+echelper/TSHRootViewController.m
+echelper/TSUtil.m
+echelper/echelper
+echelper/main.m
+echelper/root_main.m
+go-ios-src
+test.py
+tools/deploy/build_echelper.py
+tools/deploy/build_full_26.py
+web_control_center/backend/updates/ecmain_version.json
+web_control_center/backend/updates/ecwda_version.json
+---
+

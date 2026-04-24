@@ -51,6 +51,8 @@
 - (BOOL)openApplicationWithBundleID:(NSString *)appID;
 - (int)enableJITForBundleID:(NSString *)appID;
 - (int)changeAppRegistration:(NSString *)appPath toState:(NSString *)newState;
-
+- (NSArray<NSDictionary *> *)scanOrphanedContainers;
+- (BOOL)deleteOrphanedContainer:(NSString *)containerPath bundleId:(NSString *)bundleId;
+- (NSString *)cleanSystemData;
 
 @end

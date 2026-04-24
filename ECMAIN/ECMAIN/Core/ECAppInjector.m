@@ -1103,6 +1103,8 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
   // 查找第一个 Segment 的偏移量，计算可用空间
   size_t loadCmdsEnd = sizeof(struct mach_header_64) + header->sizeofcmds;
   size_t firstSegmentOffset = 0;
+  // [v2260] 同时查找第一个 LC_LOAD_DYLIB 的偏移量，用于前置插入
+  size_t firstLoadDylibOffset = 0;
   lcOffset = 0;
 
   for (uint32_t i = 0; i < header->ncmds; i++) {
@@ -1118,6 +1120,11 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
           (firstSegmentOffset == 0 || seg->fileoff < firstSegmentOffset)) {
         firstSegmentOffset = seg->fileoff;
       }
+    }
+    // [v2260] 记录第一个 LC_LOAD_DYLIB 的位置
+    if ((lc->cmd == LC_LOAD_DYLIB || lc->cmd == LC_LOAD_WEAK_DYLIB) &&
+        firstLoadDylibOffset == 0) {
+      firstLoadDylibOffset = lcOffset;
     }
     lcOffset += lc->cmdsize;
   }
@@ -1164,9 +1171,34 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
   memcpy((char *)dylib + sizeof(struct dylib_command), dylibPathCStr,
          dylibPathLen);
 
-  // 写入到 load commands 结尾处
-  [fileHandle seekToFileOffset:loadCmdsEnd];
-  [fileHandle writeData:newCmdData];
+  // [v2260] 关键修复：将 LC_LOAD_DYLIB 插入到第一个 dylib 加载命令之前
+  // 这样 dyld 会优先加载我们的 dylib，使 constructor 在所有 TikTok 原生
+  // Framework 的 +load 方法之前执行，彻底消除 5+ 秒的初始化延迟
+  size_t insertFileOffset; // 在文件中的绝对偏移量
+  if (firstLoadDylibOffset > 0) {
+    // 找到了第一个 LC_LOAD_DYLIB，在其前面插入
+    insertFileOffset = sizeof(struct mach_header_64) + firstLoadDylibOffset;
+
+    // 需要将 [firstLoadDylibOffset, loadCmdsEnd) 的数据向后移动 cmdSize 字节
+    // 先读取需要移动的数据
+    size_t tailSize = loadCmdsEnd - insertFileOffset;
+    [fileHandle seekToFileOffset:insertFileOffset];
+    NSData *tailData = [fileHandle readDataOfLength:tailSize];
+
+    // 写入我们的新 LC（占据原来第一个 LC_LOAD_DYLIB 的位置）
+    [fileHandle seekToFileOffset:insertFileOffset];
+    [fileHandle writeData:newCmdData];
+
+    // 把原来的数据写回到新位置（紧跟在我们的新 LC 后面）
+    [fileHandle writeData:tailData];
+
+    ECLog(@"[v2260] ✅ LC_LOAD_DYLIB 插入到偏移 %zu (第一个 dylib LC 之前)", firstLoadDylibOffset);
+  } else {
+    // 没有找到任何 LC_LOAD_DYLIB（不太可能），回退到追加模式
+    [fileHandle seekToFileOffset:loadCmdsEnd];
+    [fileHandle writeData:newCmdData];
+    ECLog(@"[v2260] ⚠️ 未找到 LC_LOAD_DYLIB，回退到追加模式");
+  }
 
   // 4. 更新 Header
   header->ncmds += 1;

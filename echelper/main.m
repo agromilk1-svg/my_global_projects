@@ -65,18 +65,38 @@ BOOL sceneDelegateFix(void) {
 
 int main(int argc, char *argv[], char *envp[]) {
   @autoreleasepool {
+    NSLog(@"========== [echelper main] ENTRY ==========");
+    NSLog(@"[echelper main] uid=%d euid=%d pid=%d", getuid(), geteuid(), getpid());
+    NSLog(@"[echelper main] argc=%d argv[0]=%s", argc,
+          argc > 0 ? argv[0] : "(null)");
+    NSLog(@"[echelper main] bundle=%@",
+          [NSBundle mainBundle].bundlePath ?: @"(null)");
+    NSLog(@"[echelper main] executable=%@",
+          [NSBundle mainBundle].executablePath ?: @"(null)");
+
 #ifdef EMBEDDED_ROOT_HELPER
+    NSLog(@"[echelper main] EMBEDDED_ROOT_HELPER=1");
     extern int rootHelperMain(int argc, char *argv[], char *envp[]);
     if (getuid() == 0) {
+      NSLog(@"[echelper main] Running as ROOT → rootHelperMain");
       return rootHelperMain(argc, argv, envp);
     }
+    NSLog(@"[echelper main] Running as USER → GUI mode");
+#else
+    NSLog(@"[echelper main] EMBEDDED_ROOT_HELPER not defined");
 #endif
 
+    NSLog(@"[echelper main] Calling chineseWifiFixup...");
     chineseWifiFixup();
+    NSLog(@"[echelper main] chineseWifiFixup done");
+
+    NSLog(@"[echelper main] Calling sceneDelegateFix...");
     if (sceneDelegateFix()) {
+      NSLog(@"[echelper main] sceneDelegateFix=YES → WithScene");
       return UIApplicationMain(
           argc, argv, nil, NSStringFromClass(TSHAppDelegateWithScene.class));
     } else {
+      NSLog(@"[echelper main] sceneDelegateFix=NO → NoScene");
       return UIApplicationMain(argc, argv, nil,
                                NSStringFromClass(TSHAppDelegateNoScene.class));
     }

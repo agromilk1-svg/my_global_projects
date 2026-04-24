@@ -5,6 +5,13 @@ import subprocess
 import sys
 import datetime
 import re
+import argparse
+
+# --- Parse Arguments ---
+parser = argparse.ArgumentParser(description="Build ECMAIN")
+parser.add_argument("--release", action="store_true", help="Build as Release version")
+args = parser.parse_args()
+IS_RELEASE = args.release
 
 # --- Configuration ---
 PROJECT_ROOT = "/Users/hh/Desktop/my"
@@ -45,7 +52,8 @@ def update_build_version():
             f.write(str(num))
             
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-        version_str = f"Build: {now} #{num} (Auto)"
+        build_type = "Release" if IS_RELEASE else "Debug"
+        version_str = f"Build: {now} #{num} ({build_type})"
         
         # Modify ViewController.m directly
         vc_path = os.path.join(PROJECT_ROOT, "ECMAIN/ViewController.m")
@@ -382,9 +390,10 @@ def build_native_helper():
     # Debug: Check usbmuxd_shim.m content
     shim_path = os.path.join(helper_build_dir, "RootHelper/usbmuxd_shim.m")
     
+    clang_opt = "-O2" if IS_RELEASE else "-O0 -g"
     cmd = (
         f"xcrun clang -isysroot {sdk_path} -target arm64-apple-ios14.0 "
-        f"-fobjc-arc -O2 -fmodules -fcxx-modules " 
+        f"-fobjc-arc {clang_opt} -fmodules -fcxx-modules " 
         f"-DTSLog=NSLog -DkCFCoreFoundationVersionNumber_iOS_15_0=1854.0 " 
         f"-I {helper_build_dir} " 
         f"-I {os.path.join(helper_build_dir, 'Shared')} "
@@ -507,7 +516,10 @@ def build_persistence_helper():
 
     # Execute separate build script
     if os.path.exists(script_path):
-        run_cmd(f"python3 {script_path}")
+        helper_cmd = f"python3 {script_path}"
+        if IS_RELEASE:
+            helper_cmd += " --release"
+        run_cmd(helper_cmd)
     else:
         error(f"Build script not found: {script_path}")
 
@@ -567,11 +579,12 @@ def build_ui_app():
     # Set DEVELOPER_DIR to use full Xcode instead of CommandLineTools
     env['DEVELOPER_DIR'] = '/Applications/Xcode.app/Contents/Developer'
 
+    config_str = "Release" if IS_RELEASE else "Debug"
     cmd = (
         f"DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild build "
         f"-project {XCODE_PROJECT} "
         f"-target {SCHEME_NAME} "
-        f"-configuration Release "
+        f"-configuration {config_str} "
         f"-sdk iphoneos "
         f"SYMROOT={BUILD_ROOT}/build "
         f"ASSETCATALOG_COMPILER_APPICON_NAME=\"\" "
@@ -597,7 +610,7 @@ def build_ui_app():
     if os.path.exists(assets_out_dir): shutil.rmtree(assets_out_dir)
     os.makedirs(assets_out_dir)
     
-    app_path = os.path.join(BUILD_ROOT, "build/Release-iphoneos/ECMAIN.app")
+    app_path = os.path.join(BUILD_ROOT, f"build/{config_str}-iphoneos/ECMAIN.app")
     assets_path = os.path.join(PROJECT_ROOT, "ECMAIN/Assets.xcassets")
     if os.path.exists(assets_path):
         import subprocess
@@ -613,12 +626,12 @@ def build_ui_app():
         )
         run_cmd(cmd_actool, env=env, ignore_error=True)
     # Find .app
-    app_path = os.path.join(BUILD_ROOT, "build/Release-iphoneos/ECMAIN.app")
+    app_path = os.path.join(BUILD_ROOT, f"build/{config_str}-iphoneos/ECMAIN.app")
     if not os.path.exists(app_path):
         # Check other common locations
         alt_paths = [
-            os.path.join(PROJECT_ROOT, "build_xcode/Build/Products/Release-iphoneos/ECMAIN.app"),
-            os.path.join(PROJECT_ROOT, "build/Build/Products/Release-iphoneos/ECMAIN.app"),
+            os.path.join(PROJECT_ROOT, f"build_xcode/Build/Products/{config_str}-iphoneos/ECMAIN.app"),
+            os.path.join(PROJECT_ROOT, f"build/Build/Products/{config_str}-iphoneos/ECMAIN.app"),
         ]
         for alt in alt_paths:
             if os.path.exists(alt):
@@ -633,7 +646,7 @@ def build_ui_app():
     if not os.path.exists(app_path):
         # Final fallback: search project root
         for root, dirs, files in os.walk(PROJECT_ROOT):
-            if "ECMAIN.app" in dirs and "Release-iphoneos" in root:
+            if "ECMAIN.app" in dirs and f"{config_str}-iphoneos" in root:
                 app_path = os.path.join(root, "ECMAIN.app")
                 break
                 
@@ -766,7 +779,7 @@ def package_all(app_path, helper_path, dylib_path=None, persistence_helper_path=
     shutil.copytree(app_path, final_app)
     
     # 1.5 Embed Mihomo.framework (Required for VPN Tunnel)
-    mihomo_src = os.path.join(DERIVED_DATA_DIR, "Build/Products/Release-iphoneos/Mihomo.framework")
+    mihomo_src = os.path.join(DERIVED_DATA_DIR, f"Build/Products/{config_str}-iphoneos/Mihomo.framework")
     if not os.path.exists(mihomo_src):
         # Try alternate location
         mihomo_src = os.path.join(PROJECT_ROOT, "ECMAIN/Frameworks/Mihomo.xcframework/ios-arm64/Mihomo.framework")

@@ -374,9 +374,9 @@ NSArray *trollStoreInstalledAppContainerPathsInternal(NSString *marker) {
         NSString *trollStoreMark =
             [containerPath stringByAppendingPathComponent:marker];
         if ([[NSFileManager defaultManager] fileExistsAtPath:trollStoreMark]) {
-        // 【Antigravity 修复】不再排除 ECMAIN.app 自身
-        [appContainerPaths addObject:containerPath];
-      }
+          // 【Antigravity 修复】不再排除 ECMAIN.app 自身
+          [appContainerPaths addObject:containerPath];
+        }
       } else {
         // Return all user apps
         [appContainerPaths addObject:containerPath];
@@ -449,12 +449,28 @@ NSString *trollStorePath() {
 }
 
 NSString *trollStoreAppPath() {
+  NSString *basePath = trollStorePath();
+  if (!basePath) return nil;
+
 #ifdef EMBEDDED_ROOT_HELPER
-  // echelper/Tips 模式：资源存储在 Documents
-  return [trollStorePath() stringByAppendingPathComponent:@"Documents"];
+  // echelper/Tips 模式：动态查找容器内的 .app bundle
+  // 设备上可能叫 TrollStore.app、ECMAIN.app 或其他名字
+  NSArray *items = [[NSFileManager defaultManager]
+      contentsOfDirectoryAtPath:basePath error:nil];
+  for (NSString *item in items) {
+    if ([item.pathExtension isEqualToString:@"app"]) {
+      return [basePath stringByAppendingPathComponent:item];
+    }
+  }
+  // 兜底：如果找不到 .app 目录，尝试已知名称
+  NSString *fallback = [basePath stringByAppendingPathComponent:@"ECMAIN.app"];
+  if ([[NSFileManager defaultManager] fileExistsAtPath:fallback]) {
+    return fallback;
+  }
+  return [basePath stringByAppendingPathComponent:@"TrollStore.app"];
 #else
   // ECMAIN 模式：指向应用包本身
-  return [trollStorePath() stringByAppendingPathComponent:@"ECMAIN.app"];
+  return [basePath stringByAppendingPathComponent:@"ECMAIN.app"];
 #endif
 }
 

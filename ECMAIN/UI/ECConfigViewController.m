@@ -7,7 +7,7 @@
 
 #import "ECConfigViewController.h"
 #import "../Data/ECDeviceDatabase.h"
-#import "../Dylib/ECDeviceSpoofConfig.h" // For keys and paths
+#import "../Dylib/SCPrefLoader.h" // For keys and paths
 
 @interface ECConfigViewController () <UIPickerViewDelegate,
                                       UIPickerViewDataSource>

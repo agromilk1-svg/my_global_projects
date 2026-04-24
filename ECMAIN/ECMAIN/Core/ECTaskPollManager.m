@@ -149,15 +149,23 @@
 
 /// 获取今天的日期字符串 (yyyy-MM-dd)
 - (NSString *)todayDateString {
-  NSDateFormatter *df = [[NSDateFormatter alloc] init];
-  [df setDateFormat:@"yyyy-MM-dd"];
+  static NSDateFormatter *df = nil;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    df = [[NSDateFormatter alloc] init];
+    [df setDateFormat:@"yyyy-MM-dd"];
+  });
   return [df stringFromDate:[NSDate date]];
 }
 
 /// 获取当前完整时间字符串 (yyyy-MM-dd HH:mm:ss)
 - (NSString *)currentDateTimeString {
-  NSDateFormatter *df = [[NSDateFormatter alloc] init];
-  [df setDateFormat:@"yyyy-MM-dd HH:mm:ss"];
+  static NSDateFormatter *df = nil;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    df = [[NSDateFormatter alloc] init];
+    [df setDateFormat:@"yyyy-MM-dd HH:mm:ss"];
+  });
   return [df stringFromDate:[NSDate date]];
 }
 

@@ -34,6 +34,35 @@ posix_spawnattr_set_persona_uid_np(const posix_spawnattr_t *__restrict, uid_t);
 extern int
 posix_spawnattr_set_persona_gid_np(const posix_spawnattr_t *__restrict, uid_t);
 
+// --- libproc private declarations ---
+#define PROC_PIDTASKINFO 4
+#define PROC_PIDPATHINFO_MAXSIZE 1024
+
+struct proc_taskinfo {
+    uint64_t        pti_virtual_size;   
+    uint64_t        pti_resident_size;  
+    uint64_t        pti_total_user;     
+    uint64_t        pti_total_system;
+    uint64_t        pti_threads_user;   
+    uint64_t        pti_threads_system;
+    int32_t         pti_policy;     
+    int32_t         pti_faults;     
+    int32_t         pti_pageins;        
+    int32_t         pti_cow_faults;     
+    int32_t         pti_messages_sent;  
+    int32_t         pti_messages_received;  
+    int32_t         pti_syscalls_mach;  
+    int32_t         pti_syscalls_unix;  
+    int32_t         pti_csw;            
+    int32_t         pti_threadnum;      
+    int32_t         pti_numrunning;     
+    int32_t         pti_priority;       
+};
+
+int proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int buffersize);
+int proc_pidpath(int pid, void *buffer, uint32_t buffersize);
+// ------------------------------------
+
 @interface ECAppListViewController () <UIDocumentPickerDelegate>
 @property(nonatomic, strong) NSMutableArray<TSAppInfo *> *apps;
 @property(nonatomic, strong) NSMutableArray<NSString *> *downloadedIPAs;
@@ -51,6 +80,11 @@ posix_spawnattr_set_persona_gid_np(const posix_spawnattr_t *__restrict, uid_t);
 @property(nonatomic, assign)
     mach_port_t decryptTargetTask; // 目标应用 task port
 @property(nonatomic, strong) NSMutableArray *runningExtensions; // 保持扩展活跃
+
+@property (nonatomic, assign) NSInteger currentTabIndex;
+@property (nonatomic, strong) NSArray *processList;
+@property (nonatomic, assign) NSInteger processSortType; // 0: Mem, 1: CPU
+@property (nonatomic, strong) NSArray<NSDictionary *> *orphanedContainers;
 
 - (void)installIPA:(NSString *)path
       registrationType:(NSString *)regType
@@ -80,7 +114,11 @@ extern NSString *rootHelperPath(void);
 
 - (void)viewDidLoad {
   [super viewDidLoad];
-  self.navigationItem.title = @"应用";
+  
+  UISegmentedControl *segment = [[UISegmentedControl alloc] initWithItems:@[@"应用", @"运行中"]];
+  segment.selectedSegmentIndex = 0;
+  [segment addTarget:self action:@selector(segmentChanged:) forControlEvents:UIControlEventValueChanged];
+  self.navigationItem.titleView = segment;
 
   UIBarButtonItem *addButton = [[UIBarButtonItem alloc]
       initWithBarButtonSystemItem:UIBarButtonSystemItemAdd
@@ -185,8 +223,147 @@ extern NSString *rootHelperPath(void);
 
 - (void)loadData {
   NSLog(@"[ECAppList] loadData called");
-  [self loadDownloadedIPAs];
-  [self loadApps];
+  if (self.currentTabIndex == 1) {
+    [self loadProcesses];
+  } else {
+    [self loadDownloadedIPAs];
+    [self loadApps];
+  }
+}
+
+- (void)segmentChanged:(UISegmentedControl *)sender {
+  self.currentTabIndex = sender.selectedSegmentIndex;
+  if (self.currentTabIndex == 1) {
+    UIBarButtonItem *sortBtn = [[UIBarButtonItem alloc] initWithTitle:@"排序" style:UIBarButtonItemStylePlain target:self action:@selector(sortProcesses)];
+    UIBarButtonItem *refreshBtn = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh target:self action:@selector(loadProcesses)];
+    self.navigationItem.rightBarButtonItems = @[sortBtn, refreshBtn];
+    [self loadProcesses];
+  } else {
+    UIBarButtonItem *addButton = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemAdd
+                             target:self
+                             action:@selector(addButtonPressed)];
+    self.navigationItem.rightBarButtonItems = nil;
+    self.navigationItem.rightBarButtonItem = addButton;
+    [self.tableView reloadData];
+  }
+}
+
+- (void)sortProcesses {
+  UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"排序方式" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+  [alert addAction:[UIAlertAction actionWithTitle:@"按内存占用排序" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+      self.processSortType = 0;
+      [self sortAndReloadProcesses];
+  }]];
+  [alert addAction:[UIAlertAction actionWithTitle:@"按 CPU 占用排序" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+      self.processSortType = 1;
+      [self sortAndReloadProcesses];
+  }]];
+  [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+  
+  if (alert.popoverPresentationController) {
+      alert.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItem;
+  }
+  [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)sortAndReloadProcesses {
+  if (!self.processList) return;
+  
+  NSArray *sorted = [self.processList sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *obj1, NSDictionary *obj2) {
+      if (self.processSortType == 1) {
+          return [obj2[@"cpu"] compare:obj1[@"cpu"]];
+      } else {
+          return [obj2[@"mem"] compare:obj1[@"mem"]];
+      }
+  }];
+  self.processList = sorted;
+  [self.tableView reloadData];
+}
+
+- (void)loadProcesses {
+  // 手动刷新逻辑
+  dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+    NSMutableArray *result = [NSMutableArray array];
+    
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0};
+    size_t size;
+    if (sysctl(mib, 4, NULL, &size, NULL, 0) != -1) {
+      struct kinfo_proc *processes = malloc(size);
+      if (processes && sysctl(mib, 4, processes, &size, NULL, 0) != -1) {
+        int count = size / sizeof(struct kinfo_proc);
+        for (int i = 0; i < count; i++) {
+          pid_t pid = processes[i].kp_proc.p_pid;
+          if (pid == 0) continue;
+          
+          NSString *procName = [NSString stringWithUTF8String:processes[i].kp_proc.p_comm] ?: @"Unknown";
+          NSString *appName = procName;
+          NSString *bundleID = @"";
+          
+          char pathBuffer[1024]; // PROC_PIDPATHINFO_MAXSIZE
+          if (proc_pidpath(pid, pathBuffer, sizeof(pathBuffer)) > 0) {
+            NSString *path = [NSString stringWithUTF8String:pathBuffer];
+            if ([path containsString:@".app/"]) {
+              NSBundle *bundle = [NSBundle bundleWithPath:[path stringByDeletingLastPathComponent]];
+              if (bundle) {
+                bundleID = [bundle bundleIdentifier] ?: @"";
+                appName = [bundle objectForInfoDictionaryKey:@"CFBundleDisplayName"] ?: 
+                          [bundle objectForInfoDictionaryKey:@"CFBundleName"] ?: procName;
+              }
+            }
+          }
+          
+          struct proc_taskinfo pti;
+          uint64_t memBytes = 0;
+          if (proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &pti, sizeof(pti)) == sizeof(pti)) {
+            memBytes = pti.pti_resident_size;
+          }
+          
+          float cpuUsage = 0;
+          mach_port_t task;
+          if (task_for_pid(mach_task_self(), pid, &task) == KERN_SUCCESS) {
+            thread_array_t thread_list;
+            mach_msg_type_number_t thread_count;
+            if (task_threads(task, &thread_list, &thread_count) == KERN_SUCCESS) {
+              for (int j = 0; j < thread_count; j++) {
+                thread_info_data_t thinfo;
+                mach_msg_type_number_t thread_info_count = THREAD_INFO_MAX;
+                if (thread_info(thread_list[j], THREAD_BASIC_INFO, (thread_info_t)thinfo, &thread_info_count) == KERN_SUCCESS) {
+                  thread_basic_info_t basic_info_th = (thread_basic_info_t)thinfo;
+                  if (!(basic_info_th->flags & TH_FLAGS_IDLE)) {
+                    cpuUsage += basic_info_th->cpu_usage / (float)TH_USAGE_SCALE * 100.0;
+                  }
+                }
+              }
+              for (size_t j = 0; j < thread_count; j++) {
+                mach_port_deallocate(mach_task_self(), thread_list[j]);
+              }
+              vm_deallocate(mach_task_self(), (vm_address_t)thread_list, thread_count * sizeof(thread_t));
+            }
+            mach_port_deallocate(mach_task_self(), task);
+          }
+          
+          [result addObject:@{
+            @"pid": @(pid),
+            @"name": appName,
+            @"proc_name": procName,
+            @"bundleID": bundleID,
+            @"cpu": @(cpuUsage),
+            @"mem": @(memBytes)
+          }];
+        }
+        free(processes);
+      } else if (processes) {
+        free(processes);
+      }
+    }
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+      self.processList = result;
+      [self sortAndReloadProcesses];
+      [self.refreshControl endRefreshing];
+    });
+  });
 }
 
 - (void)loadDownloadedIPAs {
@@ -228,6 +405,7 @@ extern NSString *rootHelperPath(void);
   dispatch_async(
       dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         [self refreshRunningProcesses];
+        self.orphanedContainers = [[TSApplicationsManager sharedInstance] scanOrphanedContainers];
         NSArray *paths =
             [[TSApplicationsManager sharedInstance] allUserAppPaths];
         NSMutableArray *newApps = [NSMutableArray array];
@@ -290,6 +468,29 @@ extern NSString *rootHelperPath(void);
                                  style:UIAlertActionStyleDefault
                                handler:^(UIAlertAction *_Nonnull action) {
                                  [self showURLInstallAlert];
+                               }]];
+
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:@"🧹 清理系统垃圾"
+                                 style:UIAlertActionStyleDestructive
+                               handler:^(UIAlertAction *_Nonnull action) {
+                                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                                     NSString *result = [[TSApplicationsManager sharedInstance] cleanSystemData];
+                                     unsigned long long freed = 0;
+                                     if (result) {
+                                         NSData *data = [result dataUsingEncoding:NSUTF8StringEncoding];
+                                         if (data) {
+                                             NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+                                             freed = [json[@"freed"] unsignedLongLongValue];
+                                         }
+                                     }
+                                     dispatch_async(dispatch_get_main_queue(), ^{
+                                         NSString *msg = [NSString stringWithFormat:@"已清理 %.2f MB 系统垃圾数据\n(含 /tmp 残留、统一日志库、installd 日志、App 缓存、WebKit 缓存)", freed / 1024.0 / 1024.0];
+                                         UIAlertController *doneAlert = [UIAlertController alertControllerWithTitle:@"清理完成" message:msg preferredStyle:UIAlertControllerStyleAlert];
+                                         [doneAlert addAction:[UIAlertAction actionWithTitle:@"好的" style:UIAlertActionStyleDefault handler:nil]];
+                                         [self presentViewController:doneAlert animated:YES completion:nil];
+                                     });
+                                 });
                                }]];
 
   [alert addAction:[UIAlertAction actionWithTitle:@"取消"
@@ -1536,7 +1737,7 @@ extern NSString *rootHelperPath(void);
          customDisplayName:(NSString *)customDisplayName
         installationMethod:(int)installationMethod
                 completion:(void (^)(BOOL success))completion {
-  [TSInstallationController
+    [TSInstallationController
       handleAppInstallFromFile:path
                   forceInstall:NO
               registrationType:regType
@@ -1545,17 +1746,22 @@ extern NSString *rootHelperPath(void);
                    skipSigning:NO
             installationMethod:installationMethod
                     completion:^(BOOL success, NSError *error) {
+                      // 清理 tmp 目录下的安装残留
+                      dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+                          NSFileManager *fm = [NSFileManager defaultManager];
+                          NSString *tmpDir = NSTemporaryDirectory();
+                          NSArray *tmpFiles = [fm contentsOfDirectoryAtPath:tmpDir error:nil];
+                          for (NSString *file in tmpFiles) {
+                              NSString *fullPath = [tmpDir stringByAppendingPathComponent:file];
+                              [fm removeItemAtPath:fullPath error:nil];
+                          }
+                          NSLog(@"[ECAppList] Auto-cleaned temporary installation files in %@", tmpDir);
+                      });
+
                       if (success) {
                         if (completion) {
                           completion(YES);
                         }
-                        // Only reload if no completion block (meaning final
-                        // step) or strict reload requested But we always
-                        // reload on success in the original code, so let's
-                        // keep it consistent If we are in the middle of User
-                        // switch, we reload after switch too. To avoid double
-                        // reload, maybe we should gate it? For now, double
-                        // reload is fine.
                         [self loadApps];
                       } else {
                         if (completion) {
@@ -1692,6 +1898,29 @@ extern NSString *rootHelperPath(void);
                                               [self injectIntoApp:app];
                                             }]];
   }
+
+  // 3. ECMAIN 托管状态切换
+  NSString *managedPlistPath = @"/var/mobile/Media/ECMAIN/managed_apps.plist";
+  NSMutableArray *managedApps = [NSMutableArray arrayWithContentsOfFile:managedPlistPath] ?: [NSMutableArray array];
+  BOOL isManaged = [managedApps containsObject:app.bundleIdentifier];
+
+  [alert addAction:[UIAlertAction actionWithTitle:isManaged ? @"⛔️ 取消 ECMAIN 托管" : @"🛡️ 设为 ECMAIN 托管 (防重启丢失)"
+                                            style:isManaged ? UIAlertActionStyleDestructive : UIAlertActionStyleDefault
+                                          handler:^(UIAlertAction *action) {
+                                            if (isManaged) {
+                                                [managedApps removeObject:app.bundleIdentifier];
+                                            } else {
+                                                [managedApps addObject:app.bundleIdentifier];
+                                                // 如果目录不存在则创建
+                                                [[NSFileManager defaultManager] createDirectoryAtPath:@"/var/mobile/Media/ECMAIN" withIntermediateDirectories:YES attributes:nil error:nil];
+                                            }
+                                            [managedApps writeToFile:managedPlistPath atomically:YES];
+                                            UIAlertController *toast = [UIAlertController alertControllerWithTitle:@"设置成功" message:isManaged ? @"已取消托管，刷新时将不再强制保护此应用" : @"已设为托管，下次刷新应用将自动保护并可启动" preferredStyle:UIAlertControllerStyleAlert];
+                                            [toast addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                                                [self.tableView reloadData];
+                                            }]];
+                                            [self presentViewController:toast animated:YES completion:nil];
+                                          }]];
 
   // Debug: 手动检测注入状态
   [alert
@@ -4308,25 +4537,62 @@ extern NSString *rootHelperPath(void);
 #pragma mark - Table view data source
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-  return 2;
+  if (self.currentTabIndex == 1) return 1;
+  int sections = 2;
+  if (self.orphanedContainers.count > 0) sections++;
+  return sections;
 }
 
 - (NSString *)tableView:(UITableView *)tableView
     titleForHeaderInSection:(NSInteger)section {
+  if (self.currentTabIndex == 1) return @"运行中的进程 (Processes)";
   if (section == 0)
     return @"已下载 (Downloaded)";
-  return @"已安装 (Installed)";
+  if (section == 1)
+    return @"已安装 (Installed)";
+  return @"⚠️ 垃圾残留 (Orphaned Data)";
 }
 
 - (NSInteger)tableView:(UITableView *)tableView
     numberOfRowsInSection:(NSInteger)section {
+  if (self.currentTabIndex == 1) return self.processList.count;
   if (section == 0)
     return self.downloadedIPAs.count;
-  return self.apps.count;
+  if (section == 1)
+    return self.apps.count;
+  return self.orphanedContainers.count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView
          cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+  if (self.currentTabIndex == 1) {
+    static NSString *ProcessCellId = @"ProcessCell";
+    UITableViewCell *cell =
+        [tableView dequeueReusableCellWithIdentifier:ProcessCellId];
+    if (!cell) {
+      cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                    reuseIdentifier:ProcessCellId];
+      cell.detailTextLabel.numberOfLines = 2;
+    }
+    NSDictionary *dict = self.processList[indexPath.row];
+    NSString *bundleID = dict[@"bundleID"];
+    float cpu = [dict[@"cpu"] floatValue];
+    uint64_t mem = [dict[@"mem"] unsignedLongLongValue];
+    NSString *memStr = [NSString stringWithFormat:@"%.1f MB", mem / 1024.0 / 1024.0];
+    
+    if (bundleID && bundleID.length > 0) {
+      cell.textLabel.text = [NSString stringWithFormat:@"%@ (%@)", dict[@"name"], dict[@"pid"]];
+      cell.detailTextLabel.text = [NSString stringWithFormat:@"%@\nCPU: %.1f%% | Mem: %@", bundleID, cpu, memStr];
+      cell.detailTextLabel.textColor = [UIColor systemBlueColor];
+    } else {
+      cell.textLabel.text = [NSString stringWithFormat:@"%@ (%@)", dict[@"proc_name"], dict[@"pid"]];
+      cell.detailTextLabel.text = [NSString stringWithFormat:@"CPU: %.1f%% | Mem: %@", cpu, memStr];
+      cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+    }
+    cell.imageView.image = [UIImage systemImageNamed:@"cpu"];
+    return cell;
+  }
+
   static NSString *CellIdentifier = @"AppCell";
   UITableViewCell *cell =
       [tableView dequeueReusableCellWithIdentifier:CellIdentifier];
@@ -4345,7 +4611,7 @@ extern NSString *rootHelperPath(void);
         [NSString stringWithFormat:@"%.2f MB", size / 1024.0 / 1024.0];
     cell.imageView.image =
         [UIImage systemImageNamed:@"doc.fill"]; // Placeholder
-  } else {
+  } else if (indexPath.section == 1) {
     TSAppInfo *app = self.apps[indexPath.row];
     cell.textLabel.text = [app displayName];
 
@@ -4386,9 +4652,15 @@ extern NSString *rootHelperPath(void);
       break;
     }
 
+    // 显示 ECMAIN 托管标志
+    NSString *managedPlistPath = @"/var/mobile/Media/ECMAIN/managed_apps.plist";
+    NSArray *managedApps = [NSArray arrayWithContentsOfFile:managedPlistPath];
+    BOOL isManaged = managedApps && [managedApps containsObject:[app bundleIdentifier]];
+    NSString *managedBadge = isManaged ? @" 🛡️" : @"";
+
     cell.detailTextLabel.text =
-        [NSString stringWithFormat:@"%@ (%@)%@%@", [app bundleIdentifier],
-                                   [app versionString], regBadge, encBadge];
+        [NSString stringWithFormat:@"%@ (%@)%@%@%@", [app bundleIdentifier],
+                                   [app versionString], regBadge, encBadge, managedBadge];
 
     // PID Check
     NSString *matchName = executableName;
@@ -4408,6 +4680,12 @@ extern NSString *rootHelperPath(void);
     }
 
     cell.imageView.image = [app iconForSize:CGSizeMake(29, 29)];
+  } else {
+    NSDictionary *orphan = self.orphanedContainers[indexPath.row];
+    cell.textLabel.text = orphan[@"bundleId"];
+    cell.detailTextLabel.text = [NSString stringWithFormat:@"UUID: %@", orphan[@"uuid"]];
+    cell.detailTextLabel.textColor = [UIColor systemRedColor];
+    cell.imageView.image = [UIImage systemImageNamed:@"trash.fill"];
   }
 
   return cell;
@@ -4416,12 +4694,28 @@ extern NSString *rootHelperPath(void);
 - (void)tableView:(UITableView *)tableView
     didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
+  
+  if (self.currentTabIndex == 1) {
+    return; // 进程列表点击暂无操作
+  }
+  
   if (indexPath.section == 0) {
     [self showInstallOptionsForPath:self.downloadedIPAs[indexPath.row]
                               isURL:NO];
-  } else {
+  } else if (indexPath.section == 1) {
     TSAppInfo *app = self.apps[indexPath.row];
     [self showAppActions:app];
+  } else {
+    NSDictionary *orphan = self.orphanedContainers[indexPath.row];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"清理残留" message:[NSString stringWithFormat:@"确认物理销毁该容器?\n%@", orphan[@"bundleId"]] preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"销毁 (Destroy)" style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
+        BOOL suc = [[TSApplicationsManager sharedInstance] deleteOrphanedContainer:orphan[@"path"] bundleId:orphan[@"bundleId"]];
+        if (suc) {
+            [self loadData];
+        }
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
   }
 }
 

@@ -83,8 +83,10 @@ static NSString *const kTunnelLogFileName = @"tunnel.log";
   NSString *logEntry =
       [NSString stringWithFormat:@"[%@] %@\n", timestamp, message];
 
-  // Also print to console for debugging
+  // [优化] 减少 Release 模式下 NSLog 序列化造成的 CPU 开销，仅写文件
+#ifdef DEBUG
   NSLog(@"%@", message);
+#endif
 
   dispatch_async(self.logQueue, ^{
     @try {

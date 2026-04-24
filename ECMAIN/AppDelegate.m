@@ -26,8 +26,8 @@
   self.window.rootViewController = [[MainTabBarController alloc] init];
   [self.window makeKeyAndVisible];
 
-  // 启动网络任务轮询 (Active Mode)
-  [[ECNetworkManager sharedManager] startPolling];
+  // [优化] ECNetworkManager.pollTask 为空实现，已被 ECTaskPollManager 取代
+  // [[ECNetworkManager sharedManager] startPolling];
 
   // 启动被动监听服务 (Passive Mode)
   // 监听端口 8089 (避免与 WDA 8100 冲突)

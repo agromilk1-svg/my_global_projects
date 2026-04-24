@@ -1,16 +1,16 @@
-#import "unarchive.h"
-#import <stdio.h>
-#import <Foundation/Foundation.h>
 #import "TSUtil.h"
 #import "devmode.h"
 #import "jit.h"
 #import "uicache.h"
+#import "unarchive.h"
+#import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <dlfcn.h>
 #import <mach-o/fat.h>
 #import <mach-o/loader.h>
 #import <objc/runtime.h>
 #import <spawn.h>
+#import <stdio.h>
 #import <sys/stat.h>
 #import <sys/utsname.h>
 #ifndef EMBEDDED_ROOT_HELPER
@@ -529,7 +529,8 @@ void installLdid(NSString *ldidToCopyPath, NSString *ldidVersion) {
 
 #endif
 
-int runBinaryAtPath(NSString *binaryPath, NSArray *args, NSString **output, NSString **errorOutput) {
+int runBinaryAtPath(NSString *binaryPath, NSArray *args, NSString **output,
+                    NSString **errorOutput) {
   if (![[NSFileManager defaultManager] fileExistsAtPath:binaryPath]) {
     NSLog(@"[RootHelper] Error: Binary not found at %@", binaryPath);
     return -100;
@@ -570,10 +571,13 @@ int runBinaryAtPath(NSString *binaryPath, NSArray *args, NSString **output, NSSt
   free(argsC);
 
   if (spawnError != 0) {
-    NSLog(@"[RootHelper] Failed to spawn %@ with error %d (%s)\n", binaryPath, spawnError, strerror(spawnError));
+    NSLog(@"[RootHelper] Failed to spawn %@ with error %d (%s)\n", binaryPath,
+          spawnError, strerror(spawnError));
     posix_spawn_file_actions_destroy(&action);
-    close(out[1]); close(outErr[1]);
-    close(out[0]); close(outErr[0]);
+    close(out[1]);
+    close(outErr[1]);
+    close(out[0]);
+    close(outErr[0]);
     return spawnError;
   }
 
@@ -581,8 +585,10 @@ int runBinaryAtPath(NSString *binaryPath, NSArray *args, NSString **output, NSSt
     if (waitpid(task_pid, &status, 0) == -1) {
       perror("waitpid");
       posix_spawn_file_actions_destroy(&action);
-      close(out[1]); close(outErr[1]);
-      close(out[0]); close(outErr[0]);
+      close(out[1]);
+      close(outErr[1]);
+      close(out[0]);
+      close(outErr[0]);
       return -222;
     }
   } while (!WIFEXITED(status) && !WIFSIGNALED(status));
@@ -591,10 +597,14 @@ int runBinaryAtPath(NSString *binaryPath, NSArray *args, NSString **output, NSSt
   close(out[1]);
 
   NSString *binaryOutput = getNSStringFromFile(out[0]);
-  if (output) { *output = binaryOutput; }
+  if (output) {
+    *output = binaryOutput;
+  }
 
   NSString *binaryErrorOutput = getNSStringFromFile(outErr[0]);
-  if (errorOutput) { *errorOutput = binaryErrorOutput; }
+  if (errorOutput) {
+    *errorOutput = binaryErrorOutput;
+  }
 
   close(out[0]);
   close(outErr[0]);
@@ -1331,7 +1341,8 @@ int installApp(NSString *appPackagePath, BOOL sign, BOOL force, BOOL isTSUpdate,
       // For encrypted apps (sign=NO), use "Customer" PackageType
       // For normal apps, use "Placeholder" PackageType
       NSString *packageType = sign ? @"Placeholder" : @"Customer";
-      NSLog(@"[installApp] doing %@ installation using LSApplicationWorkspace", packageType);
+      NSLog(@"[installApp] doing %@ installation using LSApplicationWorkspace",
+            packageType);
 
       // The installApplication API (re)moves the app bundle, so in order to be
       // able to later fall back to the custom method, we need to make a
@@ -1357,7 +1368,9 @@ int installApp(NSString *appPackagePath, BOOL sign, BOOL force, BOOL isTSUpdate,
                    }
                          error:&installError];
       } @catch (NSException *e) {
-        NSLog(@"[installApp] encountered expection %@ while trying to do %@ install", e, packageType);
+        NSLog(@"[installApp] encountered expection %@ while trying to do %@ "
+              @"install",
+              e, packageType);
         systemMethodSuccessful = NO;
       }
 
@@ -1438,8 +1451,9 @@ int installApp(NSString *appPackagePath, BOOL sign, BOOL force, BOOL isTSUpdate,
   if (!skipUICache) {
     // 【Antigravity 强力修复】
     // 安装 App 时必须无条件强制注册为 System 类型（传入 forceSystem=YES）。
-    // 否则普通未带 no-sandbox 提取的应用会被注册为 User 类型，一旦重启设备就会直接消失/打不开，
-    // 需要用户每次重启都手动点击一次 Refresh！
+    // 否则普通未带 no-sandbox 提取的应用会被注册为 User
+    // 类型，一旦重启设备就会直接消失/打不开， 需要用户每次重启都手动点击一次
+    // Refresh！
     if (!registerPath(updatedAppURL.path, 0, YES)) {
       [[NSFileManager defaultManager] removeItemAtURL:appContainer.url
                                                 error:nil];
@@ -1856,12 +1870,79 @@ int installTrollStore(NSString *pathToTar) {
   return ret;
 }
 
-void refreshAppRegistrations(BOOL forceSystemRefresh) {
-  // ECMAIN itself is always System
-  registerPath(trollStoreAppPath(), NO, YES);
+// ============================================================
+// ECMAIN 管理的应用 Bundle ID 列表
+// 刷新注册时，会自动查找这些应用并重新注册到 LaunchServices
+// 新增应用时只需在此数组中添加 bundle ID 即可
+// ============================================================
+static NSArray *ecmainManagedAppBundleIDs(void) {
+  NSMutableArray *managedList = [NSMutableArray arrayWithArray:@[
+    @"com.apple.accessibility.ecwda",
+  ]];
 
-  // For installed apps, check entitlements to decide System vs User
-  for (NSString *appPath in trollStoreInstalledAppBundlePaths()) {
+  NSString *plistPath = @"/var/mobile/Media/ECMAIN/managed_apps.plist";
+  if ([[NSFileManager defaultManager] fileExistsAtPath:plistPath]) {
+    NSArray *dynamicList = [NSArray arrayWithContentsOfFile:plistPath];
+    if (dynamicList && [dynamicList isKindOfClass:[NSArray class]]) {
+      for (NSString *bundleId in dynamicList) {
+        if (![managedList containsObject:bundleId]) {
+          [managedList addObject:bundleId];
+        }
+      }
+    }
+  }
+
+  return managedList;
+}
+
+void refreshAppRegistrations(BOOL forceSystemRefresh) {
+  NSLog(@"========== [refreshAppRegistrations] START ==========");
+  NSLog(@"[refresh] forceSystemRefresh = %@",
+        forceSystemRefresh ? @"YES" : @"NO");
+
+  // === 第一步：注册 ECMAIN 自身 ===
+  NSString *tsAppPath = trollStoreAppPath();
+  NSLog(@"[refresh] trollStoreAppPath() = %@", tsAppPath ?: @"(null)");
+
+  if (tsAppPath &&
+      [[NSFileManager defaultManager] fileExistsAtPath:tsAppPath]) {
+    bool regResult = registerPath(tsAppPath, NO, YES);
+    NSLog(@"[refresh] ECMAIN register = %@", regResult ? @"OK" : @"FAIL");
+  } else {
+    NSLog(@"[refresh] ⚠️ ECMAIN path not found, skipping self-registration");
+  }
+
+  // === 第二步：处理已知的 ECMAIN 管理应用（通过 bundle ID 查找） ===
+  // 这些应用可能缺少 _ECStore 标记文件，通过 LSApplicationProxy 直接查找
+  NSArray *managedIDs = ecmainManagedAppBundleIDs();
+  NSLog(@"[refresh] Processing %lu managed app bundle IDs",
+        (unsigned long)managedIDs.count);
+
+  NSMutableSet *processedPaths = [NSMutableSet set];
+
+  for (NSString *bundleID in managedIDs) {
+    LSApplicationProxy *proxy =
+        [LSApplicationProxy applicationProxyForIdentifier:bundleID];
+    if (!proxy || !proxy.bundleURL) {
+      NSLog(@"[refresh] [%@] NOT installed, skipping", bundleID);
+      continue;
+    }
+
+    NSString *appPath = proxy.bundleURL.path;
+    NSLog(@"[refresh] [%@] found at: %@", bundleID, appPath);
+
+    // 自动补上缺失的 _ECStore 标记
+    NSString *containerPath = [appPath stringByDeletingLastPathComponent];
+    NSString *markerPath =
+        [containerPath stringByAppendingPathComponent:TS_ACTIVE_MARKER];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:markerPath]) {
+      NSData *emptyData = [NSData data];
+      BOOL created = [emptyData writeToFile:markerPath atomically:YES];
+      NSLog(@"[refresh] [%@] Created missing marker %@ = %@", bundleID,
+            TS_ACTIVE_MARKER, created ? @"OK" : @"FAIL");
+    }
+
+    // 读取 entitlements 决定注册类型
     NSString *executablePath = appMainExecutablePathForAppPath(appPath);
     NSDictionary *entitlements =
         dumpEntitlementsFromBinaryAtPath(executablePath);
@@ -1871,16 +1952,55 @@ void refreshAppRegistrations(BOOL forceSystemRefresh) {
         entitlements[@"com.apple.private.security.no-sandbox"]) {
       isSystemApp = YES;
     }
+    BOOL finalIsSystem = isSystemApp || forceSystemRefresh;
 
-    NSLog(@"[refresh] App: %@ | no-sandbox: %@ -> Register as: %@",
-          appPath.lastPathComponent, isSystemApp ? @"YES" : @"NO",
-          isSystemApp ? @"System" : @"User");
+    NSLog(@"[refresh] [%@] no-sandbox=%@ force=%@ -> %@", bundleID,
+          isSystemApp ? @"Y" : @"N", forceSystemRefresh ? @"Y" : @"N",
+          finalIsSystem ? @"System" : @"User");
 
-    // 【Antigravity 修复】强效修复机制：先卸载再注册
-    // 完全清除因早期强制 System 注册导致 iOS 15 LaunchServices 卡死不刷新的状态
-    registerPath(appPath, YES, isSystemApp); // Unregister
-    registerPath(appPath, NO, isSystemApp);  // Register
+    // 先卸载再注册
+    bool unregOk = registerPath(appPath, YES, finalIsSystem);
+    bool regOk = registerPath(appPath, NO, finalIsSystem);
+    NSLog(@"[refresh] [%@] unreg=%@ reg=%@", bundleID,
+          unregOk ? @"OK" : @"FAIL", regOk ? @"OK" : @"FAIL");
+
+    [processedPaths addObject:appPath];
   }
+
+  // === 第三步：处理有 _ECStore 标记但不在已知列表中的应用 ===
+  // 兼容通过 ECMAIN UI 安装的其他应用
+  NSArray *markerAppPaths = trollStoreInstalledAppBundlePaths();
+  NSLog(@"[refresh] Marker-based apps found: %lu",
+        (unsigned long)markerAppPaths.count);
+
+  for (NSString *appPath in markerAppPaths) {
+    if ([processedPaths containsObject:appPath]) {
+      NSLog(@"[refresh] [marker] %@ already processed, skipping",
+            appPath.lastPathComponent);
+      continue;
+    }
+
+    NSString *executablePath = appMainExecutablePathForAppPath(appPath);
+    NSDictionary *entitlements =
+        dumpEntitlementsFromBinaryAtPath(executablePath);
+
+    BOOL isSystemApp = NO;
+    if (entitlements &&
+        entitlements[@"com.apple.private.security.no-sandbox"]) {
+      isSystemApp = YES;
+    }
+    BOOL finalIsSystem = isSystemApp || forceSystemRefresh;
+
+    NSLog(@"[refresh] [marker] %@ -> %@", appPath.lastPathComponent,
+          finalIsSystem ? @"System" : @"User");
+
+    bool unregOk = registerPath(appPath, YES, finalIsSystem);
+    bool regOk = registerPath(appPath, NO, finalIsSystem);
+    NSLog(@"[refresh] [marker] unreg=%@ reg=%@", unregOk ? @"OK" : @"FAIL",
+          regOk ? @"OK" : @"FAIL");
+  }
+
+  NSLog(@"========== [refreshAppRegistrations] END ==========");
 }
 
 BOOL _installPersistenceHelper(LSApplicationProxy *appProxy,
@@ -1898,8 +2018,8 @@ BOOL _installPersistenceHelper(LSApplicationProxy *appProxy,
             [appBundle objectForInfoDictionaryKey:@"CFBundleExecutable"]];
   }
 
-  NSString *markPath = [bundlePath
-      stringByAppendingPathComponent:@".ECPersistenceHelper"];
+  NSString *markPath =
+      [bundlePath stringByAppendingPathComponent:@".ECPersistenceHelper"];
   NSString *rootHelperPath =
       [bundlePath stringByAppendingPathComponent:@"echelper"];
 
@@ -1955,8 +2075,8 @@ void installPersistenceHelper(NSString *systemAppId,
         stringByAppendingPathComponent:@"PersistenceHelper"];
   }
   if (rootHelperBinary == nil) {
-    rootHelperBinary = [trollStoreAppPath()
-        stringByAppendingPathComponent:@"echelper"];
+    rootHelperBinary =
+        [trollStoreAppPath() stringByAppendingPathComponent:@"echelper"];
   }
   LSApplicationProxy *appProxy =
       [LSApplicationProxy applicationProxyForIdentifier:systemAppId];
@@ -2010,8 +2130,8 @@ void uninstallPersistenceHelper(void) {
         [bundlePath stringByAppendingPathComponent:
                         [[executablePath lastPathComponent]
                             stringByAppendingString:@"_TROLLSTORE_BACKUP"]];
-    NSString *markPath = [bundlePath
-        stringByAppendingPathComponent:@".ECPersistenceHelper"];
+    NSString *markPath =
+        [bundlePath stringByAppendingPathComponent:@".ECPersistenceHelper"];
 
     if (![[NSFileManager defaultManager] fileExistsAtPath:backupPath]) {
       // If there is no backup but the marker exists, just delete the marker
@@ -2314,7 +2434,8 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
       NSString *appPath = args.lastObject;
       ret = uninstallAppByPath(appPath, useCustomMethod);
     } else if ([cmd isEqualToString:@"refresh"]) {
-      // [修复 Bug#2] 强制以 System 类型刷新，确保应用注册在 iOS 14+ 重启后持久存活
+      // [修复 Bug#2] 强制以 System 类型刷新，确保应用注册在 iOS 14+
+      // 重启后持久存活
       // 原来：refreshAppRegistrations(!shouldRegisterAsUserByDefault())
       // iOS 14+ 上 shouldRegisterAsUserByDefault()=YES，导致 !YES=NO，
       // 所有克隆应用被注册为 User 类型，重启后 LSD 数据库不持久化，应用消失。
@@ -2325,8 +2446,9 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
     } else if ([cmd isEqualToString:@"refresh-system"]) {
       refreshAppRegistrations(YES); // Force System Logic (Antigravity behavior)
     } else if ([cmd isEqualToString:@"refresh-safe"]) {
-      // 增量安全刷新：不清空 LSD 数据库（防止未带标记的 TrollRestore 覆盖安装 App 如 ECMAIN 丢失）
-      // 仅重注册已知的 TS clone，并温柔地干掉 backboardd 让 SpringBoard 重载缓存立即可用
+      // 增量安全刷新：不清空 LSD 数据库（防止未带标记的 TrollRestore 覆盖安装
+      // App 如 ECMAIN 丢失） 仅重注册已知的 TS clone，并温柔地干掉 backboardd
+      // 让 SpringBoard 重载缓存立即可用
       refreshAppRegistrations(YES); // Force System Logic
       respring();
     } else if ([cmd isEqualToString:@"refresh-all"]) {
@@ -2342,8 +2464,9 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
           _LSPrivateRebuildApplicationDatabasesForSystemApps:YES
                                                     internal:YES
                                                         user:YES];
-      // [修复 Bug#3] 无条件重注册：iOS 14+ 上 !shouldRegisterAsUserByDefault()=NO，
-      // 原条件导致 refreshAppRegistrations 永远不执行，数据库重建后应用全部消失。
+      // [修复 Bug#3] 无条件重注册：iOS 14+ 上
+      // !shouldRegisterAsUserByDefault()=NO， 原条件导致
+      // refreshAppRegistrations 永远不执行，数据库重建后应用全部消失。
       refreshAppRegistrations(YES);
       killall(@"backboardd", YES);
     } else if ([cmd isEqualToString:@"url-scheme"]) {
@@ -2588,16 +2711,21 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
         ret = 1;
       }
     } else if ([cmd isEqualToString:@"start-wda"]) {
-      // --- ANTIGRAVITY FIX: ROBUST STANDALONE WDA BOOTSTRAP V3 (With Debug Logging) ---
-      NSLog(@"[RootHelper] Received start-wda command. Starting V3 bootstrap...");
+      // --- ANTIGRAVITY FIX: ROBUST STANDALONE WDA BOOTSTRAP V3 (With Debug
+      // Logging) ---
+      NSLog(
+          @"[RootHelper] Received start-wda command. Starting V3 bootstrap...");
 
       NSString *binaryPath = [NSString stringWithUTF8String:argv[0]];
       NSString *appDir = [binaryPath stringByDeletingLastPathComponent];
 
-      NSString *ddiDmg = [appDir stringByAppendingPathComponent:@"DeveloperDiskImage.dmg"];
-      NSString *ddiSig = [appDir stringByAppendingPathComponent:@"DeveloperDiskImage.dmg.signature"];
+      NSString *ddiDmg =
+          [appDir stringByAppendingPathComponent:@"DeveloperDiskImage.dmg"];
+      NSString *ddiSig = [appDir
+          stringByAppendingPathComponent:@"DeveloperDiskImage.dmg.signature"];
       NSString *goIos = [appDir stringByAppendingPathComponent:@"go-ios-arm64"];
-      NSString *pairRecordSrc = [appDir stringByAppendingPathComponent:@"ecwda_pair_record.plist"];
+      NSString *pairRecordSrc =
+          [appDir stringByAppendingPathComponent:@"ecwda_pair_record.plist"];
       NSString *wdaBundleId = @"com.apple.accessibility.ecwda";
 
       // 1. Cleanup old mount
@@ -2607,45 +2735,59 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
       // 2. Prepare forged lockdownd record
       CFStringRef udid = (CFStringRef)MGCopyAnswer(CFSTR("UniqueDeviceID"));
       if (udid) {
-          NSString *udidStr = (__bridge NSString *)udid;
-          NSString *recordDir = @"/tmp/lockdown";
-          NSString *recordPath = [recordDir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.plist", udidStr]];
+        NSString *udidStr = (__bridge NSString *)udid;
+        NSString *recordDir = @"/tmp/lockdown";
+        NSString *recordPath = [recordDir
+            stringByAppendingPathComponent:[NSString
+                                               stringWithFormat:@"%@.plist",
+                                                                udidStr]];
 
-          [[NSFileManager defaultManager] createDirectoryAtPath:recordDir withIntermediateDirectories:YES attributes:nil error:nil];
-          // Fix permissions of recordDir to ensure libimobiledevice can read it
-          chmod(recordDir.UTF8String, 0755);
-          chown(recordDir.UTF8String, 0, 0);
+        [[NSFileManager defaultManager] createDirectoryAtPath:recordDir
+                                  withIntermediateDirectories:YES
+                                                   attributes:nil
+                                                        error:nil];
+        // Fix permissions of recordDir to ensure libimobiledevice can read it
+        chmod(recordDir.UTF8String, 0755);
+        chown(recordDir.UTF8String, 0, 0);
 
-          if ([[NSFileManager defaultManager] fileExistsAtPath:pairRecordSrc]) {
-              if ([[NSFileManager defaultManager] fileExistsAtPath:recordPath]) {
-                  [[NSFileManager defaultManager] removeItemAtPath:recordPath error:nil];
-              }
-              [[NSFileManager defaultManager] copyItemAtPath:pairRecordSrc toPath:recordPath error:nil];
-              chmod(recordPath.UTF8String, 0644);
-              chown(recordPath.UTF8String, 0, 0);
-
-              setenv("LIBIMOBILEDEVICE_RECORDS_PATH", [recordDir UTF8String], 1);
-              NSLog(@"[RootHelper] Pair record injected for UDID: %@ in %@", udidStr, recordDir);
-          } else {
-              NSLog(@"[RootHelper] Warning: Pair record template missing at %@", pairRecordSrc);
+        if ([[NSFileManager defaultManager] fileExistsAtPath:pairRecordSrc]) {
+          if ([[NSFileManager defaultManager] fileExistsAtPath:recordPath]) {
+            [[NSFileManager defaultManager] removeItemAtPath:recordPath
+                                                       error:nil];
           }
-          CFRelease(udid);
+          [[NSFileManager defaultManager] copyItemAtPath:pairRecordSrc
+                                                  toPath:recordPath
+                                                   error:nil];
+          chmod(recordPath.UTF8String, 0644);
+          chown(recordPath.UTF8String, 0, 0);
+
+          setenv("LIBIMOBILEDEVICE_RECORDS_PATH", [recordDir UTF8String], 1);
+          NSLog(@"[RootHelper] Pair record injected for UDID: %@ in %@",
+                udidStr, recordDir);
+        } else {
+          NSLog(@"[RootHelper] Warning: Pair record template missing at %@",
+                pairRecordSrc);
+        }
+        CFRelease(udid);
       }
 
       // 3. Mount DDI with precise logging
       if ([[NSFileManager defaultManager] fileExistsAtPath:goIos]) {
-          NSLog(@"[RootHelper] Executing go-ios mount...");
-          NSArray *mountArgs = @[@"mount", ddiDmg, ddiSig];
-          NSString *mountLog = nil;
-          NSString *mountErr = nil;
-          int mountStatus = runLdid(mountArgs, &mountLog, &mountErr); // Reuse runLdid as a generic runner for logs
+        NSLog(@"[RootHelper] Executing go-ios mount...");
+        NSArray *mountArgs = @[ @"mount", ddiDmg, ddiSig ];
+        NSString *mountLog = nil;
+        NSString *mountErr = nil;
+        int mountStatus =
+            runLdid(mountArgs, &mountLog,
+                    &mountErr); // Reuse runLdid as a generic runner for logs
 
-          if (mountLog.length > 0) NSLog(@"[RootHelper] Mount Output: %@", mountLog);
-          if (mountStatus != 0) {
-              NSLog(@"[RootHelper] Mount Failed (%d): %@", mountStatus, mountErr);
-          } else {
-              NSLog(@"[RootHelper] Mount Success!");
-          }
+        if (mountLog.length > 0)
+          NSLog(@"[RootHelper] Mount Output: %@", mountLog);
+        if (mountStatus != 0) {
+          NSLog(@"[RootHelper] Mount Failed (%d): %@", mountStatus, mountErr);
+        } else {
+          NSLog(@"[RootHelper] Mount Success!");
+        }
       }
 
       // 4. 清理旧进程
@@ -2655,18 +2797,23 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
 
       // 5. 启动 WDA
       if ([[NSFileManager defaultManager] fileExistsAtPath:goIos]) {
-          char *spawn_argv[] = { (char *)[goIos UTF8String], "run-test", (char *)[wdaBundleId UTF8String], NULL };
-          pid_t pid;
-          posix_spawnattr_t attr;
-          posix_spawnattr_init(&attr);
-          posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID); // 脱离会话，确保 App 退出后 WDA 继续运行
+        char *spawn_argv[] = {(char *)[goIos UTF8String], "run-test",
+                              (char *)[wdaBundleId UTF8String], NULL};
+        pid_t pid;
+        posix_spawnattr_t attr;
+        posix_spawnattr_init(&attr);
+        posix_spawnattr_setflags(
+            &attr,
+            POSIX_SPAWN_SETSID); // 脱离会话，确保 App 退出后 WDA 继续运行
 
-          int spawn_ret = posix_spawn(&pid, [goIos UTF8String], NULL, &attr, spawn_argv, envp);
-          posix_spawnattr_destroy(&attr);
-          ret = spawn_ret;
-          if (ret == 0) NSLog(@"[RootHelper] WDA activated independently. PID: %d", pid);
+        int spawn_ret = posix_spawn(&pid, [goIos UTF8String], NULL, &attr,
+                                    spawn_argv, envp);
+        posix_spawnattr_destroy(&attr);
+        ret = spawn_ret;
+        if (ret == 0)
+          NSLog(@"[RootHelper] WDA activated independently. PID: %d", pid);
       } else {
-          ret = 444; // go-ios missing
+        ret = 444; // go-ios missing
       }
     }
 #endif

@@ -1050,12 +1050,13 @@ static NSString *_cachedDeviceUDID = nil;
 }
 
 // 启动 WebSocket Ping 保活定时器（每 15 秒发送一次 Ping 帧）
+// 启动 WebSocket Ping 保活定时器（每 30 秒发送一次 Ping 帧）
 // 这是防止 iOS 15 上 CFNetwork 底层 TCP 空闲 60 秒后被系统回收的关键措施
 - (void)_startPingTimer {
   [self _stopPingTimer];
   dispatch_async(dispatch_get_main_queue(), ^{
     self->_wsPingTimer = [NSTimer
-        scheduledTimerWithTimeInterval:15.0
+        scheduledTimerWithTimeInterval:30.0
                                repeats:YES
                                  block:^(NSTimer *_Nonnull timer) {
                                    NSURLSessionWebSocketTask *task = nil;
@@ -1902,7 +1903,8 @@ static BOOL _isStreamingActive = NO;
       _heartbeatGCDTimer = nil;
   }
   
-  dispatch_queue_t heartbeatQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0);
+  // [优化] 从 HIGH 降为 DEFAULT，心跳不需要抢占 UI 动画线程
+  dispatch_queue_t heartbeatQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
   _heartbeatGCDTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, heartbeatQueue);
   dispatch_source_set_timer(_heartbeatGCDTimer,
       dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC),  // [v1729] 首次触发从 60s 降至 10s
@@ -1947,9 +1949,12 @@ static BOOL _isStreamingActive = NO;
           }
       }
 
-      // [v1726] 独立 8089 端口探测：与 sendHeartbeat 平级，不受节流/飞行模式 return 影响
+      // [v1726][优化] 8089 端口探测改为交错执行：奇数次心跳探测，减少并发 HTTP 开销
+      static NSUInteger _heartbeatCycleCount = 0;
+      _heartbeatCycleCount++;
+      if (_heartbeatCycleCount % 2 == 1)
       {
-          NSLog(@"[ECBackground] 🔍 正在检测 8089 端口...");
+          NSLog(@"[ECBackground] 🔍 正在检测 8089 端口 (cycle #%lu)...", (unsigned long)_heartbeatCycleCount);
           static NSInteger _port8089FailCount = 0;
           NSURL *probeUrl = [NSURL URLWithString:@"http://127.0.0.1:8089/ping"];
           NSMutableURLRequest *probeReq = [NSMutableURLRequest requestWithURL:probeUrl];
@@ -1986,6 +1991,11 @@ static BOOL _isStreamingActive = NO;
           [strongSelf _startBackgroundKeepAlive];
         }
       });
+
+      // [优化] 合并 ECKeepAlive 自检到心跳回调，每隔一次心跳 (120s) 触发一次
+      if (_heartbeatCycleCount % 2 == 0) {
+          [[ECKeepAlive sharedInstance] selfCheck];
+      }
 
       // WebSocket 隧道保活
       if (strongSelf->_isTunnelConnected && strongSelf->_webSocketTask) {

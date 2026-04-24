@@ -949,12 +949,17 @@ async def ws_tunnel_endpoint(websocket: WebSocket, device_key: str):
                     except asyncio.QueueFull:
                         pass
     except WebSocketDisconnect:
-        tunnel_manager.disconnect(device_key)
-        STREAM_QUEUES.pop(device_key, None)  # [v1683] 隧道断开时清理流队列
+        logging.info(f"[WS] 设备 {device_key} 主动断开")
     except Exception as e:
         logging.error(f"WS tunnel error for {device_key}: {e}")
+    finally:
+        # 统一在 finally 清理，保证 break/异常/WebSocketDisconnect 所有退出路径都能释放资源
+        # 防止 ACTIVE_TUNNELS 残留僵尸连接导致后续 send_json 失败
         tunnel_manager.disconnect(device_key)
-        STREAM_QUEUES.pop(device_key, None)  # [v1683] 隧道异常时清理流队列
+        STREAM_QUEUES.pop(device_key, None)
+        logging.info(f"[WS] 隧道资源已释放: {device_key}")
+
+
 
 @app.post("/api/action_proxy")
 async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_current_user)):
@@ -1312,7 +1317,6 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
             if _btn_ws and not force_http:
                 # WS 通道可用：通过 ECMAIN 8089 脚本引擎执行（能穿透锁屏）
                 try:
-                    import uuid
                     task_id = "btn_" + str(uuid.uuid4())[:8]
                     loop = asyncio.get_event_loop()
                     future = loop.create_future()
@@ -1640,24 +1644,59 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                      logging.error(f"[SCRIPT] LAN 通道异常: {lan_err}")
              
              # ===== 兜底通道：WS 隧道（纯远程或 USB/LAN 全失败后的最后手段）=====
-             _script_ws = ACTIVE_TUNNELS.get(req.udid)
-             if not _script_ws:
-                 # [v2140] 增强模糊匹配：改为不区分大小写
-                 _search_udid = req.udid.upper()
+             def _find_ws_for_udid(target_udid: str):
+                 """
+                 多策略 WS 隧道查找：
+                 1. 精确匹配 UDID（大写标准化后）
+                 2. 字符串包含模糊匹配（兼容旧逻辑）
+                 3. 【新增】通过 cloud_devices 数据库将 UDID 映射为序列号，再精确匹配
+                    → 修复"设备以序列号注册隧道，但控制台用完整 UDID 发送指令"导致匹配失败的核心问题
+                 """
+                 _uid_upper = target_udid.upper()
+                 
+                 # 策略1: 精确匹配
+                 ws = ACTIVE_TUNNELS.get(target_udid) or ACTIVE_TUNNELS.get(_uid_upper)
+                 if ws:
+                     return ws, target_udid
+                 
+                 # 策略2: 字符串包含模糊匹配
                  for tk, tw in ACTIVE_TUNNELS.items():
-                     if _search_udid in tk.upper() or tk.upper() in _search_udid:
-                         _script_ws = tw
-                         logging.info(f"[SCRIPT] 模糊匹配隧道成功: req.udid={req.udid} → tunnel_key={tk}")
-                         break
+                     if _uid_upper in tk.upper() or tk.upper() in _uid_upper:
+                         logging.info(f"[SCRIPT] 模糊匹配隧道成功(子串): req.udid={target_udid} → tunnel_key={tk}")
+                         return tw, tk
+                 
+                 # 策略3: 通过数据库 UDID → 序列号 映射后精确匹配
+                 try:
+                     _cloud_devs = database.get_all_cloud_devices()
+                     _matched = next((d for d in _cloud_devs if (d.get("udid") or "").upper() == _uid_upper), None)
+                     if _matched:
+                         _serial = _matched.get("device_no") or _matched.get("serial_number") or ""
+                         if _serial:
+                             ws = ACTIVE_TUNNELS.get(_serial) or ACTIVE_TUNNELS.get(_serial.upper())
+                             if ws:
+                                 logging.info(f"[SCRIPT] 通过序列号映射匹配成功: udid={target_udid} → serial={_serial}")
+                                 return ws, _serial
+                             # 也做一次包含匹配防止格式差异
+                             for tk, tw in ACTIVE_TUNNELS.items():
+                                 if _serial.upper() in tk.upper() or tk.upper() in _serial.upper():
+                                     logging.info(f"[SCRIPT] 序列号模糊匹配成功: serial={_serial} → tunnel_key={tk}")
+                                     return tw, tk
+                 except Exception as _e:
+                     logging.warning(f"[SCRIPT] 数据库序列号映射查询失败: {_e}")
+                 
+                 return None, None
+             
+             _script_ws, _matched_key = _find_ws_for_udid(req.udid)
+
              
              if _script_ws:
+                 task_id = "proxy_script_" + str(uuid.uuid4())[:8]
                  try:
-                     task_id = "proxy_script_" + str(uuid.uuid4())[:8]
                      loop = asyncio.get_event_loop()
                      future = loop.create_future()
                      PENDING_TASKS[task_id] = future
                      
-                     logging.info(f"[SCRIPT] WS 隧道下发: task_id={task_id} (udid={req.udid})")
+                     logging.info(f"[SCRIPT] WS 隧道下发: task_id={task_id} (udid={req.udid}, tunnel_key={_matched_key})")
                      await _script_ws.send_json({
                          "id": task_id, 
                          "method": "POST", 
@@ -1674,7 +1713,14 @@ async def api_action_proxy(req: ActionProxyRequest, user: dict = Depends(get_cur
                      finally:
                          PENDING_TASKS.pop(task_id, None)
                  except Exception as ws_err:
-                     logging.error(f"[SCRIPT] WS 隧道发送失败 ({req.udid}): {ws_err}")
+                     # WS 僵尸连接：send_json 失败说明该 WS 对象已死，立即从 ACTIVE_TUNNELS 踢出防止下次继续误用
+                     PENDING_TASKS.pop(task_id, None)
+                     _dead_key = _matched_key or req.udid
+                     if ACTIVE_TUNNELS.get(_dead_key) is _script_ws:
+                         del ACTIVE_TUNNELS[_dead_key]
+                         logging.warning(f"[SCRIPT] 已清除僵尸 WS 连接: tunnel_key={_dead_key}")
+                     logging.error(f"[SCRIPT] WS 发送失败({_dead_key}): {type(ws_err).__name__}: {ws_err}")
+                     return {"status": "error", "msg": f"WS 通道发送失败（设备连接已断开，请等待设备重新建立隧道后重试）: {type(ws_err).__name__}"}
              
              # 三路全挂：输出详细诊断信息
              logging.error(f"[SCRIPT] 三通道全部失败! udid={req.udid}, connection_mode={req.connection_mode}, tunnels={list(ACTIVE_TUNNELS.keys())}, dev={'exists' if dev else 'None'}, wlan_ip={wlan_ip}")

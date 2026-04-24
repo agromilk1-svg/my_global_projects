@@ -12,6 +12,12 @@ import sys
 import json
 from datetime import datetime
 import struct
+import argparse
+
+parser = argparse.ArgumentParser(description="Build ECWDA")
+parser.add_argument("--release", action="store_true", help="Build as Release version")
+args = parser.parse_args()
+IS_RELEASE = args.release
 
 def fix_ios15_missing_frameworks(app_path):
     """Embed all missing Xcode 16 framework dependencies into the app bundle.
@@ -117,12 +123,12 @@ def build_project():
     # 1. DerivedData
     derived_data = os.path.join(BUILD_DIR, "DerivedData")
 
-    # 使用强制设置构建 wrapper app
+    config_str = "Release" if IS_RELEASE else "Debug"
     build_cmd = (
         f"DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild build "
         f"-project WebDriverAgent.xcodeproj "
         f"-target {SCHEME_NAME} "
-        f"-configuration Release "
+        f"-configuration {config_str} "
         f"-sdk iphoneos "
         f"SYMROOT={BUILD_DIR} "
         f"CODE_SIGN_IDENTITY=\"\" CODE_SIGNING_REQUIRED=NO "
@@ -144,10 +150,10 @@ def build_project():
         print("❌ 构建失败")
         return None
 
-    products_dir = os.path.join(BUILD_DIR, "Release-iphoneos")
+    products_dir = os.path.join(BUILD_DIR, f"{config_str}-iphoneos")
     if not os.path.exists(products_dir):
-        print(f"SYMROOT 中未找到，检查 build/Release-iphoneos...")
-        products_dir = os.path.join(PROJECT_DIR, "build/Release-iphoneos")
+        print(f"SYMROOT 中未找到，检查 build/{config_str}-iphoneos...")
+        products_dir = os.path.join(PROJECT_DIR, f"build/{config_str}-iphoneos")
     
     app_path = None
     # 优先使用 Ecrunner-Runner.app (从项目设置检测到)

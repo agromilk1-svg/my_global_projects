@@ -18,18 +18,6 @@
          selector:@selector(reloadSpecifiers)
              name:UIApplicationWillEnterForegroundNotification
            object:nil];
-
-  fetchLatestTrollStoreVersion(^(NSString *latestVersion) {
-    NSString *currentVersion = [self getTrollStoreVersion];
-    NSComparisonResult result = [currentVersion compare:latestVersion
-                                                options:NSNumericSearch];
-    if (result == NSOrderedAscending) {
-      _newerVersion = latestVersion;
-      dispatch_async(dispatch_get_main_queue(), ^{
-        [self reloadSpecifiers];
-      });
-    }
-  });
 }
 
 - (NSMutableArray *)specifiers {
@@ -89,25 +77,6 @@
     }
 
     BOOL isInstalled = trollStoreAppPath();
-
-    if (_newerVersion && isInstalled) {
-      // Update TrollStore
-      PSSpecifier *updateTrollStoreSpecifier = [PSSpecifier
-          preferenceSpecifierNamed:[NSString
-                                       stringWithFormat:@"更新 ECMAIN 至 %@",
-                                                        _newerVersion]
-                            target:self
-                               set:nil
-                               get:nil
-                            detail:nil
-                              cell:PSButtonCell
-                              edit:nil];
-      updateTrollStoreSpecifier.identifier = @"updateTrollStore";
-      [updateTrollStoreSpecifier setProperty:@YES forKey:@"enabled"];
-      updateTrollStoreSpecifier.buttonAction =
-          @selector(updateTrollStorePressed);
-      [_specifiers addObject:updateTrollStoreSpecifier];
-    }
 
     PSSpecifier *lastGroupSpecifier;
 
@@ -306,7 +275,6 @@
 }
 
 - (void)handleUninstallation {
-  _newerVersion = nil;
   // Overridden to prevent exit(0) which looks like a crash
   [self reloadSpecifiers];
 

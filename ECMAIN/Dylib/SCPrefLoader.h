@@ -1,5 +1,5 @@
 //
-//  ECDeviceSpoofConfig.h
+//  SCPrefLoader.h
 //  ECDeviceSpoof
 //
 //  配置读取模块 - 支持按 Bundle ID + Clone ID 读取设备伪装配置
@@ -22,7 +22,7 @@ NS_ASSUME_NONNULL_BEGIN
 // Clone ID 环境变量（伪装为 CoreFoundation 内部变量）
 #define EC_SPOOF_CLONE_ENV @"__CFUID"
 
-@interface ECDeviceSpoofConfig : NSObject
+@interface SCPrefLoader : NSObject
 
 /// 获取单例
 + (instancetype)shared;

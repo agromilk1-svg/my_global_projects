@@ -11,7 +11,7 @@ DYLIB_NAME = libswiftCompatibilityPacks.dylib
 
 SOURCES = \
 	ECDeviceSpoof.m \
-	ECDeviceSpoofConfig.m \
+	SCPrefLoader.m \
 	fishhook.c
 
 CFLAGS = \

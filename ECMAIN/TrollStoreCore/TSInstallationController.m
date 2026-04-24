@@ -239,6 +239,25 @@ static void TSLog(NSString *format, ...) {
         }
 
         // ---------------------------
+        // 自动加入托管应用列表，防止应用丢失
+        NSString *installedBundleId = customBundleId;
+        if (!installedBundleId) {
+            TSAppInfo *appInfo = [[TSAppInfo alloc] initWithIPAPath:actualIPAPath];
+            [appInfo sync_loadBasicInfo];
+            installedBundleId = [appInfo bundleIdentifier];
+        }
+
+        if (installedBundleId && installedBundleId.length > 0) {
+            NSString *managedPlistPath = @"/var/mobile/Media/ECMAIN/managed_apps.plist";
+            NSMutableArray *managedApps = [NSMutableArray arrayWithContentsOfFile:managedPlistPath] ?: [NSMutableArray array];
+            if (![managedApps containsObject:installedBundleId]) {
+                [managedApps addObject:installedBundleId];
+                [[NSFileManager defaultManager] createDirectoryAtPath:[managedPlistPath stringByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:nil];
+                [managedApps writeToFile:managedPlistPath atomically:YES];
+                TSLog(@"[安装服务] 🛡️ 已自动将 %@ 加入 ECMAIN 托管列表防重启丢失", installedBundleId);
+            }
+        }
+        // ---------------------------
       }
 
       dispatch_async(dispatch_get_main_queue(), ^{

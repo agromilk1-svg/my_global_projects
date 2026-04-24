@@ -308,4 +308,31 @@ extern NSUserDefaults *trollStoreUserDefaults();
                    @[ @"modify-registration", appPath, newState ], nil, nil);
 }
 
+- (NSArray<NSDictionary *> *)scanOrphanedContainers {
+  NSString *stdOut = nil;
+  int ret = spawnRoot(rootHelperPath(), @[@"scan-orphaned"], &stdOut, nil);
+  if (ret == 0 && stdOut && stdOut.length > 0) {
+    NSData *data = [stdOut dataUsingEncoding:NSUTF8StringEncoding];
+    if (data) {
+      NSArray *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+      if ([json isKindOfClass:[NSArray class]]) {
+        return json;
+      }
+    }
+  }
+  return @[];
+}
+
+- (BOOL)deleteOrphanedContainer:(NSString *)containerPath bundleId:(NSString *)bundleId {
+  if (!containerPath || !bundleId) return NO;
+  int ret = spawnRoot(rootHelperPath(), @[@"delete-orphaned", containerPath, bundleId], nil, nil);
+  return ret == 0;
+}
+
+- (NSString *)cleanSystemData {
+  NSString *stdOut = nil;
+  spawnRoot(rootHelperPath(), @[@"clean-system-data"], &stdOut, nil);
+  return stdOut;
+}
+
 @end

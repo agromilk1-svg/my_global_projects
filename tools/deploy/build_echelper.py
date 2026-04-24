@@ -10,6 +10,12 @@ import os
 import subprocess
 import shutil
 import glob
+import argparse
+
+parser = argparse.ArgumentParser(description="Build ECHelper")
+parser.add_argument("--release", action="store_true", help="Build as Release version")
+args = parser.parse_args()
+IS_RELEASE = args.release
 
 # 配置
 PROJECT_ROOT = "/Users/hh/Desktop/my"
@@ -17,7 +23,11 @@ SDK_PATH = os.path.join(PROJECT_ROOT, "external_sources/theos/sdks/iPhoneOS14.5.
 TARGET = "arm64-apple-ios14.5"
 WORK_DIR = os.path.join(PROJECT_ROOT, "echelper")
 OUTPUT_BINARY = "echelper"
-SIGNING_TOOL = os.path.join(PROJECT_ROOT, "external_sources/TrollStore/Exploits/fastPathSign/fastPathSign")
+# 签名工具：优先使用 build_full_26 编译的完整版（2.38MB，含 OpenSSL，CT bypass 有效）
+# external_sources 下的预编译版(137KB)缺少 OpenSSL，生成的 CT bypass 被 iOS 15 AMFI 拒绝（EBADEXEC）
+_BUILD_FULL_SIGNING_TOOL = os.path.join(PROJECT_ROOT, "_build_full_temp/Source/Exploits/fastPathSign/fastPathSign")
+_FALLBACK_SIGNING_TOOL = os.path.join(PROJECT_ROOT, "external_sources/TrollStore/Exploits/fastPathSign/fastPathSign")
+SIGNING_TOOL = _BUILD_FULL_SIGNING_TOOL if os.path.exists(_BUILD_FULL_SIGNING_TOOL) else _FALLBACK_SIGNING_TOOL
 
 def run_cmd(cmd, cwd=None):
     print(f"[*] 执行: {' '.join(cmd[:10])}...")
@@ -65,7 +75,8 @@ def main():
         "-isysroot", SDK_PATH,
         "-target", TARGET,
         "-fobjc-arc",
-        "-O2",
+        "-O2" if IS_RELEASE else "-O0",
+        "-g" if not IS_RELEASE else "",
         "-fmodules",
         
         # 标准框架

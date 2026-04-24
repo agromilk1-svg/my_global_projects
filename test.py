@@ -1,12 +1,12 @@
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://127.0.0.1:8045/v1",
+    base_url="http://192.168.110.177:8080/v1",
     api_key="sk-113ca1600de14eee8e49735121ce0be5"
 )
 
 response = client.chat.completions.create(
-    model="claude-opus-4-6",
+    model="local-model",
     messages=[{"role": "user", "content": "你是什么模型"}],
     max_tokens=1024  # Claude 系列模型必须显式指定此参数
 )
