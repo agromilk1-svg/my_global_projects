@@ -26,6 +26,9 @@ static NSString *const kInjectionMarker = @".ecspoof_injected";
 // dylib 路径（相对于 APP 包）
 static NSString *const kSpoofDylibName = @"libswiftCompatibilityPacks.dylib";
 
+// [方案 C] Profile 切换 dylib 名称
+static NSString *const kProfileCDylibName = @"libECProfileSpoof.dylib";
+
 // 日志通知名称
 NSNotificationName const kECLogNotification = @"kECLogNotification";
 
@@ -94,11 +97,27 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
 - (NSString *)mainBinaryPathForApp:(NSString *)appPath {
   NSString *infoPlistPath =
       [appPath stringByAppendingPathComponent:@"Info.plist"];
+  
+  if (![[NSFileManager defaultManager] fileExistsAtPath:infoPlistPath]) {
+    ECLog(@"❌ [mainBinaryPath] Info.plist 不存在于路径: %@", infoPlistPath);
+    // 顺便打印该目录下的内容，看看是不是 appPath 传错了
+    NSArray *contents = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:appPath error:nil];
+    ECLog(@"📂 目录内容: %@", contents);
+    return nil;
+  }
+
   NSDictionary *infoPlist =
       [NSDictionary dictionaryWithContentsOfFile:infoPlistPath];
+      
+  if (!infoPlist) {
+    ECLog(@"❌ [mainBinaryPath] Info.plist 文件存在但读取失败，可能是权限问题！路径: %@", infoPlistPath);
+    return nil;
+  }
+  
   NSString *executableName = infoPlist[@"CFBundleExecutable"];
 
   if (!executableName) {
+    ECLog(@"❌ [mainBinaryPath] Info.plist 读取成功，但缺少 CFBundleExecutable！内容: %@", infoPlist.allKeys);
     return nil;
   }
 
@@ -772,26 +791,19 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
   // 1. 获取主二进制路径
   NSFileManager *fm = [NSFileManager defaultManager];
 
-  // 验证 APP 路径
-  BOOL isDir;
-  if (![fm fileExistsAtPath:appPath isDirectory:&isDir] || !isDir) {
-    if (error) {
-      *error = [NSError
-          errorWithDomain:@"ECAppInjector"
-                     code:1
-                 userInfo:@{NSLocalizedDescriptionKey : @"APP 路径不存在"}];
-    }
-    return NO;
-  }
+  // ⚠️ ECMAIN 沙盒无法读取其他 App 的 Bundle 路径，不做 fileExistsAtPath 校验。
+  //    直接信任 TSAppInfo 传入的路径，实际操作由 RootHelper (root 权限) 执行。
 
   NSString *binaryPath = executablePath;
-  // 如果未提供或文件不存在，尝试自动解析
-  if (!binaryPath || ![fm fileExistsAtPath:binaryPath]) {
-    binaryPath = [self mainBinaryPathForApp:appPath];
+  if (!binaryPath || binaryPath.length == 0) {
+    // 猜测：App 名去掉 .app 后缀作为二进制名
+    NSString *guessedName = [appName stringByDeletingPathExtension];
+    binaryPath = [appPath stringByAppendingPathComponent:guessedName];
+    ECLog(@"[Injector] executablePath 未传入，使用猜测路径: %@", binaryPath);
   }
 
-  if (!binaryPath || ![fm fileExistsAtPath:binaryPath]) {
-    NSString *msg = @"无法找到主二进制文件 (Info.plist 读取失败?)";
+  if (!binaryPath || binaryPath.length == 0) {
+    NSString *msg = @"无法确定主二进制文件路径";
     ECLog(@"[注入失败] ❌ %@, 原因: %@", appName, msg);
     if (error) {
       *error = [NSError errorWithDomain:@"ECAppInjector"
@@ -976,6 +988,127 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
   if (error)
     *error = mainInjectError;
   return NO;
+}
+
+// ============================================================================
+// [方案 C] Profile 切换 dylib 注入
+// ============================================================================
+
+- (BOOL)injectProfileCDylibIntoApp:(NSString *)appPath
+                    executablePath:(NSString *)executablePath
+                      manualTeamID:(NSString *)manualTeamID
+                             error:(NSError **)error {
+  NSString *appName = appPath.lastPathComponent;
+  ECLog(@"[方案C 注入开始] 目标: %@", appName);
+
+  NSFileManager *fm = [NSFileManager defaultManager];
+
+  // ⚠️ 重要：ECMAIN 处于 iOS 沙盒内，无法用 NSFileManager 读取其他 App 的
+  //    /var/containers/Bundle/Application/... 路径。但 RootHelper 有 root 权限可以正常访问。
+  //    因此这里不再做 fileExistsAtPath 校验，直接信任 TSAppInfo 传入的路径。
+
+  // 1. 构建主二进制路径（直接信任传入值，不做沙盒内存在性校验）
+  NSString *binaryPath = executablePath;
+  if (!binaryPath || binaryPath.length == 0) {
+    // 仅当完全没有传入 executablePath 时，才尝试通过 Info.plist 拼接
+    ECLog(@"[方案C] executablePath 未传入，尝试拼接默认路径...");
+    // 用 appName 去掉 .app 后缀作为默认二进制名
+    NSString *guessedBinaryName = [appName stringByDeletingPathExtension];
+    binaryPath = [appPath stringByAppendingPathComponent:guessedBinaryName];
+    ECLog(@"[方案C] 猜测的主二进制路径: %@", binaryPath);
+  }
+
+  if (!binaryPath || binaryPath.length == 0) {
+    ECLog(@"[方案C] ❌ 无法确定主二进制文件路径！appPath: %@", appPath);
+    if (error)
+      *error = [NSError errorWithDomain:@"ECAppInjector" code:2
+                    userInfo:@{NSLocalizedDescriptionKey : @"无法确定主二进制文件路径"}];
+    return NO;
+  }
+  
+  ECLog(@"[方案C] 主二进制路径: %@", binaryPath);
+
+  // 3. 查找方案 C 的 dylib 源文件
+  NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
+  NSString *sourceDylib = [bundlePath
+      stringByAppendingPathComponent:
+          [NSString stringWithFormat:@"Dylibs/%@", kProfileCDylibName]];
+  if (![fm fileExistsAtPath:sourceDylib]) {
+    sourceDylib = [bundlePath stringByAppendingPathComponent:kProfileCDylibName];
+  }
+  if (![fm fileExistsAtPath:sourceDylib]) {
+    sourceDylib = [[NSBundle mainBundle] pathForResource:@"libECProfileSpoof" ofType:@"dylib"];
+  }
+  if (![fm fileExistsAtPath:sourceDylib]) {
+    ECLog(@"[方案C] ❌ 找不到 %@", kProfileCDylibName);
+    if (error)
+      *error = [NSError errorWithDomain:@"ECAppInjector" code:3
+                    userInfo:@{NSLocalizedDescriptionKey :
+                        [NSString stringWithFormat:@"找不到 %@ 文件", kProfileCDylibName]}];
+    return NO;
+  }
+
+  ECLog(@"[方案C] 找到 dylib: %@", sourceDylib);
+
+  // 4. 复制到临时目录签名
+  NSString *tempUUID = [[NSUUID UUID] UUIDString];
+  NSString *tempDylibPath = [NSTemporaryDirectory()
+      stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.dylib", tempUUID]];
+  [fm removeItemAtPath:tempDylibPath error:nil];
+  [fm copyItemAtPath:sourceDylib toPath:tempDylibPath error:nil];
+
+  // 5. 获取 Team ID
+  NSString *teamID = manualTeamID;
+  if (!teamID || teamID.length == 0) {
+    teamID = [self fetchMainAppTeamID:appPath];
+  }
+  if (teamID) {
+    ECLog(@"[方案C] ✅ Team ID: %@", teamID);
+  } else {
+    ECLog(@"[方案C] ⚠️ 未获取 Team ID，使用默认签名");
+  }
+
+  // 6. 注入 Load Command
+  NSString *lcPath = [@"@executable_path" stringByAppendingPathComponent:kProfileCDylibName];
+  NSError *mainInjectError = nil;
+  BOOL injectSuccess = [self processBinary:binaryPath
+                       injectingDylibAtPath:tempDylibPath
+                            loadCommandPath:lcPath
+                                     teamID:teamID
+                                      error:&mainInjectError];
+
+  if (injectSuccess) {
+    // 7. 移动签名后的 dylib 到 App Bundle
+    NSString *destDylib = [appPath stringByAppendingPathComponent:kProfileCDylibName];
+    spawnRoot(rootHelperPath(), @[@"remove-file", destDylib], nil, nil);
+    int cpRet = spawnRoot(rootHelperPath(), @[@"copy-file", tempDylibPath, destDylib], nil, nil);
+
+    if (cpRet != 0) {
+      ECLog(@"[方案C] ❌ 复制 dylib 到 Bundle 失败: %d", cpRet);
+      if (error)
+        *error = [NSError errorWithDomain:@"ECAppInjector" code:cpRet
+                      userInfo:@{NSLocalizedDescriptionKey : @"复制 dylib 失败"}];
+      [fm removeItemAtPath:tempDylibPath error:nil];
+      return NO;
+    }
+
+    spawnRoot(rootHelperPath(), @[@"chmod-file", @"755", destDylib], nil, nil);
+    [fm removeItemAtPath:tempDylibPath error:nil];
+
+    // 8. 创建注入标记
+    NSString *markerPath = [appPath stringByAppendingPathComponent:@".ecprofilec_injected"];
+    spawnRoot(rootHelperPath(), @[@"touch-file", markerPath], nil, nil);
+    spawnRoot(rootHelperPath(), @[@"chmod-file", @"666", markerPath], nil, nil);
+
+    ECLog(@"[方案C] ✅ 注入成功: %@", appName);
+    return YES;
+  } else {
+    ECLog(@"[方案C] ❌ 注入/签名失败");
+    if (error)
+      *error = mainInjectError;
+    [fm removeItemAtPath:tempDylibPath error:nil];
+    return NO;
+  }
 }
 
 /// Post-install fix: 对已安装 bundle 的 Frameworks/ loose .dylib 做最终重签
@@ -1233,6 +1366,9 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
   NSString *dylibPath =
       [appPath stringByAppendingPathComponent:kSpoofDylibName];
   spawnRoot(rootHelperPath(), @[ @"remove-file", dylibPath ], nil, nil);
+  NSString *dylibCPath =
+      [appPath stringByAppendingPathComponent:kProfileCDylibName];
+  spawnRoot(rootHelperPath(), @[ @"remove-file", dylibCPath ], nil, nil);
 
   // 3. 删除注入标记
   NSString *markerPath =
@@ -1269,7 +1405,8 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
   // 检查 load command
   NSString *binaryPath = [self mainBinaryPathForApp:appPath];
   if (binaryPath) {
-    BOOL hasLC = [self machOHasLoadCommand:binaryPath forDylib:kSpoofDylibName];
+    BOOL hasLC = [self machOHasLoadCommand:binaryPath forDylib:kSpoofDylibName] ||
+                 [self machOHasLoadCommand:binaryPath forDylib:kProfileCDylibName];
     if (hasLC) {
       ECLog(@"[Status] ✅ Found Load Command in: %@",
             binaryPath.lastPathComponent);
@@ -1488,22 +1625,9 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
   // 0. 备份原始二进制 (如果不存在备份)
   NSString *backupPath = [binaryPath stringByAppendingString:@".ec_bak"];
 
-  if (![[NSFileManager defaultManager] fileExistsAtPath:backupPath]) {
-    ECLog(@"[ProcessBinary] 创建备份: %@", backupPath);
-    NSString *backupOut, *backupErr;
-    int ret =
-        spawnRoot(rootHelperPath(), @[ @"copy-file", binaryPath, backupPath ],
-                  &backupOut, &backupErr);
-    if (ret != 0) {
-      ECLog(@"[ProcessBinary] ⚠️ 备份失败: ret=%d, err:%@", ret, backupErr);
-    } else {
-      ECLog(@"[ProcessBinary] ✅ 备份成功");
-    }
-  } else {
-    ECLog(@"[ProcessBinary] 备份已存在，跳过备份: %@", backupPath);
-  }
-
   // 1. 创建 Temp Binary
+  // ⚠️ copy-file 命令已内置 POSIX 回退 (open/read/write)，
+  //    可以绕过 iOS 对 App 二进制的 NSFileManager 框架层保护。
   NSString *tempUUID = [[NSUUID UUID] UUIDString];
   NSString *tempBinary =
       [NSTemporaryDirectory() stringByAppendingPathComponent:tempUUID];
@@ -1513,16 +1637,43 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
   int cpRet =
       spawnRoot(rootHelperPath(), @[ @"copy-file", binaryPath, tempBinary ],
                 &cpOut, &cpErr);
+  
   if (cpRet != 0) {
-    ECLog(@"[ProcessBinary] ❌ 复制失败: ret=%d, err:%@", cpRet, cpErr);
+    ECLog(@"[ProcessBinary] ❌ 复制失败 (NSFileManager + POSIX 均失败): ret=%d", cpRet);
+    
+    // 排查手段：列出应用目录内容，看看文件是否被改名或隐藏了
+    NSString *appDir = [binaryPath stringByDeletingLastPathComponent];
+    NSError *lsErr = nil;
+    NSArray *dirContents = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:appDir error:&lsErr];
+    if (dirContents) {
+        ECLog(@"[ProcessBinary] 诊断: %@ 目录内容:", appDir);
+        for (NSString *item in dirContents) {
+            ECLog(@"  - %@", item);
+        }
+    } else {
+        ECLog(@"[ProcessBinary] 诊断: 无法读取目录 %@, error: %@", appDir, lsErr);
+    }
+
     if (error)
       *error = [NSError
           errorWithDomain:@"ECAppInjector"
                      code:100
-                 userInfo:@{NSLocalizedDescriptionKey : @"Helper copy failed"}];
+                 userInfo:@{NSLocalizedDescriptionKey :
+                     [NSString stringWithFormat:@"无法复制主二进制文件 %@，请检查日志中的详细错误信息。",
+                         [binaryPath lastPathComponent]]}];
     return NO;
   }
-  ECLog(@"[ProcessBinary] ✅ Temp复制成功");
+  
+  ECLog(@"[ProcessBinary] ✅ Temp 复制成功");
+  
+  // 1.5 创建备份
+  NSString *bakOut, *bakErr;
+  int bakRet = spawnRoot(rootHelperPath(), @[@"copy-file", tempBinary, backupPath], &bakOut, &bakErr);
+  if (bakRet == 0) {
+    ECLog(@"[ProcessBinary] ✅ 备份成功: %@", backupPath);
+  } else {
+    ECLog(@"[ProcessBinary] ⚠️ 备份失败 (不影响注入): ret=%d", bakRet);
+  }
 
   // 2. 注入 Load Command (使用 Root Helper)
   ECLog(@"[ProcessBinary] 注入 LC via Helper...");

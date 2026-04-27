@@ -297,3 +297,38 @@ TikTok 的安全防护体系是**多层纵深防御**：
 4. **硬件层**：Apple DeviceCheck/AppAttest 防最终伪造
 
 **当前 ECDeviceSpoof 最致命的问题**是明文字符串特征（被 HMD 内存扫描）+ 传统 Method Swizzle（被 IMP 地址校验）+ Keychain 访问组不匹配（无法读取官方 token）。按优先级：先做**字符串全加密** → 再做 **Dylib 断链隐藏** → 最后做 **Inline Hook 升级**，可以大幅提升注入的隐蔽性。
+
+---
+
+## 八、验证码 (Captcha) 触发与账号掉线溯源深度剖析
+
+根据对网络层、风控拦截器以及安全凭证的深层追踪，我们定位到了导致克隆版高频弹验证码、必定掉线的根源：
+
+### 8.1 验证码 (SecVerify/Captcha) 的触发链路与判决引擎
+
+TikTok 绝不会“随机”弹出验证码，它的弹窗是由底层的 **TSPK（风控管线）** 与 **X-Gorgon / X-Argus（请求签名生成器）** 联合评分机制决定的。
+
+1. **V2 综合环境评分系统 (X-Argus)**
+   在发起任何核心请求（点赞、注册、拉流）之前，底层的 `SecSdk` 会收集当前的设备环境数据（含设备型号、屏幕分辨率 `UIScreen.nativeBounds`、CPU硬件 `hw.cpufamily`、调试状态 `isDebuggerAttached`，以及是否有被系统拦截的越狱钩子）。
+   这些数据被聚合计算出一串哈希值，塞入 `X-Argus` 或者 `X-Gorgon` 请求头。
+2. **服务端阻断与 Challenge 下发**
+   如果服务端反解 `X-Argus` 发现评分过低（例如，伪装机型是 iPhone 7，但底层硬件返回了 A15 芯片，或者屏幕逻辑点偏离了出厂规格 15pt），服务端会直接拦截请求，并下发 **HTTP 414 / 403** 状态码，附带一个特定的 JSON Challenge。
+3. **VerifySdk 唤起拦截**
+   网络底座（`TTNet`）收到 Challenge 后，中止当前请求，唤起 `VerifySdk.framework`（或 `BDSecVerify`）在当前视图盖上一层验证码界面。
+   一旦底层参数被修复匹配，这个环境评分将回到安全水位，弹窗自然消失。
+
+### 8.2 克隆版极易掉线 (Logout) 的致命死穴
+
+掉线的根本原因不是“封号”，而是**设备凭证无法持久化/读写错位导致的被动下线**。这涉及三重致命打击：
+
+#### A. Keychain 隔离引发的数据断档
+TikTok 的 `TSPK` 引擎早在启动第一阶段就接管了 `SecItemAdd` 和 `SecItemCopyMatching` 等 C 层 API，它将账号授权的 Session Token 以及独一无二的设备锁（ZTI Token）强行写入了官方的 Keychain 访问组（`T8ALTGMVXN.com.zhiliaoapp.musically`）。
+而你克隆的 App 由于使用了新的（个人的或者企业级）Team ID，根本无法跨界读取该安全区。每次 App 重启，读取 Token 为空，系统就会认定“用户已退出”，迫使你重新登录。
+
+#### B. 设备指纹 (ZTI Token) 跳动
+TikTok 服务端为每一个端发配了绑定的 `dtoken`（内含 `device_id` 和 `install_id`）。每次打开 App，客户端都会拿当前运行时的物理 ID 去和加密后的 `dtoken` 比对。由于我们没有做底层 Keychain 隔离，这个数据一直处于错乱更新状态，日志中高频上报 `[Device-ZTI] did or iid not match`，服务端为了防止跨端盗号，主动销毁会话。
+
+#### C. App Group 容器剥离
+TikTok 强依赖官方共享容器 `group.com.zhiliaoapp.musically`。克隆证书如果缺少此授权，内部通讯套接字崩溃，同样触发账号登出保护逻辑。
+
+> **针对此问题的终极解决方案：** 实施 Keychain Isolation。即重绑定底层的 `SecItem` 系列 C 函数，在写入和读取请求前，通过代码强行剥离 `kSecAttrAccessGroup`，迫使所有安全数据存放在克隆 App 自己合法生成的 Keychain 域中，以此维持持久登录。

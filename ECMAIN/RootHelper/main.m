@@ -51,6 +51,8 @@ extern void killall(NSString *processName, BOOL softly);
 #import <SpringBoardServices/SpringBoardServices.h>
 #import <libroot.h>
 
+extern BOOL isLdidInstalled(void);
+
 
 
 // --- libproc definitions (Manually declared for compatibility) ---
@@ -400,7 +402,7 @@ void setTSURLSchemeState(BOOL newState, NSString *customAppPath) {
 
 #ifdef TROLLSTORE_LITE
 
-// isLdidInstalled 已统一定义在 TSUtil.m 中
+// isLdidInstalled 实现移至下方 439 行处
 
 #else
 
@@ -434,7 +436,22 @@ void installLdid(NSString *ldidToCopyPath, NSString *ldidVersion) {
   NSLog(@"[RootHelper] installLdid: Success");
 }
 
-// isLdidInstalled 已统一定义在 TSUtil.m 中
+BOOL isLdidInstalled(void) {
+  // 检查当前 APP 包内的 ldid（优先）
+  NSString *bundleLdidPath = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"ldid"];
+  if ([[NSFileManager defaultManager] fileExistsAtPath:bundleLdidPath]) {
+    return YES;
+  }
+  // 检查 TrollStore 默认路径
+  NSString *tsPath = trollStoreAppPath();
+  if (tsPath) {
+    NSString *trollStoreLdidPath = [tsPath stringByAppendingPathComponent:@"ldid"];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:trollStoreLdidPath]) {
+      return YES;
+    }
+  }
+  return NO;
+}
 
 #endif
 
@@ -1729,6 +1746,54 @@ int installApp(NSString *appPackagePath, BOOL sign, BOOL force, BOOL isTSUpdate,
     NSLog(@"  - Restricted: %d", proxy.restricted);
     NSLog(@"  - ApplicationType: %@", proxy.applicationType);
     NSLog(@"  - Bundle URL: %@", proxy.bundleURL);
+    NSLog(@"  - Data Container URL: %@", proxy.dataContainerURL);
+
+    // [关键检测] 验证数据容器类型——如果在 PluginKitPlugin 下说明 sandbox 会异常
+    NSString *dataContainerPath = proxy.dataContainerURL.path;
+    if (dataContainerPath && [dataContainerPath containsString:@"PluginKitPlugin"]) {
+      NSLog(@"[installApp] ⚠️ 检测到数据容器在 PluginKitPlugin 路径下！");
+      NSLog(@"[installApp] ⚠️ 路径: %@", dataContainerPath);
+      NSLog(@"[installApp] ⚠️ 这会导致 cfprefsd/IOKit 沙盒权限异常。");
+      NSLog(@"[installApp] ⚠️ 尝试通过重新注册修复数据容器类型...");
+      
+      // 尝试通过 MCMDataContainer 创建正确的 Application 数据容器
+      // MCMDataContainer 是私有 API，用于管理应用数据容器
+      Class MCMDataContainerClass = NSClassFromString(@"MCMDataContainer");
+      if (MCMDataContainerClass) {
+        NSError *dataContainerError = nil;
+        id dataContainer = [MCMDataContainerClass containerWithIdentifier:appId
+                                                        createIfNecessary:YES
+                                                                  existed:nil
+                                                                    error:&dataContainerError];
+        if (dataContainer && !dataContainerError) {
+          NSLog(@"[installApp] ✅ MCMDataContainer 已创建/获取: %@", [dataContainer valueForKey:@"url"]);
+        } else {
+          NSLog(@"[installApp] ❌ MCMDataContainer 创建失败: %@", dataContainerError);
+        }
+      }
+      
+      // 强制重新注册以让系统重新分配容器
+      NSLog(@"[installApp] 尝试强制重新注册...");
+      NSURL *updatedURL = findAppURLInBundleURL(appContainer.url);
+      if (updatedURL) {
+        registerPath(updatedURL.path, 0, registerAsSystem);
+        
+        // 重新检查
+        LSApplicationProxy *newProxy = [LSApplicationProxy applicationProxyForIdentifier:appId];
+        if (newProxy) {
+          NSString *newDataPath = newProxy.dataContainerURL.path;
+          NSLog(@"[installApp] 重注册后 Data Container: %@", newDataPath);
+          if (newDataPath && ![newDataPath containsString:@"PluginKitPlugin"]) {
+            NSLog(@"[installApp] ✅ 数据容器已修正为 Application 类型！");
+          } else {
+            NSLog(@"[installApp] ⚠️ 数据容器仍在 PluginKitPlugin 下。");
+            NSLog(@"[installApp] ⚠️ 这可能需要检查 entitlement 中的 container-required 值。");
+          }
+        }
+      }
+    } else if (dataContainerPath) {
+      NSLog(@"[installApp] ✅ 数据容器类型正常: Application");
+    }
 
     __block BOOL inUser = NO;
     [[LSApplicationWorkspace defaultWorkspace]
@@ -4229,11 +4294,112 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
         if ([fm copyItemAtPath:src toPath:dst error:&error]) {
           ret = 0;
         } else {
-          NSLog(@"copy-file error: %@", error);
-          ret = 1;
+          NSLog(@"copy-file NSFileManager failed: %@", error);
+          NSLog(@"copy-file 尝试 POSIX 回退 (open/read/write)...");
+          
+          // POSIX 回退：使用底层系统调用复制文件
+          // iOS 可能对某些 App 二进制施加了框架层保护，但 POSIX API 可以绕过
+          const char *srcPath = [src fileSystemRepresentation];
+          const char *dstPath = [dst fileSystemRepresentation];
+          
+          // 先用 stat 检查源文件
+          struct stat srcStat;
+          if (stat(srcPath, &srcStat) != 0) {
+            NSLog(@"copy-file POSIX stat() 也失败: errno=%d (%s)", errno, strerror(errno));
+            
+            // 最后的尝试：使用 lstat (如果是 symlink)
+            struct stat lnkStat;
+            if (lstat(srcPath, &lnkStat) == 0) {
+              NSLog(@"copy-file lstat() 成功! 文件是 symlink, mode=0%o, size=%lld",
+                    lnkStat.st_mode, (long long)lnkStat.st_size);
+              // 读取 symlink 目标
+              char linkTarget[PATH_MAX];
+              ssize_t linkLen = readlink(srcPath, linkTarget, sizeof(linkTarget) - 1);
+              if (linkLen > 0) {
+                linkTarget[linkLen] = '\0';
+                NSLog(@"copy-file symlink 指向: %s", linkTarget);
+              }
+            } else {
+              NSLog(@"copy-file lstat() 也失败: errno=%d (%s)", errno, strerror(errno));
+            }
+            ret = 1;
+          } else {
+            NSLog(@"copy-file POSIX stat() 成功! size=%lld, mode=0%o",
+                  (long long)srcStat.st_size, srcStat.st_mode);
+            
+            int srcFd = open(srcPath, O_RDONLY);
+            if (srcFd < 0) {
+              NSLog(@"copy-file POSIX open() 失败: errno=%d (%s)", errno, strerror(errno));
+              ret = 1;
+            } else {
+              // 删除已存在的目标
+              unlink(dstPath);
+              int dstFd = open(dstPath, O_WRONLY | O_CREAT | O_TRUNC, srcStat.st_mode & 0777);
+              if (dstFd < 0) {
+                NSLog(@"copy-file POSIX open(dst) 失败: errno=%d (%s)", errno, strerror(errno));
+                close(srcFd);
+                ret = 1;
+              } else {
+                // 逐块复制
+                char buf[65536];
+                ssize_t bytesRead;
+                off_t totalCopied = 0;
+                BOOL copyOk = YES;
+                while ((bytesRead = read(srcFd, buf, sizeof(buf))) > 0) {
+                  ssize_t written = write(dstFd, buf, bytesRead);
+                  if (written != bytesRead) {
+                    NSLog(@"copy-file POSIX write() 失败: errno=%d", errno);
+                    copyOk = NO;
+                    break;
+                  }
+                  totalCopied += written;
+                }
+                close(srcFd);
+                close(dstFd);
+                
+                if (copyOk && bytesRead == 0) {
+                  NSLog(@"copy-file ✅ POSIX 复制成功! 共复制 %lld bytes", (long long)totalCopied);
+                  // 保留原文件权限
+                  chmod(dstPath, srcStat.st_mode & 0777);
+                  ret = 0;
+                } else {
+                  NSLog(@"copy-file ❌ POSIX 复制失败");
+                  unlink(dstPath);
+                  ret = 1;
+                }
+              }
+            }
+          }
         }
       } else {
         NSLog(@"Usage: copy-file <source> <destination>");
+        ret = 1;
+      }
+    } else if ([cmd isEqualToString:@"list-dir"]) {
+      // Usage: list-dir <path>
+      // 列出目录下的所有文件和子目录（仅第一层），用于远程诊断
+      if (argc >= 3) {
+        NSString *dirPath = [NSString stringWithUTF8String:argv[2]];
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSError *error = nil;
+        NSArray *contents = [fm contentsOfDirectoryAtPath:dirPath error:&error];
+        if (contents) {
+          for (NSString *item in contents) {
+            NSString *fullPath = [dirPath stringByAppendingPathComponent:item];
+            BOOL isDir = NO;
+            [fm fileExistsAtPath:fullPath isDirectory:&isDir];
+            NSDictionary *attrs = [fm attributesOfItemAtPath:fullPath error:nil];
+            unsigned long long size = [attrs fileSize];
+            NSLog(@"%@ %@ (%llu bytes)", isDir ? @"[DIR]" : @"[FILE]", item, size);
+          }
+          fprintf(stdout, "%lu\n", (unsigned long)contents.count);
+          ret = 0;
+        } else {
+          NSLog(@"list-dir error: %@", error);
+          ret = 1;
+        }
+      } else {
+        NSLog(@"Usage: list-dir <path>");
         ret = 1;
       }
     } else if ([cmd isEqualToString:@"mkdir"]) {
@@ -4440,9 +4606,12 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
                 }
 
                 if (isEncrypted) {
-                  [fileHandle closeFile];
-                  ret = 20;
-                } else {
+                  NSLog(@"[inject-lc] ⚠️ 警告: 目标程序是加密的 (App Store 原版带壳)。强行注入可能会导致闪退。继续注入...");
+                  // 移除 ret = 20 的阻断，允许流程继续
+                }
+                
+                // 无论是否加密，都继续执行注入逻辑 (去除 else 缩进，或者保留 else 也可以，这里我直接将原来的 else { 代码提出来)
+                {
                   // Find first segment offset
                   size_t loadCmdsEnd =
                       sizeof(struct mach_header_64) + header->sizeofcmds;

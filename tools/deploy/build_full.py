@@ -806,6 +806,21 @@ def package_all(app_path, helper_path, dylib_path=None, persistence_helper_path=
         os.chmod(dest_path, 0o755)
         log(f"Injected libswiftCompatibilityPacks.dylib as spoof_plugin.dat (Root)")
         
+        # 同时也复制到原名，以便其他代码兼容
+        dest_orig = os.path.join(final_app, "libswiftCompatibilityPacks.dylib")
+        shutil.copy(dylib_path, dest_orig)
+        os.chmod(dest_orig, 0o755)
+
+    # 2.6. Inject Profile Spoof Dylib (方案 C)
+    profile_dylib_path = os.path.join(PROJECT_ROOT, "ECMAIN/Dylib/libECProfileSpoof.dylib")
+    if os.path.exists(profile_dylib_path):
+        dest_profile = os.path.join(final_app, "libECProfileSpoof.dylib")
+        shutil.copy(profile_dylib_path, dest_profile)
+        os.chmod(dest_profile, 0o755)
+        log(f"Injected libECProfileSpoof.dylib (方案 C) to Root")
+    else:
+        log(f"Warning: libECProfileSpoof.dylib not found, skip injecting it.")
+        
         # Sign it (it's still a macho)
         log("Signing spoof_plugin.dat...")
         run_cmd(f"codesign -f -s - '{dest_path}'", ignore_error=True)

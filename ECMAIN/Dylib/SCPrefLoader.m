@@ -6,6 +6,7 @@
 //
 
 #import "SCPrefLoader.h"
+#import <Security/Security.h>
 
 // 文件日志（与 ECDeviceSpoof.m 共享同一个日志文件）
 // ⚠️ 2026-02-03: 禁用文件写入，避免高频调用导致 I/O 性能问题
@@ -212,14 +213,153 @@ static void ECConfigLog(NSString *format, ...) {
     cachedDataDir = [NSString stringWithFormat:@"%@/session_%@", sandboxPath, self.currentCloneId];
     
     NSFileManager *fm = [NSFileManager defaultManager];
+    
+    // 确保分身数据目录存在
     if (![fm fileExistsAtPath:cachedDataDir]) {
-      NSError *createErr = nil;
-      [fm createDirectoryAtPath:cachedDataDir withIntermediateDirectories:YES attributes:nil error:&createErr];
-      if (createErr) {
-        ECConfigLog(@" ❌ 创建分身数据目录失败: %@ 错误: %@", cachedDataDir, createErr);
-      } else {
-        ECConfigLog(@" ✅ 创建分身数据目录: %@", cachedDataDir);
-      }
+      [fm createDirectoryAtPath:cachedDataDir withIntermediateDirectories:YES attributes:nil error:nil];
+      ECConfigLog(@" ✅ 创建分身数据目录: %@", cachedDataDir);
+    }
+    
+    // =========================================================================
+    // [v2297 修复] 基于标记文件的清洗触发机制
+    // 之前仅靠 session_XX 目录是否存在来判断，但同一 Clone ID 重复使用时
+    // 目录已存在，清洗永远不会触发，导致旧数据泄漏。
+    // 新策略：在 session_XX 内放 .clean_done_{cloneId} 标记文件，
+    // 如果标记不存在则说明需要清洗（新克隆或需要重置）。
+    // =========================================================================
+    NSString *cleanMarker = [cachedDataDir stringByAppendingPathComponent:
+        [NSString stringWithFormat:@".clean_done_%@", self.currentCloneId]];
+    
+    if (![fm fileExistsAtPath:cleanMarker]) {
+        ECConfigLog(@" 🧹 [沙盒清洗] 未检测到清洗标记，开始清理旧数据...");
+        
+        // 1. 内存及域级别的清除
+        NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        [defaults removePersistentDomainForName:bundleID];
+        [defaults synchronize];
+        [NSUserDefaults resetStandardUserDefaults];
+        
+        // 2. 物理文件的彻底绞杀
+        if (homeEnv) {
+            NSString *homePath = [NSString stringWithUTF8String:homeEnv];
+            
+            // 2.1 智能核弹清理 Library 目录 (终极修复：避免 UIKit 状态恢复崩溃)
+            NSString *libDir = [homePath stringByAppendingPathComponent:@"Library"];
+            NSArray *libFiles = [fm contentsOfDirectoryAtPath:libDir error:nil];
+            
+            // 需要清空内容，但保留目录本身的系统路径
+            NSSet *emptyOnlyDirs = [NSSet setWithObjects:@"Caches", @"Application Support", @"Cookies", @"WebKit", @"HTTPStorages", nil];
+            // 绝对不能碰的系统 UI 状态路径（删除会导致 _handleDelegateCallbacksWithOptions 崩溃）
+            NSSet *ignoreDirs = [NSSet setWithObjects:@"Saved Application State", @"SplashBoard", nil];
+            
+            for (NSString *file in libFiles) {
+                NSString *fullPath = [libDir stringByAppendingPathComponent:file];
+                
+                if ([ignoreDirs containsObject:file]) {
+                    ECConfigLog(@" 🛡️ [核弹清理] 跳过系统 UI 状态目录: Library/%@", file);
+                    continue;
+                }
+                else if ([file isEqualToString:@"Preferences"]) {
+                    // 对于 Preferences，只删除特定的 plist，不全清以避免 cfprefsd 崩溃
+                    NSArray *prefFiles = [fm contentsOfDirectoryAtPath:fullPath error:nil];
+                    for (NSString *p in prefFiles) {
+                        if ([p hasPrefix:@"com.ss."] || [p hasPrefix:@"group.com.ss."] || [p containsString:@"tiktok"] || [p containsString:@"stability"] || [p containsString:@"hts."]) {
+                            [fm removeItemAtPath:[fullPath stringByAppendingPathComponent:p] error:nil];
+                        }
+                    }
+                    ECConfigLog(@" 🧹 [核弹清理] 已精细清理 Library/Preferences");
+                } 
+                else if ([emptyOnlyDirs containsObject:file]) {
+                    // 对于系统目录，清空其内部所有内容
+                    BOOL isDir = NO;
+                    if ([fm fileExistsAtPath:fullPath isDirectory:&isDir] && isDir) {
+                        NSArray *innerFiles = [fm contentsOfDirectoryAtPath:fullPath error:nil];
+                        for (NSString *innerFile in innerFiles) {
+                            [fm removeItemAtPath:[fullPath stringByAppendingPathComponent:innerFile] error:nil];
+                        }
+                        ECConfigLog(@" 🧹 [核弹清理] 已清空系统保留目录: Library/%@", file);
+                    }
+                } 
+                else {
+                    // 对于 ByteDance 创建的各种垃圾目录（Heimdallr, AWEStorage 等）直接删除
+                    [fm removeItemAtPath:fullPath error:nil];
+                    ECConfigLog(@" 🧹 [核弹清理] 已直接删除: Library/%@", file);
+                }
+            }
+            
+            // 2.2 核弹级清理 Documents (保留我们的数据目录 .ecdata 和 FakeAppGroup)
+            NSString *docDir = [homePath stringByAppendingPathComponent:@"Documents"];
+            NSArray *docFiles = [fm contentsOfDirectoryAtPath:docDir error:nil];
+            for (NSString *file in docFiles) {
+                if (![file isEqualToString:@".ecdata"] && ![file isEqualToString:@"FakeAppGroup"]) {
+                    [fm removeItemAtPath:[docDir stringByAppendingPathComponent:file] error:nil];
+                    ECConfigLog(@" 🧹 [核弹清理] 已删除 Documents/%@", file);
+                }
+            }
+            
+            // 2.3 清理 tmp
+            NSString *tmpDir = [homePath stringByAppendingPathComponent:@"tmp"];
+            NSArray *tmpFiles = [fm contentsOfDirectoryAtPath:tmpDir error:nil];
+            for (NSString *file in tmpFiles) {
+                [fm removeItemAtPath:[tmpDir stringByAppendingPathComponent:file] error:nil];
+            }
+            
+            // 2.6 清理 FakeAppGroup 中旧号的数据
+            NSString *fakeGroupDir = [homePath stringByAppendingPathComponent:
+                [NSString stringWithFormat:@"Documents/FakeAppGroup/%@", self.currentCloneId]];
+            if ([fm fileExistsAtPath:fakeGroupDir]) {
+                [fm removeItemAtPath:fakeGroupDir error:nil];
+                ECConfigLog(@" 🧹 已清理旧 FakeAppGroup 数据: %@", fakeGroupDir);
+            }
+            
+            // 2.7 [致命修复] 清除持久化的伪装指纹 (IDFV, device_id 等)
+            // 如果不清除，即使沙盒空了，生成的旧 IDFV 也会让服务端识别为同一台设备并下发旧的账号数据。
+            NSArray *ecDataFiles = [fm contentsOfDirectoryAtPath:cachedDataDir error:nil];
+            for (NSString *file in ecDataFiles) {
+                if ([file hasPrefix:@".com.ec_"] && [file hasSuffix:@".dat"]) {
+                    [fm removeItemAtPath:[cachedDataDir stringByAppendingPathComponent:file] error:nil];
+                    ECConfigLog(@" 🧹 [指纹重置] 已删除旧指纹数据: %@", file);
+                }
+            }
+            
+            ECConfigLog(@" 🧹 [全面清洗] 成功清空了旧沙盒遗留的所有目录及硬件指纹。");
+        }
+        
+        // 3. Keychain 清理 — ByteDance SDK 在 Keychain 中存储 device_id/install_id
+        // 这是导致"新克隆仍读取旧数据"的根因！即使文件全删，Keychain 残留会让 SDK
+        // 认为这是旧设备。
+        ECConfigLog(@" 🔐 [Keychain] 开始清理旧的设备标识...");
+        NSDictionary *kcQuery = @{
+            (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword
+        };
+        OSStatus kcStatus = SecItemDelete((__bridge CFDictionaryRef)kcQuery);
+        ECConfigLog(@" 🔐 [Keychain] GenericPassword 清理完成 (status: %d)", (int)kcStatus);
+        
+        // 针对 ByteDance 特定 service 精准清理
+        NSArray *bdServices = @[
+            @"com.bytedance.device.id",
+            @"com.ss.iphone.ugc.aweme.device_id",
+            @"com.bytedance.pass.token",
+            @"com.ss.iphone.ugc.aweme"
+        ];
+        for (NSString *svc in bdServices) {
+            NSDictionary *svcQuery = @{
+                (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+                (__bridge id)kSecAttrService: svc
+            };
+            SecItemDelete((__bridge CFDictionaryRef)svcQuery);
+            ECConfigLog(@" 🔐 [Keychain] 已清理 service: %@", svc);
+        }
+        
+        ECConfigLog(@" 🧹 [沙盒清洗] 完成！已彻底切断旧 device_id 及缓存的源头。");
+        
+        // 写入清洗标记，防止下次启动重复清洗
+        [@"done" writeToFile:cleanMarker atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        
+        // 立即终止进程，斩杀内存中的脏数据
+        ECConfigLog(@" 💣 [环境重置] 沙盒清洗完成，立即终止进程！");
+        _exit(0);
     }
   });
   return cachedDataDir;

@@ -286,6 +286,24 @@ def build_ecmain():
     if not helper_found:
         print("⚠️ Warning: trollstorehelper binary not found. You may need to compile it inside external_sources/TrollStore/RootHelper.")
 
+    # --- INJECT SPOOF DYLIBS ---
+    print("--- Injecting Spoof Dylibs ---")
+    dylibs_dest_dir = os.path.join(app_path, "Dylibs")
+    if not os.path.exists(dylibs_dest_dir):
+        os.makedirs(dylibs_dest_dir)
+        
+    dylib_sources = [
+        os.path.join(PROJECT_DIR, "ECMAIN/Dylib/libswiftCompatibilityPacks.dylib"),
+        os.path.join(PROJECT_DIR, "ECMAIN/Dylib/libECProfileSpoof.dylib")
+    ]
+    
+    for dylib_src in dylib_sources:
+        if os.path.exists(dylib_src):
+            shutil.copy(dylib_src, os.path.join(dylibs_dest_dir, os.path.basename(dylib_src)))
+            print(f"✅ Injected {os.path.basename(dylib_src)}")
+        else:
+            print(f"⚠️ Warning: Spoof dylib not found at {dylib_src}, please compile it first.")
+
     # --- INJECT SIGNING TOOLS ---
     print("--- Injecting ldid and victim.p12 ---")
     installer_dir = os.path.join(PROJECT_DIR, "installer")

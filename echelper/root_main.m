@@ -2635,7 +2635,54 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
                                                    error:nil]) {
         ret = 0;
       } else {
-        ret = 1;
+        NSLog(@"copy-file NSFileManager failed. 尝试 POSIX 回退 (open/read/write)...");
+        
+        const char *srcPath = [src fileSystemRepresentation];
+        const char *dstPath = [dst fileSystemRepresentation];
+        
+        struct stat srcStat;
+        if (stat(srcPath, &srcStat) != 0) {
+          NSLog(@"copy-file POSIX stat() 也失败: errno=%d", errno);
+          ret = 1;
+        } else {
+          int srcFd = open(srcPath, O_RDONLY);
+          if (srcFd < 0) {
+            NSLog(@"copy-file POSIX open(src) 失败: errno=%d", errno);
+            ret = 1;
+          } else {
+            unlink(dstPath);
+            int dstFd = open(dstPath, O_WRONLY | O_CREAT | O_TRUNC, srcStat.st_mode & 0777);
+            if (dstFd < 0) {
+              NSLog(@"copy-file POSIX open(dst) 失败: errno=%d", errno);
+              close(srcFd);
+              ret = 1;
+            } else {
+              char buf[65536];
+              ssize_t bytesRead;
+              BOOL copyOk = YES;
+              while ((bytesRead = read(srcFd, buf, sizeof(buf))) > 0) {
+                ssize_t written = write(dstFd, buf, bytesRead);
+                if (written != bytesRead) {
+                  NSLog(@"copy-file POSIX write() 失败: errno=%d", errno);
+                  copyOk = NO;
+                  break;
+                }
+              }
+              close(srcFd);
+              close(dstFd);
+              
+              if (copyOk && bytesRead == 0) {
+                NSLog(@"copy-file ✅ POSIX 复制成功!");
+                chmod(dstPath, srcStat.st_mode & 0777);
+                ret = 0;
+              } else {
+                NSLog(@"copy-file ❌ POSIX 复制失败");
+                unlink(dstPath);
+                ret = 1;
+              }
+            }
+          }
+        }
       }
     } else if ([cmd isEqualToString:@"move-file"]) {
       if (args.count < 3)

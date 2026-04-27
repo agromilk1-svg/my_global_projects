@@ -1885,17 +1885,22 @@ extern NSString *rootHelperPath(void);
   ECInjectionStatus status = [injector injectionStatusForApp:app.bundlePath];
 
   if (status == ECInjectionStatusInjected) {
-    [alert
-        addAction:[UIAlertAction actionWithTitle:@"🔴 移除注入"
-                                           style:UIAlertActionStyleDestructive
-                                         handler:^(UIAlertAction *action) {
-                                           [self ejectFromApp:app];
-                                         }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"🔴 移除注入 / 卸载伪装"
+                                              style:UIAlertActionStyleDestructive
+                                            handler:^(UIAlertAction *action) {
+                                              [self ejectFromApp:app];
+                                            }]];
   } else {
     [alert addAction:[UIAlertAction actionWithTitle:@"💉 注入伪装 dylib"
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *action) {
-                                              [self injectIntoApp:app];
+                                              [self showInjectOptionsForApp:app];
+                                            }]];
+    // 即使检测为未注入，也提供强制卸载按钮作为兜底
+    [alert addAction:[UIAlertAction actionWithTitle:@"🧹 强制卸载伪装 (恢复原版)"
+                                              style:UIAlertActionStyleDestructive
+                                            handler:^(UIAlertAction *action) {
+                                              [self ejectFromApp:app];
                                             }]];
   }
 
@@ -5457,6 +5462,108 @@ extern NSString *rootHelperPath(void);
 }
 
 #pragma mark - Injection & Spoof Actions
+
+// 注入方案选择弹窗
+- (void)showInjectOptionsForApp:(TSAppInfo *)app {
+  UIAlertController *options = [UIAlertController
+      alertControllerWithTitle:@"选择注入方案"
+                       message:@"方案 B：修改 Bundle ID 克隆多实例\n方案 C：原版注入，多 Profile 切换（推荐）"
+                preferredStyle:UIAlertControllerStyleActionSheet];
+
+  [options addAction:[UIAlertAction actionWithTitle:@"💉 方案 B — 克隆多实例"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+                                              [self injectIntoApp:app];
+                                            }]];
+
+  [options addAction:[UIAlertAction actionWithTitle:@"💉 方案 C — 原版多 Profile（推荐）"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+                                              [self injectProfileCIntoApp:app];
+                                            }]];
+
+  [options addAction:[UIAlertAction actionWithTitle:@"取消"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+
+  if (options.popoverPresentationController) {
+    options.popoverPresentationController.sourceView = self.view;
+    options.popoverPresentationController.sourceRect =
+        CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 0, 0);
+  }
+
+  [self presentViewController:options animated:YES completion:nil];
+}
+
+// 方案 C 注入（原版 TikTok + Profile 切换 dylib）
+- (void)injectProfileCIntoApp:(TSAppInfo *)app {
+  UIAlertController *confirm = [UIAlertController
+      alertControllerWithTitle:@"方案 C 注入"
+                       message:@"将注入 Profile 切换 dylib 到原版应用。\n注入后可在 App 内通过悬浮球切换多账号。\n\n确定继续？"
+                preferredStyle:UIAlertControllerStyleAlert];
+
+  [confirm addAction:[UIAlertAction actionWithTitle:@"取消"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+
+  [confirm addAction:[UIAlertAction
+                         actionWithTitle:@"注入"
+                                   style:UIAlertActionStyleDestructive
+                                 handler:^(UIAlertAction *action) {
+                                   [self startProfileCInjection:app teamID:nil];
+                                 }]];
+
+  [self presentViewController:confirm animated:YES completion:nil];
+}
+
+- (void)startProfileCInjection:(TSAppInfo *)app teamID:(NSString *)manualTeamID {
+  UIAlertController *progress =
+      [UIAlertController alertControllerWithTitle:@"方案 C 注入中..."
+                                          message:@"请稍候"
+                                   preferredStyle:UIAlertControllerStyleAlert];
+  [self presentViewController:progress animated:YES completion:nil];
+
+  dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+    NSError *error;
+    NSString *executablePath = nil;
+
+    if ([app respondsToSelector:@selector(executablePath)]) {
+      executablePath = [app performSelector:@selector(executablePath)];
+    } else {
+      @try {
+        NSDictionary *info = [app valueForKey:@"cachedInfoDictionary"];
+        if (info && info[@"CFBundleExecutable"]) {
+          executablePath = [app.bundlePath
+              stringByAppendingPathComponent:info[@"CFBundleExecutable"]];
+        }
+      } @catch (NSException *exception) {
+        NSLog(@"[ECMain] Failed to get executablePath: %@", exception);
+      }
+    }
+
+    BOOL success = [[ECAppInjector sharedInstance]
+        injectProfileCDylibIntoApp:app.bundlePath
+                    executablePath:executablePath
+                      manualTeamID:manualTeamID
+                             error:&error];
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [progress dismissViewControllerAnimated:YES
+                                   completion:^{
+                                     if (success) {
+                                       [self loadApps];
+                                       [self showSuccessMessage:
+                                                 @"方案 C 注入成功！\n请重启目标 APP。\n"
+                                                 @"启动后会出现悬浮球用于切换 Profile。"];
+                                     } else {
+                                       [self showErrorMessage:
+                                                 error.localizedDescription
+                                                     ?: @"注入失败"];
+                                     }
+                                   }];
+    });
+  });
+}
 
 - (void)injectIntoApp:(TSAppInfo *)app {
   UIAlertController *confirm = [UIAlertController

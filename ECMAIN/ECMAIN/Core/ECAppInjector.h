@@ -51,6 +51,12 @@ extern NSNotificationName const kECLogNotification;
                    manualTeamID:(nullable NSString *)teamID
                           error:(NSError **)error;
 
+/// [方案 C] 注入 Profile 切换 dylib（原版多 Profile 模式）
+- (BOOL)injectProfileCDylibIntoApp:(NSString *)appPath
+                    executablePath:(nullable NSString *)executablePath
+                      manualTeamID:(nullable NSString *)teamID
+                             error:(NSError **)error;
+
 /// 从目标 App 移除伪装 dylib
 - (BOOL)ejectDylibFromApp:(NSString *)appPath error:(NSError **)error;
 
