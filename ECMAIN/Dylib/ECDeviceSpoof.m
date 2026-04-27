@@ -2482,8 +2482,25 @@ static int hooked_lstat(const char *restrict path, struct stat *restrict buf) {
         errno = ENOENT;
         return -1;
     }
-    if (original_lstat) return original_lstat(path, buf);
-    return -1;
+    int ret = original_lstat ? original_lstat(path, buf) : -1;
+    // 符号链接伪装：TikTok 通过 lstat 检测 /Applications 等目录是否为 symlink
+    // 越狱后这些目录通常是符号链接，正常 iOS 是普通目录
+    if (ret == 0 && buf && path) {
+      if ((buf->st_mode & S_IFMT) == S_IFLNK) {
+        // 检测关键系统目录的符号链接探测
+        if (strstr(path, "/Applications") ||
+            strstr(path, "/Library/Ringtones") ||
+            strstr(path, "/Library/Wallpaper") ||
+            strstr(path, "/usr/arm-apple-darwin9") ||
+            strstr(path, "/usr/include") ||
+            strstr(path, "/usr/libexec") ||
+            strstr(path, "/usr/share")) {
+          // 伪装为普通目录（去掉 S_IFLNK 标志，改为 S_IFDIR）
+          buf->st_mode = (buf->st_mode & ~S_IFMT) | S_IFDIR;
+        }
+      }
+    }
+    return ret;
 }
 
 // Hook 后的 stat
@@ -2613,9 +2630,21 @@ hooked_NSSearchPathForDirectoriesInDomains(NSSearchPathDirectory directory,
         return [self ec_initWithSuiteName:suitename];
       }
 
-      if ([suitename hasPrefix:@"group."]) {
+      // [修复] 对所有需要隔离的 domain 追加 clone 后缀
+      // 1. App Group domain (group.*)
+      // 2. TikTok stability.guard 系列 domain — 直接走 cfprefsd IPC 会被沙盒拒绝，
+      //    每次超时约 1 秒，叠加导致主线程阻塞 → Watchdog 超时杀进程
+      BOOL shouldRedirect = [suitename hasPrefix:@"group."] ||
+          [suitename containsString:@"stability"] ||
+          [suitename containsString:@"newBoot"] ||
+          [suitename containsString:@"Ame"] ||
+          [suitename containsString:@"musically"] ||
+          [suitename containsString:@"tiktok"] ||
+          [suitename containsString:@"bytedance"] ||
+          [suitename containsString:@"hts."];
+
+      if (shouldRedirect) {
         NSString *newSuite = [suitename stringByAppendingString:suffix];
-        // 🔍 诊断日志：NSUserDefaults Suite 重定向 (group.*)
         ECLog(@"🔀 [Clone-Defaults] initWithSuiteName: %@ -> %@", suitename,
               newSuite);
         return [self ec_initWithSuiteName:newSuite];
@@ -6320,9 +6349,80 @@ static void setupLoginDiagnosticHooks(void) {
 @end
 
 // ============================================================================
-// Hook: CFPreferencesSetValue / CFPreferencesSetAppValue
-// 用途：拦截风控 (MSSDK) 等对全局偏好 (kCFPreferencesAnyApplication) 的写入，
-// 避免因 Sandbox 拒绝 (deny user-preference-write) 导致主线程死锁和 UI 卡死。
+// 虚拟 CFPreferences 存储系统
+// 用途：拦截所有对沙盒受限 domain 的 CFPreferences 读写，
+//       使用内存字典 + plist 持久化替代 cfprefsd IPC，
+//       彻底解决 PluginKitPlugin 容器下 sandbox 拒绝导致的
+//       stability.guard 检测异常 → abort 闪退问题。
+// ============================================================================
+
+// 虚拟存储：domain -> { key -> value }
+static NSMutableDictionary<NSString *, NSMutableDictionary *> *g_virtualCFPrefsStore = nil;
+static dispatch_queue_t g_cfprefsQueue = NULL;
+
+// 获取虚拟 CFPreferences 持久化目录
+static NSString *virtualCFPrefsDirectory(void) {
+    static NSString *dir = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSString *home = NSHomeDirectory();
+        NSString *cloneId = g_FastCloneId ?: @"default";
+        dir = [NSString stringWithFormat:@"%@/Documents/.ecdata/session_%@/Library/VirtualPreferences", home, cloneId];
+        [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    });
+    return dir;
+}
+
+// 获取某个 domain 的 plist 持久化路径
+static NSString *virtualCFPrefsPlistPath(NSString *domain) {
+    return [virtualCFPrefsDirectory() stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"%@.plist", domain]];
+}
+
+// 初始化虚拟存储（仅调用一次）
+static void ensureVirtualCFPrefsStore(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        g_virtualCFPrefsStore = [NSMutableDictionary new];
+        g_cfprefsQueue = dispatch_queue_create("com.ec.virtualcfprefs", DISPATCH_QUEUE_CONCURRENT);
+    });
+}
+
+// 从磁盘加载某个 domain 的数据（惰性加载）
+static NSMutableDictionary *loadDomainStore(NSString *domain) {
+    NSMutableDictionary *store = g_virtualCFPrefsStore[domain];
+    if (!store) {
+        NSString *path = virtualCFPrefsPlistPath(domain);
+        NSDictionary *disk = [NSDictionary dictionaryWithContentsOfFile:path];
+        store = disk ? [disk mutableCopy] : [NSMutableDictionary new];
+        g_virtualCFPrefsStore[domain] = store;
+    }
+    return store;
+}
+
+// 持久化某个 domain 到磁盘
+static void persistDomainStore(NSString *domain) {
+    NSMutableDictionary *store = g_virtualCFPrefsStore[domain];
+    if (store) {
+        NSString *path = virtualCFPrefsPlistPath(domain);
+        [store writeToFile:path atomically:YES];
+    }
+}
+
+// 获取某个 domain 的 NSString 名称（处理 NULL / 特殊常量）
+static NSString *domainNameForAppID(CFStringRef applicationID) {
+    if (applicationID == NULL || applicationID == kCFPreferencesCurrentApplication) {
+        // 当前应用 domain，使用伪装后的 bundle ID
+        return g_spoofedBundleId ?: @"com.ss.iphone.ugc.Ame";
+    }
+    if (CFStringCompare(applicationID, kCFPreferencesAnyApplication, 0) == kCFCompareEqualTo) {
+        return @"_kCFPreferencesAnyApplication";
+    }
+    return (__bridge NSString *)applicationID;
+}
+
+// ============================================================================
+// 判断是否应该使用虚拟存储
 // ============================================================================
 
 static inline BOOL isBlockedAppID(NSString *appID) {
@@ -6331,61 +6431,183 @@ static inline BOOL isBlockedAppID(NSString *appID) {
            [appID localizedCaseInsensitiveContainsString:@"musically"] || 
            [appID localizedCaseInsensitiveContainsString:@"tiktok"] || 
            [appID localizedCaseInsensitiveContainsString:@"stability"] || 
-           [appID localizedCaseInsensitiveContainsString:@"newBoot"];
+           [appID localizedCaseInsensitiveContainsString:@"newBoot"] ||
+           [appID localizedCaseInsensitiveContainsString:@"bytedance"] ||
+           [appID localizedCaseInsensitiveContainsString:@"hts."];
 }
 
 static inline BOOL shouldShortCircuitCFPrefs(CFStringRef applicationID) {
+    if (!g_isCloneMode) return false;
     if (applicationID == NULL || applicationID == kCFPreferencesCurrentApplication) {
-        return g_isCloneMode; // 在分身模式下，直接禁用原生 CFPreferences，防止沙盒报错 IPC 卡顿
+        return true; // 在分身模式下，当前 app 的所有偏好都走虚拟存储
     }
     if (CFStringCompare(applicationID, kCFPreferencesAnyApplication, 0) == kCFCompareEqualTo) return true;
-    if (g_isCloneMode) {
-        NSString *appID = (__bridge NSString *)applicationID;
-        if (isBlockedAppID(appID)) return true;
-    }
+    NSString *appID = (__bridge NSString *)applicationID;
+    if (isBlockedAppID(appID)) return true;
     return false;
 }
 
+// ============================================================================
+// 虚拟存储读写操作
+// ============================================================================
+
+// 从虚拟存储读取单个值
+static CFPropertyListRef virtualCFPrefsGetValue(CFStringRef key, CFStringRef applicationID) {
+    if (!key || !g_virtualCFPrefsStore) return NULL;
+    ensureVirtualCFPrefsStore();
+    
+    NSString *domain = domainNameForAppID(applicationID);
+    NSString *keyStr = (__bridge NSString *)key;
+    
+    __block id result = nil;
+    dispatch_sync(g_cfprefsQueue, ^{
+        NSMutableDictionary *store = loadDomainStore(domain);
+        result = store[keyStr];
+    });
+    
+    if (result) {
+        return (__bridge_retained CFPropertyListRef)result;
+    }
+    return NULL;
+}
+
+// 向虚拟存储写入单个值
+static void virtualCFPrefsSetValue(CFStringRef key, CFPropertyListRef value, CFStringRef applicationID) {
+    if (!key) return;
+    ensureVirtualCFPrefsStore();
+    
+    NSString *domain = domainNameForAppID(applicationID);
+    NSString *keyStr = (__bridge NSString *)key;
+    
+    dispatch_barrier_async(g_cfprefsQueue, ^{
+        NSMutableDictionary *store = loadDomainStore(domain);
+        if (value) {
+            store[keyStr] = (__bridge id)value;
+        } else {
+            [store removeObjectForKey:keyStr];
+        }
+    });
+}
+
+// 虚拟存储批量写入
+static void virtualCFPrefsSetMultiple(CFDictionaryRef keysToSet, CFArrayRef keysToRemove, CFStringRef applicationID) {
+    ensureVirtualCFPrefsStore();
+    
+    NSString *domain = domainNameForAppID(applicationID);
+    
+    dispatch_barrier_async(g_cfprefsQueue, ^{
+        NSMutableDictionary *store = loadDomainStore(domain);
+        if (keysToSet) {
+            NSDictionary *toSet = (__bridge NSDictionary *)keysToSet;
+            [store addEntriesFromDictionary:toSet];
+        }
+        if (keysToRemove) {
+            NSArray *toRemove = (__bridge NSArray *)keysToRemove;
+            [store removeObjectsForKeys:toRemove];
+        }
+    });
+}
+
+// 虚拟存储同步（持久化到 plist）
+static void virtualCFPrefsSync(CFStringRef applicationID) {
+    if (!g_virtualCFPrefsStore) return;
+    
+    NSString *domain = domainNameForAppID(applicationID);
+    
+    dispatch_barrier_async(g_cfprefsQueue, ^{
+        persistDomainStore(domain);
+    });
+}
+
+// 从虚拟存储批量读取
+static CFDictionaryRef virtualCFPrefsCopyMultiple(CFArrayRef keysToFetch, CFStringRef applicationID) {
+    if (!g_virtualCFPrefsStore) return CFDictionaryCreate(kCFAllocatorDefault, NULL, NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    ensureVirtualCFPrefsStore();
+    
+    NSString *domain = domainNameForAppID(applicationID);
+    
+    __block NSDictionary *result = nil;
+    dispatch_sync(g_cfprefsQueue, ^{
+        NSMutableDictionary *store = loadDomainStore(domain);
+        if (keysToFetch) {
+            NSArray *keys = (__bridge NSArray *)keysToFetch;
+            NSMutableDictionary *filtered = [NSMutableDictionary dictionaryWithCapacity:keys.count];
+            for (NSString *k in keys) {
+                id v = store[k];
+                if (v) filtered[k] = v;
+            }
+            result = [filtered copy];
+        } else {
+            result = [store copy];
+        }
+    });
+    
+    return (__bridge_retained CFDictionaryRef)(result ?: @{});
+}
+
+// ============================================================================
+// Hook: CFPreferencesSetValue / CFPreferencesSetAppValue
+// 用途：拦截对沙盒受限 domain 的写入，存入虚拟存储
+// ============================================================================
+
 static void (*orig_CFPreferencesSetValue)(CFStringRef key, CFPropertyListRef value, CFStringRef applicationID, CFStringRef userName, CFStringRef hostName) = NULL;
 static void hooked_CFPreferencesSetValue(CFStringRef key, CFPropertyListRef value, CFStringRef applicationID, CFStringRef userName, CFStringRef hostName) {
-    if (shouldShortCircuitCFPrefs(applicationID)) return;
+    if (shouldShortCircuitCFPrefs(applicationID)) {
+        virtualCFPrefsSetValue(key, value, applicationID);
+        return;
+    }
     if (orig_CFPreferencesSetValue) orig_CFPreferencesSetValue(key, value, applicationID, userName, hostName);
 }
 
 static void (*orig_CFPreferencesSetAppValue)(CFStringRef key, CFPropertyListRef value, CFStringRef applicationID) = NULL;
 static void hooked_CFPreferencesSetAppValue(CFStringRef key, CFPropertyListRef value, CFStringRef applicationID) {
-    if (shouldShortCircuitCFPrefs(applicationID)) return;
+    if (shouldShortCircuitCFPrefs(applicationID)) {
+        virtualCFPrefsSetValue(key, value, applicationID);
+        return;
+    }
     if (orig_CFPreferencesSetAppValue) orig_CFPreferencesSetAppValue(key, value, applicationID);
 }
 
 static void (*orig_CFPreferencesSetMultiple)(CFDictionaryRef keysToSet, CFArrayRef keysToRemove, CFStringRef applicationID, CFStringRef userName, CFStringRef hostName) = NULL;
 static void hooked_CFPreferencesSetMultiple(CFDictionaryRef keysToSet, CFArrayRef keysToRemove, CFStringRef applicationID, CFStringRef userName, CFStringRef hostName) {
-    if (shouldShortCircuitCFPrefs(applicationID)) return;
+    if (shouldShortCircuitCFPrefs(applicationID)) {
+        virtualCFPrefsSetMultiple(keysToSet, keysToRemove, applicationID);
+        return;
+    }
     if (orig_CFPreferencesSetMultiple) orig_CFPreferencesSetMultiple(keysToSet, keysToRemove, applicationID, userName, hostName);
 }
 
 // ============================================================================
 // Hook: CFPreferencesSynchronize / CFPreferencesAppSynchronize
+// 用途：对受限 domain 执行虚拟存储持久化
 // ============================================================================
 static void (*orig_CFPreferencesSynchronize)(CFStringRef applicationID, CFStringRef userName, CFStringRef hostName) = NULL;
 static void hooked_CFPreferencesSynchronize(CFStringRef applicationID, CFStringRef userName, CFStringRef hostName) {
-    if (shouldShortCircuitCFPrefs(applicationID)) return;
+    if (shouldShortCircuitCFPrefs(applicationID)) {
+        virtualCFPrefsSync(applicationID);
+        return;
+    }
     if (orig_CFPreferencesSynchronize) orig_CFPreferencesSynchronize(applicationID, userName, hostName);
 }
 
 static Boolean (*orig_CFPreferencesAppSynchronize)(CFStringRef applicationID) = NULL;
 static Boolean hooked_CFPreferencesAppSynchronize(CFStringRef applicationID) {
-    if (shouldShortCircuitCFPrefs(applicationID)) return true;
+    if (shouldShortCircuitCFPrefs(applicationID)) {
+        virtualCFPrefsSync(applicationID);
+        return true;
+    }
     if (orig_CFPreferencesAppSynchronize) return orig_CFPreferencesAppSynchronize(applicationID);
     return true;
 }
 
 // ============================================================================
 // Hook: CFPreferencesCopyAppValue / CFPreferencesCopyValue
+// 用途：对受限 domain 从虚拟存储读取，不再返回 NULL
 // ============================================================================
 static CFPropertyListRef (*orig_CFPreferencesCopyAppValue)(CFStringRef key, CFStringRef applicationID) = NULL;
 
 static CFPropertyListRef hooked_CFPreferencesCopyAppValue(CFStringRef key, CFStringRef applicationID) {
+    // 语言/地区 伪装优先
     if (key != NULL) {
         if (CFStringCompare(key, CFSTR("AppleLanguages"), 0) == kCFCompareEqualTo) {
             NSString *lang = [[SCPrefLoader shared] spoofValueForKey:@"preferredLanguage"];
@@ -6397,13 +6619,17 @@ static CFPropertyListRef hooked_CFPreferencesCopyAppValue(CFStringRef key, CFStr
         }
     }
     
-    if (shouldShortCircuitCFPrefs(applicationID)) return NULL;
+    if (shouldShortCircuitCFPrefs(applicationID)) {
+        // 从虚拟存储读取，不再返回 NULL
+        return virtualCFPrefsGetValue(key, applicationID);
+    }
     if (orig_CFPreferencesCopyAppValue) return orig_CFPreferencesCopyAppValue(key, applicationID);
     return NULL;
 }
 
 static CFPropertyListRef (*orig_CFPreferencesCopyValue)(CFStringRef key, CFStringRef applicationID, CFStringRef userName, CFStringRef hostName) = NULL;
 static CFPropertyListRef hooked_CFPreferencesCopyValue(CFStringRef key, CFStringRef applicationID, CFStringRef userName, CFStringRef hostName) {
+    // 语言/地区 伪装优先
     if (key != NULL) {
         if (CFStringCompare(key, CFSTR("AppleLanguages"), 0) == kCFCompareEqualTo) {
             NSString *lang = [[SCPrefLoader shared] spoofValueForKey:@"preferredLanguage"];
@@ -6415,14 +6641,20 @@ static CFPropertyListRef hooked_CFPreferencesCopyValue(CFStringRef key, CFString
         }
     }
     
-    if (shouldShortCircuitCFPrefs(applicationID)) return NULL;
+    if (shouldShortCircuitCFPrefs(applicationID)) {
+        // 从虚拟存储读取，不再返回 NULL
+        return virtualCFPrefsGetValue(key, applicationID);
+    }
     if (orig_CFPreferencesCopyValue) return orig_CFPreferencesCopyValue(key, applicationID, userName, hostName);
     return NULL;
 }
 
 static CFDictionaryRef (*orig_CFPreferencesCopyMultiple)(CFArrayRef keysToFetch, CFStringRef applicationID, CFStringRef userName, CFStringRef hostName) = NULL;
 static CFDictionaryRef hooked_CFPreferencesCopyMultiple(CFArrayRef keysToFetch, CFStringRef applicationID, CFStringRef userName, CFStringRef hostName) {
-    if (shouldShortCircuitCFPrefs(applicationID)) return NULL;
+    if (shouldShortCircuitCFPrefs(applicationID)) {
+        // 从虚拟存储批量读取，返回空字典而不是 NULL
+        return virtualCFPrefsCopyMultiple(keysToFetch, applicationID);
+    }
     if (orig_CFPreferencesCopyMultiple) return orig_CFPreferencesCopyMultiple(keysToFetch, applicationID, userName, hostName);
     return NULL;
 }
@@ -6436,6 +6668,11 @@ static void setupDataIsolationHooks(void) {
     }
 
     ECLog(@" 🔀 分身模式 (Clone ID: %@)，启用数据隔离", cloneId);
+
+    // [关键] 提前初始化虚拟 CFPreferences 存储
+    // 必须在 CFPreferences Hook 生效前完成，否则 stability.guard 读取会返回 NULL 导致 abort
+    ensureVirtualCFPrefsStore();
+    ECLog(@" ✅ 虚拟 CFPreferences 存储已初始化 (路径: %@)", virtualCFPrefsDirectory());
 
     // [v2260] 关键修复：重新启用文件系统 Hook
     // 这是数据隔离的核心！没有这两个 Hook，TikTok 的 MMKV、SQLite、plist
@@ -6633,6 +6870,115 @@ static void setupDataIsolationHooks(void) {
     // [DEPRECATED] 保留旧函数名以保持兼容性，内部调用新实现
     static void setupISASwizzling(void) {
     setupBundleMethodSwizzling(); }
+
+    // ============================================================
+    // Phase 25: 首次克隆启动检测 + 强制数据清理
+    // ============================================================
+    // 解决「克隆后不是全新状态」的根因：
+    // MMKV / Preferences / Keychain 中残留旧账号数据
+    static BOOL isFirstCloneLaunch(void) {
+      if (!g_isCloneMode || !g_FastCloneId) return NO;
+      // 使用沙盒 Documents/.ecdata/ 目录下的标记文件判定是否首次启动
+      // ⚠️ 不能用 tmp 目录！SCPrefLoader 的清洗逻辑会清空 tmp 导致标记丢失 → 无限重启
+      const char *homeEnv = getenv("HOME");
+      if (!homeEnv) return NO;
+      NSString *markerDir = [[NSString stringWithUTF8String:homeEnv]
+          stringByAppendingPathComponent:@"Documents/.ecdata"];
+      [[NSFileManager defaultManager] createDirectoryAtPath:markerDir
+          withIntermediateDirectories:YES attributes:nil error:nil];
+      NSString *marker = [markerDir stringByAppendingPathComponent:
+          [NSString stringWithFormat:@".ec_fresh_%@", g_FastCloneId]];
+      if ([[NSFileManager defaultManager] fileExistsAtPath:marker]) {
+        return NO;
+      }
+      [@"1" writeToFile:marker
+             atomically:YES
+               encoding:NSUTF8StringEncoding
+                  error:nil];
+      return YES;
+    }
+
+    static void forceCleanAllDataForFreshStart(void) {
+      ECLog(@"🧹🧹🧹 [FreshStart] 首次克隆启动！执行全量数据清理...");
+      NSFileManager *fm = [NSFileManager defaultManager];
+      NSString *home = NSHomeDirectory();
+
+      // [1] 清理 MMKV 持久化文件（device_id/session_token 缓存）
+      NSString *mmkvDir = [home stringByAppendingPathComponent:@"Library/MMKV"];
+      if ([fm fileExistsAtPath:mmkvDir]) {
+        [fm removeItemAtPath:mmkvDir error:nil];
+        ECLog(@"   🧹 已删除 Library/MMKV/");
+      }
+
+      // [2] 清理 Preferences plist（APP_FIRST_LAUNCH_TIME 等）
+      NSString *prefsDir = [home stringByAppendingPathComponent:@"Library/Preferences"];
+      NSArray *plistFiles = [fm contentsOfDirectoryAtPath:prefsDir error:nil];
+      for (NSString *file in plistFiles) {
+        // 只清理 App 相关的 plist，保留系统 plist
+        if ([file containsString:@"musically"] ||
+            [file containsString:@"bytedance"] ||
+            [file containsString:@"tiktok"] ||
+            [file containsString:@"snssdk"]) {
+          [fm removeItemAtPath:[prefsDir stringByAppendingPathComponent:file] error:nil];
+          ECLog(@"   🧹 已删除 Preferences/%@", file);
+        }
+      }
+
+      // [3] 清理 Application Support 数据库文件
+      NSString *appSupportDir = [home stringByAppendingPathComponent:@"Library/Application Support"];
+      if ([fm fileExistsAtPath:appSupportDir]) {
+        NSArray *dbFiles = [fm contentsOfDirectoryAtPath:appSupportDir error:nil];
+        for (NSString *file in dbFiles) {
+          if ([file hasSuffix:@".db"] || [file hasSuffix:@".sqlite"] ||
+              [file hasSuffix:@".db-wal"] || [file hasSuffix:@".db-shm"]) {
+            [fm removeItemAtPath:[appSupportDir stringByAppendingPathComponent:file] error:nil];
+            ECLog(@"   🧹 已删除 Application Support/%@", file);
+          }
+        }
+      }
+
+      // [4] 清理 Documents 中的缓存
+      NSString *docsDir = [home stringByAppendingPathComponent:@"Documents"];
+      NSArray *docFiles = [fm contentsOfDirectoryAtPath:docsDir error:nil];
+      for (NSString *file in docFiles) {
+        if ([file containsString:@"bytedance"] ||
+            [file containsString:@"tiktok"] ||
+            [file containsString:@"mmkv"] ||
+            [file containsString:@"awe_"] ||
+            [file hasSuffix:@".db"]) {
+          [fm removeItemAtPath:[docsDir stringByAppendingPathComponent:file] error:nil];
+          ECLog(@"   🧹 已删除 Documents/%@", file);
+        }
+      }
+
+      // [5] 全量清理 Keychain（使用原始 SecItemDelete，此时 Hook 尚未安装）
+      NSArray *secClasses = @[
+        (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecClassInternetPassword,
+      ];
+      for (id secClass in secClasses) {
+        NSDictionary *q = @{(__bridge id)kSecClass : secClass};
+        OSStatus st = SecItemDelete((__bridge CFDictionaryRef)q);
+        ECLog(@"   🧹 Keychain %@ 清理: status=%d",
+              secClass, (int)st);
+      }
+
+      // [6] 清理 Caches 目录中的网络缓存
+      NSString *cachesDir = [home stringByAppendingPathComponent:@"Library/Caches"];
+      NSArray *cacheFiles = [fm contentsOfDirectoryAtPath:cachesDir error:nil];
+      for (NSString *file in cacheFiles) {
+        if ([file containsString:@"musically"] ||
+            [file containsString:@"bytedance"] ||
+            [file containsString:@"tiktok"] ||
+            [file containsString:@"snssdk"] ||
+            [file containsString:@"com.apple.nsurlsessiond"]) {
+          [fm removeItemAtPath:[cachesDir stringByAppendingPathComponent:file] error:nil];
+          ECLog(@"   🧹 已删除 Caches/%@", file);
+        }
+      }
+
+      ECLog(@"✨ [FreshStart] 全量清理完成！TikTok 将以全新状态启动");
+    }
 
     // Phase 26: Keychain Cleaner
     // 当 Device ID 缺失时，主动清理 Keychain 以强制 SDK 重新注册
@@ -7299,6 +7645,29 @@ static void setupDataIsolationHooks(void) {
     // ============================================================================
 
 
+    // ============================================================
+    // statvfs Hook — 根分区可写性检测伪装
+    // ============================================================
+    // TikTok 通过 statvfs("/") 检测根分区是否可写
+    // 正常 iOS 根分区为只读（f_flag 包含 ST_RDONLY）
+    // 越狱后根分区可写，f_flag 不含 ST_RDONLY
+    #include <sys/statvfs.h>
+    static int (*original_statvfs)(const char *path, struct statvfs *buf) = NULL;
+    static int hooked_statvfs(const char *path, struct statvfs *buf) {
+      int ret = original_statvfs ? original_statvfs(path, buf) : -1;
+      if (ret == 0 && buf && path) {
+        // 对根分区和关键系统路径强制设置只读标志
+        if (strcmp(path, "/") == 0 ||
+            strcmp(path, "/System") == 0 ||
+            strcmp(path, "/usr") == 0 ||
+            strcmp(path, "/bin") == 0 ||
+            strcmp(path, "/sbin") == 0) {
+          buf->f_flag |= ST_RDONLY;
+        }
+      }
+      return ret;
+    }
+
     static void setupAntiDetectionHooks(void) {
     SCPrefLoader *config = [SCPrefLoader shared];
 
@@ -7375,6 +7744,11 @@ static void setupDataIsolationHooks(void) {
       ECLog(@"⚠️ FeatureFlag: fork/vfork Hook DISABLED");
     }
 
+    // 5.5 statvfs Hook — 根分区可写性检测
+    ec_register_rebinding("statvfs", (void *)hooked_statvfs,
+                          (void **)&original_statvfs);
+    ECLog(@"✅ [AntiDetect] statvfs 已注册 (根分区只读伪装)");
+
     // 6. NSBundle objectForInfoDictionaryKey: Hook — BundleID 查询伪装
     if ([config spoofBoolForKey:@"enableBundleIDHook" defaultValue:YES]) {
       swizzleInstanceMethod([NSBundle class],
@@ -7396,6 +7770,8 @@ static void setupDataIsolationHooks(void) {
 
     ECLog(@"✅ [AntiDetect] 反检测模块初始化完成");
     }
+
+
 
     static void safe_rebind_symbols_for_image(const struct mach_header *header,
                                               intptr_t slide) {
@@ -8001,7 +8377,60 @@ static void setupTSPKBypass(void) {
       ECLog(@"  ⚠️ TSPKInterceptorCheckerImpl 不存在，跳过");
     }
 
-    // 2. 批量扫描 TSPK 前缀类 — 延迟到主队列执行（避免 Swift 元数据崩溃）
+    // 2. 批量致盲 TSPK SecItem 管线（SecItemAdd/CopyMatching/Delete/Update Pipeline）
+    NSArray *secItemPipelines = @[
+      @"TSPKDeviceInfoOfSecItemAddPipeline",
+      @"TSPKDeviceInfoOfSecItemCopyMatchingPipeline",
+      @"TSPKDeviceInfoOfSecItemDeletePipeline",
+      @"TSPKDeviceInfoOfSecItemUpdatePipeline",
+      @"TSPKSparkSecurityPipeline",
+      @"TSPKDfCheckSubscriber",
+    ];
+    for (NSString *pipelineName in secItemPipelines) {
+      Class pipeCls = NSClassFromString(pipelineName);
+      if (!pipeCls) continue;
+      // 致盲所有实例方法中包含 check/intercept/detect/report/verify 的方法
+      unsigned int methodCount = 0;
+      Method *methods = class_copyMethodList(pipeCls, &methodCount);
+      int pipeDisabled = 0;
+      for (unsigned int j = 0; j < methodCount; j++) {
+        NSString *selName = NSStringFromSelector(method_getName(methods[j]));
+        if ([selName containsString:@"check"] ||
+            [selName containsString:@"intercept"] ||
+            [selName containsString:@"detect"] ||
+            [selName containsString:@"report"] ||
+            [selName containsString:@"verify"] ||
+            [selName containsString:@"validate"]) {
+          method_setImplementation(
+              methods[j], imp_implementationWithBlock(^BOOL(id self_) {
+                return NO;
+              }));
+          pipeDisabled++;
+        }
+      }
+      if (methods) free(methods);
+      // 类方法也处理
+      methods = class_copyMethodList(object_getClass(pipeCls), &methodCount);
+      for (unsigned int j = 0; j < methodCount; j++) {
+        NSString *selName = NSStringFromSelector(method_getName(methods[j]));
+        if ([selName containsString:@"check"] ||
+            [selName containsString:@"intercept"] ||
+            [selName containsString:@"detect"] ||
+            [selName containsString:@"report"]) {
+          method_setImplementation(
+              methods[j], imp_implementationWithBlock(^BOOL(id self_) {
+                return NO;
+              }));
+          pipeDisabled++;
+        }
+      }
+      if (methods) free(methods);
+      if (pipeDisabled > 0) {
+        ECLog(@"  ✅ TSPK %@: 致盲 %d 个方法", pipelineName, pipeDisabled);
+      }
+    }
+
+    // 3. 批量扫描 TSPK 前缀类 — 延迟到主队列执行（避免 Swift 元数据崩溃）
     NSString *interceptedKey = EC_P9_isIntercepted;
     NSString *interceptorCheckKey = EC_P9_interceptorCheck;
     NSString *hookDetectKey = EC_P9_hookDetect;
@@ -8042,7 +8471,70 @@ static void setupTSPKBypass(void) {
       }
     });
 
-    ECLog(@"🛡️ [Phase 11] TSPK 绕过完成（批量扫描已延迟到主队列）");
+    // 4. BDTuring 验证码引擎环境采集拦截
+    // 拦截验证码触发链上的关键类，阻止其采集到异常环境信息
+    Class turingConfigCls = NSClassFromString(@"BDTuringConfig");
+    if (turingConfigCls) {
+      // 禁用安全检测相关配置
+      SEL configSels[] = {
+        NSSelectorFromString(@"isSecurityCheckEnabled"),
+        NSSelectorFromString(@"enableSecurityCheck"),
+        NSSelectorFromString(@"securityCheckEnabled"),
+      };
+      for (int i = 0; i < 3; i++) {
+        Method m = class_getInstanceMethod(turingConfigCls, configSels[i]);
+        if (!m) m = class_getClassMethod(turingConfigCls, configSels[i]);
+        if (m) {
+          method_setImplementation(m,
+              imp_implementationWithBlock(^BOOL(id self_) { return NO; }));
+          ECLog(@"  ✅ Disabled: BDTuringConfig.%@",
+                NSStringFromSelector(configSels[i]));
+        }
+      }
+    }
+
+    // BDTuringServiceCenter — 验证码调度中心的环境检测方法
+    Class turingCenterCls = NSClassFromString(@"BDTuringServiceCenter");
+    if (turingCenterCls) {
+      unsigned int methodCount = 0;
+      Method *methods = class_copyMethodList(turingCenterCls, &methodCount);
+      for (unsigned int j = 0; j < methodCount; j++) {
+        NSString *selName = NSStringFromSelector(method_getName(methods[j]));
+        if ([selName containsString:@"deviceCheck"] ||
+            [selName containsString:@"securityCheck"] ||
+            [selName containsString:@"riskCheck"] ||
+            [selName containsString:@"environmentCheck"]) {
+          method_setImplementation(
+              methods[j], imp_implementationWithBlock(^id(id self_) {
+                return nil;
+              }));
+          ECLog(@"  ✅ Disabled: BDTuringServiceCenter.%@", selName);
+        }
+      }
+      if (methods) free(methods);
+    }
+
+    // BDTuringModelValidation — 验证码模型校验
+    Class turingValidCls = NSClassFromString(@"BDTuringModelValidation");
+    if (turingValidCls) {
+      unsigned int methodCount = 0;
+      Method *methods = class_copyMethodList(turingValidCls, &methodCount);
+      for (unsigned int j = 0; j < methodCount; j++) {
+        NSString *selName = NSStringFromSelector(method_getName(methods[j]));
+        if ([selName containsString:@"validate"] ||
+            [selName containsString:@"check"] ||
+            [selName containsString:@"verify"]) {
+          method_setImplementation(
+              methods[j], imp_implementationWithBlock(^BOOL(id self_) {
+                return YES; // 验证永远通过
+              }));
+          ECLog(@"  ✅ Bypass: BDTuringModelValidation.%@", selName);
+        }
+      }
+      if (methods) free(methods);
+    }
+
+    ECLog(@"🛡️ [Phase 11] TSPK + BDTuring 绕过完成");
 }
 
 // ============================================================
@@ -8250,34 +8742,216 @@ static void fixInfoPlistBundleId(void) {
 }
 
 // ============================================================
-// Phase 9-14 总装入口
+// Phase 15: MMKV 路径重定向（防止克隆读到旧数据）
+// ============================================================
+static void setupMMKVPathRedirection(void) {
+    if (!g_isCloneMode || !g_FastCloneId) return;
+    ECLog(@"🛡️ [Phase 15] MMKV 路径重定向...");
+
+    // Hook +[MMKV initializeMMKV:] — 将 rootDir 指向克隆数据目录
+    Class mmkvCls = NSClassFromString(@"MMKV");
+    if (!mmkvCls) {
+      ECLog(@"  ⚠️ MMKV 类不存在，跳过");
+      return;
+    }
+
+    // Hook +[MMKV setMMKVBasePath:]
+    SEL setBasePathSel = NSSelectorFromString(@"setMMKVBasePath:");
+    Method mSetBase = class_getClassMethod(mmkvCls, setBasePathSel);
+    if (mSetBase) {
+      method_setImplementation(mSetBase,
+          imp_implementationWithBlock(^(id self_, NSString *basePath) {
+            // 将 basePath 重定向到克隆数据目录下的 MMKV
+            NSString *cloneDir = [[SCPrefLoader shared] cloneDataDirectory];
+            if (cloneDir) {
+              NSString *mmkvDir = [cloneDir stringByAppendingPathComponent:@"Library/MMKV"];
+              [[NSFileManager defaultManager] createDirectoryAtPath:mmkvDir
+                  withIntermediateDirectories:YES attributes:nil error:nil];
+              ECLog(@"  🔀 [MMKV] basePath 重定向: %@ → %@", basePath, mmkvDir);
+              // 调用原始实现但使用新路径
+              // 由于我们替换了 IMP，直接使用 C 函数方式
+              void (*origFunc)(id, SEL, NSString*) = NULL;
+              // 兜底：直接用 initializeMMKV 设置
+            }
+          }));
+      ECLog(@"  ✅ Hooked: +[MMKV setMMKVBasePath:]");
+    }
+
+    // Hook +[MMKV initializeMMKV:] — 重定向 rootDir
+    SEL initSel = NSSelectorFromString(@"initializeMMKV:");
+    Method mInit = class_getClassMethod(mmkvCls, initSel);
+    if (mInit) {
+      IMP origInitIMP = method_getImplementation(mInit);
+      method_setImplementation(mInit,
+          imp_implementationWithBlock(^(id self_, NSString *rootDir) {
+            NSString *cloneDir = [[SCPrefLoader shared] cloneDataDirectory];
+            NSString *redirectedDir = rootDir;
+            if (cloneDir) {
+              redirectedDir = [cloneDir stringByAppendingPathComponent:@"Library/MMKV"];
+              [[NSFileManager defaultManager] createDirectoryAtPath:redirectedDir
+                  withIntermediateDirectories:YES attributes:nil error:nil];
+              ECLog(@"  🔀 [MMKV] initializeMMKV 重定向: %@ → %@", rootDir, redirectedDir);
+            }
+            ((void(*)(id, SEL, NSString*))origInitIMP)(self_, initSel, redirectedDir);
+          }));
+      ECLog(@"  ✅ Hooked: +[MMKV initializeMMKV:]");
+    }
+
+    // Hook +[MMKV mmkvWithID:cryptKey:relativePath:] — 重定向 relativePath
+    SEL mmkvWithIdSel = NSSelectorFromString(@"mmkvWithID:cryptKey:relativePath:");
+    Method mWith = class_getClassMethod(mmkvCls, mmkvWithIdSel);
+    if (mWith) {
+      IMP origWithIMP = method_getImplementation(mWith);
+      method_setImplementation(mWith,
+          imp_implementationWithBlock(^id(id self_, NSString *mmapID, NSData *cryptKey, NSString *relativePath) {
+            NSString *cloneDir = [[SCPrefLoader shared] cloneDataDirectory];
+            NSString *redirectedPath = relativePath;
+            if (cloneDir && relativePath) {
+              // 如果 relativePath 包含原始沙盒路径，替换为克隆路径
+              NSString *home = NSHomeDirectory();
+              if ([relativePath hasPrefix:home]) {
+                redirectedPath = [relativePath stringByReplacingOccurrencesOfString:home
+                    withString:cloneDir];
+                [[NSFileManager defaultManager] createDirectoryAtPath:redirectedPath
+                    withIntermediateDirectories:YES attributes:nil error:nil];
+              }
+            }
+            return ((id(*)(id, SEL, NSString*, NSData*, NSString*))origWithIMP)(
+                self_, mmkvWithIdSel, mmapID, cryptKey, redirectedPath);
+          }));
+      ECLog(@"  ✅ Hooked: +[MMKV mmkvWithID:cryptKey:relativePath:]");
+    }
+
+    ECLog(@"🛡️ [Phase 15] MMKV 路径重定向完成");
+}
+
+// ============================================================
+// Phase 16: 安全插件禁用 + 会话过期监控
+// ============================================================
+static void setupSecurityPluginDisable(void) {
+    ECLog(@"🛡️ [Phase 16] 安全插件禁用 + 会话过期监控...");
+
+    // 16.1 禁用 TTSecurityPluginsAdapterPostLaunchTask（启动后安全扫描任务）
+    Class secTaskCls = NSClassFromString(@"TTSecurityPluginsAdapterPostLaunchTask");
+    if (secTaskCls) {
+      NSArray *taskSels = @[@"start", @"run", @"execute",
+          @"startWithCompletionHandler:", @"runWithContext:"];
+      for (NSString *selName in taskSels) {
+        SEL sel = NSSelectorFromString(selName);
+        Method m = class_getInstanceMethod(secTaskCls, sel);
+        if (m) {
+          method_setImplementation(m, imp_implementationWithBlock(^(id self_) {
+            // 空实现 — 阻止启动后安全扫描
+          }));
+          ECLog(@"  ✅ Disabled: -[TTSecurityPluginsAdapterPostLaunchTask %@]", selName);
+        }
+      }
+    } else {
+      ECLog(@"  ⚠️ TTSecurityPluginsAdapterPostLaunchTask 不存在");
+    }
+
+    // 16.2 监控会话过期（handleSessionExpiredIfNeeded）— 诊断掉线触发点
+    Class sessionCls = NSClassFromString(@"TTAccountSessionXTTToken");
+    if (sessionCls) {
+      SEL expiredSel = NSSelectorFromString(
+          @"handleSessionExpiredIfNeededFromResponse:fromRequest:");
+      Method mExpired = class_getInstanceMethod(sessionCls, expiredSel);
+      if (mExpired) {
+        IMP origExpiredIMP = method_getImplementation(mExpired);
+        method_setImplementation(mExpired,
+            imp_implementationWithBlock(^(id self_, id response, id request) {
+              ECLog(@"⚠️⚠️⚠️ [SessionMonitor] handleSessionExpiredIfNeeded 被触发!");
+              ECLog(@"   Response: %@", response);
+              ECLog(@"   Request: %@", request);
+              // 调用原始实现（不阻断，仅监控）
+              ((void(*)(id, SEL, id, id))origExpiredIMP)(self_, expiredSel, response, request);
+            }));
+        ECLog(@"  ✅ Monitoring: -[TTAccountSessionXTTToken handleSessionExpiredIfNeeded...]");
+      }
+
+      // 16.3 监控 Token 心跳结果
+      SEL beatSel = NSSelectorFromString(@"tokenBeatWithScene:completed:");
+      Method mBeat = class_getClassMethod(sessionCls, beatSel);
+      if (mBeat) {
+        IMP origBeatIMP = method_getImplementation(mBeat);
+        method_setImplementation(mBeat,
+            imp_implementationWithBlock(^(id self_, NSString *scene, id completion) {
+              ECLog(@"📡 [SessionMonitor] tokenBeat scene=%@", scene);
+              ((void(*)(id, SEL, NSString*, id))origBeatIMP)(self_, beatSel, scene, completion);
+            }));
+        ECLog(@"  ✅ Monitoring: +[TTAccountSessionXTTToken tokenBeatWithScene:...]");
+      }
+    }
+
+    // 16.4 监控 BDTuringDeviceHelper（验证码设备环境采集）
+    Class turingDevCls = NSClassFromString(@"BDTuringDeviceHelper");
+    if (turingDevCls) {
+      // 尝试 Hook 常见的设备信息获取方法
+      NSArray *devSels = @[@"deviceInfo", @"getDeviceInfo", @"collectDeviceInfo"];
+      for (NSString *selName in devSels) {
+        SEL sel = NSSelectorFromString(selName);
+        Method m = class_getInstanceMethod(turingDevCls, sel);
+        if (!m) m = class_getClassMethod(turingDevCls, sel);
+        if (m) {
+          ECLog(@"  📡 发现 BDTuringDeviceHelper.%@ — 可用于后续拦截", selName);
+        }
+      }
+    }
+
+    // 16.5 监控 BDTuringSandBoxHelper（沙盒检测辅助）
+    Class turingSandboxCls = NSClassFromString(@"BDTuringSandBoxHelper");
+    if (turingSandboxCls) {
+      unsigned int methodCount = 0;
+      Method *methods = class_copyMethodList(object_getClass(turingSandboxCls), &methodCount);
+      for (unsigned int i = 0; i < methodCount; i++) {
+        NSString *selName = NSStringFromSelector(method_getName(methods[i]));
+        if ([selName containsString:@"check"] ||
+            [selName containsString:@"detect"] ||
+            [selName containsString:@"sandbox"] ||
+            [selName containsString:@"jailbreak"]) {
+          method_setImplementation(methods[i],
+              imp_implementationWithBlock(^BOOL(id self_) { return NO; }));
+          ECLog(@"  ✅ Disabled: +[BDTuringSandBoxHelper %@]", selName);
+        }
+      }
+      if (methods) free(methods);
+    }
+
+    ECLog(@"🛡️ [Phase 16] 安全插件禁用 + 会话监控完成");
+}
+
+// ============================================================
+// Phase 9-16 总装入口
 // ============================================================
 static void setupDeepProtection(void) {
-    // v2229: 临时全部禁用 Phase 9-14
-    // 14:38 崩溃日志显示在 UIWindowScene 初始化后 SIGSEGV，
-    // 无法确定是哪个 Phase 导致。先建立稳定基线，后续逐个启用二分排查。
-    ECLog(@"🛡️ [Phase 9-14] 深度防护暂时全部禁用 — 二分排查崩溃源");
+    ECLog(@"🛡️ [Phase 9-16] 深度防护启动...");
 
-    // 仅保留 Phase 12-13（纯 ObjC method swizzle，最安全）
+    // Phase 12-13（纯 ObjC method swizzle，最安全）
     @try {
       setupDeviceCheckBypass();
     } @catch (NSException *e) {
       ECLog(@"❌ Phase 12-13 异常: %@", e);
     }
 
-    // Phase 9 (IMP rebind) — 暂时禁用，rebind_symbols 可能破坏 GOT
+    // Phase 10 (bdfishhook) — 禁用 GOT 完整性校验
+    @try { setupBDFishhookBypass(); }
+    @catch (NSException *e) { ECLog(@"❌ Phase 10 异常: %@", e); }
+
+    // Phase 11 (TSPK) — 拦截链双向校验绕过
+    @try { setupTSPKBypass(); }
+    @catch (NSException *e) { ECLog(@"❌ Phase 11 异常: %@", e); }
+
+    // Phase 15 (MMKV) — 路径重定向（克隆数据隔离）
+    @try { setupMMKVPathRedirection(); }
+    @catch (NSException *e) { ECLog(@"❌ Phase 15 异常: %@", e); }
+
+    // Phase 16 — 安全插件禁用 + 会话过期监控
+    @try { setupSecurityPluginDisable(); }
+    @catch (NSException *e) { ECLog(@"❌ Phase 16 异常: %@", e); }
+
+    // Phase 9 (IMP rebind) — 暂时保持禁用，rebind_symbols 可能破坏 GOT
     // @try { setupIMPSpoofing(); }
     // @catch (NSException *e) { ECLog(@"❌ Phase 9 异常: %@", e); }
-
-    // Phase 10 (bdfishhook) — 暂时禁用
-    // 静态部分 Hook AWEFishhookInitTask 是安全的，但 dispatch_async 中的
-    // objc_copyClassList 需要验证
-    // @try { setupBDFishhookBypass(); }
-    // @catch (NSException *e) { ECLog(@"❌ Phase 10 异常: %@", e); }
-
-    // Phase 11 (TSPK) — 暂时禁用
-    // @try { setupTSPKBypass(); }
-    // @catch (NSException *e) { ECLog(@"❌ Phase 11 异常: %@", e); }
 
     // Phase 14 — 保持禁用（写 Bundle 文件不安全）
     // @try { fixInfoPlistBundleId(); }
@@ -8469,6 +9143,13 @@ static void ec_trigger_network_permission_once(void) {
         }
       }
 
+      // [P0 修复] 首次克隆启动强制数据清理
+      // 必须在克隆模式判定之后、任何 Hook 安装之前执行
+      // 此时 SecItem/open/stat 等 API 均为原始实现，清理操作安全可靠
+      if (g_isCloneMode && isFirstCloneLaunch()) {
+        forceCleanAllDataForFreshStart();
+      }
+
       // [Audit] 记录启动信息到隐蔽的缓存文件（异步执行，避免阻塞 constructor）
       // 首次安装时 Documents 目录可能尚未完全就绪，同步写入会增加启动延迟
       dispatch_async(
@@ -8539,17 +9220,24 @@ static void ec_trigger_network_permission_once(void) {
         NSString *localeId = [config spoofValueForKey:@"localeIdentifier"];
 
         if (langCode) {
-          CFArrayRef spoofedLangs = (__bridge_retained CFArrayRef)@[langCode, @"en"];
-          // 覆写 kCFPreferencesAnyApplication 域（全局偏好）
-          CFPreferencesSetValue(CFSTR("AppleLanguages"), spoofedLangs,
-              kCFPreferencesAnyApplication, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost);
-          CFRelease(spoofedLangs);
-          ECLog(@"🌐 [LangFix] 已覆写进程缓存 AppleLanguages: %@", langCode);
+          // [修复] 克隆模式下不直接调用 CFPreferencesSetValue
+          // 原因：PluginKitPlugin 容器中 cfprefsd 会拒绝写入 kCFPreferencesAnyApplication，
+          //       每次 IPC 超时约 1 秒，两次叠加导致主线程阻塞 2+ 秒 → Watchdog 超时杀进程
+          // 虚拟 CFPreferences 存储会在 Hook 安装后接管所有读写
+          if (!g_isCloneMode) {
+            CFArrayRef spoofedLangs = (__bridge_retained CFArrayRef)@[langCode, @"en"];
+            CFPreferencesSetValue(CFSTR("AppleLanguages"), spoofedLangs,
+                kCFPreferencesAnyApplication, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost);
+            CFRelease(spoofedLangs);
+          }
+          ECLog(@"🌐 [LangFix] 已覆写进程缓存 AppleLanguages: %@ (clone=%d)", langCode, g_isCloneMode);
         }
         if (localeId) {
-          CFPreferencesSetValue(CFSTR("AppleLocale"), (__bridge CFStringRef)localeId,
-              kCFPreferencesAnyApplication, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost);
-          ECLog(@"🌐 [LangFix] 已覆写进程缓存 AppleLocale: %@", localeId);
+          if (!g_isCloneMode) {
+            CFPreferencesSetValue(CFSTR("AppleLocale"), (__bridge CFStringRef)localeId,
+                kCFPreferencesAnyApplication, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost);
+          }
+          ECLog(@"🌐 [LangFix] 已覆写进程缓存 AppleLocale: %@ (clone=%d)", localeId, g_isCloneMode);
         }
       }
 

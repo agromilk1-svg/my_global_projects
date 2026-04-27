@@ -357,9 +357,10 @@ static void ECConfigLog(NSString *format, ...) {
         // 写入清洗标记，防止下次启动重复清洗
         [@"done" writeToFile:cleanMarker atomically:YES encoding:NSUTF8StringEncoding error:nil];
         
-        // 立即终止进程，斩杀内存中的脏数据
-        ECConfigLog(@" 💣 [环境重置] 沙盒清洗完成，立即终止进程！");
-        _exit(0);
+        // [修复] 不再强制终止进程，清洗完直接继续运行
+        // 原因：_exit(0) 导致多一次重启循环，增加闪退风险
+        // 清洗已完成，后续 ECDeviceSpoof 初始化会重建所有 Hook 和伪装
+        ECConfigLog(@" ✅ [环境重置] 沙盒清洗完成，继续正常启动流程");
     }
   });
   return cachedDataDir;

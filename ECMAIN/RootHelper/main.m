@@ -436,22 +436,7 @@ void installLdid(NSString *ldidToCopyPath, NSString *ldidVersion) {
   NSLog(@"[RootHelper] installLdid: Success");
 }
 
-BOOL isLdidInstalled(void) {
-  // 检查当前 APP 包内的 ldid（优先）
-  NSString *bundleLdidPath = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"ldid"];
-  if ([[NSFileManager defaultManager] fileExistsAtPath:bundleLdidPath]) {
-    return YES;
-  }
-  // 检查 TrollStore 默认路径
-  NSString *tsPath = trollStoreAppPath();
-  if (tsPath) {
-    NSString *trollStoreLdidPath = [tsPath stringByAppendingPathComponent:@"ldid"];
-    if ([[NSFileManager defaultManager] fileExistsAtPath:trollStoreLdidPath]) {
-      return YES;
-    }
-  }
-  return NO;
-}
+
 
 #endif
 
