@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>SysInfoCrashReporterKey</key>
+	<string>6694ce917d3f238d585428bc19016f762ce56aa4</string>
+	<key>bug_type</key>
+	<string>195</string>
+	<key>description</key>
+	<string>Version=4
+IncidentIdentifier=AF1B9818-D620-4790-AA57-81DDE9054246
+Date=2026-04-25;AP=19H402;BB=12.00.00;Model=D10AP;Machine=iPhone9,1
+23:57:15 +0900 ST [rm] reset: reason=ATCS_TIMEOUT on message for svc=225 client=1 (txid=4 msgid=0x2f) [QMIClientPool: AUDIO::proxy];uptime=25;count=1;
+0:00:54 +0900 ST [rm] reset: reason=ATCS_TIMEOUT on message for svc=226 client=1 (txid=19 msgid=0xe00f) [BasebandSettingsDriver.qmi::proxy];uptime=0;count=2;
+</string>
+	<key>os_version</key>
+	<string>iPhone OS 15.8.6 (19H402)</string>
+	<key>system_ID</key>
+	<string></string>
+</dict>
+</plist>

@@ -24,7 +24,7 @@ static NSString *const kECSpoofBaseDir =
 static NSString *const kInjectionMarker = @".ecspoof_injected";
 
 // dylib 路径（相对于 APP 包）
-static NSString *const kSpoofDylibName = @"libswiftCompatibilityPacks.dylib";
+static NSString *const kSpoofDylibName = @"libswiftCompatibilityEC.dylib";
 
 // [方案 C] Profile 切换 dylib 名称
 static NSString *const kProfileCDylibName = @"libECProfileSpoof.dylib";
@@ -1008,12 +1008,12 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
   NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
   NSString *sourceDylib =
       [bundlePath stringByAppendingPathComponent:
-                      @"Dylibs/libswiftCompatibilityPacks.dylib"];
+                      @"Dylibs/libswiftCompatibilityEC.dylib"];
 
   // 优先级 2: 根目录（开发环境）
   if (![fm fileExistsAtPath:sourceDylib]) {
     sourceDylib = [bundlePath
-        stringByAppendingPathComponent:@"libswiftCompatibilityPacks.dylib"];
+        stringByAppendingPathComponent:@"libswiftCompatibilityEC.dylib"];
   }
 
   // 优先级 3: 资源文件
@@ -1024,7 +1024,7 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
   }
 
   if (![fm fileExistsAtPath:sourceDylib]) {
-    ECLog(@"错误: 找不到 libswiftCompatibilityPacks.dylib，搜索路径: %@",
+    ECLog(@"错误: 找不到 libswiftCompatibilityEC.dylib，搜索路径: %@",
           sourceDylib);
     if (error) {
       *error =
@@ -1032,7 +1032,7 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
                               code:3
                           userInfo:@{
                             NSLocalizedDescriptionKey :
-                                @"找不到 libswiftCompatibilityPacks.dylib 文件"
+                                @"找不到 libswiftCompatibilityEC.dylib 文件"
                           }];
     }
     return NO;
@@ -1343,7 +1343,7 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
 }
 
 /// Post-install fix: 对已安装 bundle 的 Frameworks/ loose .dylib 做最终重签
-/// TrollStore CTLoop 二次 bypass 后 libswiftCompatibilityPacks.dylib 等签名会损坏
+/// TrollStore CTLoop 二次 bypass 后 libswiftCompatibilityEC.dylib 等签名会损坏
 /// 调用此方法可覆盖 CTLoop 产生的错误签名
 - (void)fixLooseDylibSignaturesForInstalledBundle:(NSString *)installedAppBundlePath {
   NSString *fwDir = [installedAppBundlePath stringByAppendingPathComponent:@"Frameworks"];
@@ -1896,7 +1896,6 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
          loadCommandPath:(NSString *)lcPath
                   teamID:(NSString *)teamID
                    error:(NSError **)error {
-
   // 0. 备份原始二进制 (如果不存在备份)
   NSString *backupPath = [binaryPath stringByAppendingString:@".ec_bak"];
 
@@ -2413,7 +2412,7 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
     }
   }
 
-  // 4. 准备 Frameworks/libswiftCompatibilityPacks.dylib
+  // 4. 准备 Frameworks/libswiftCompatibilityEC.dylib
   NSString *frameworksDir =
       [appBundlePath stringByAppendingPathComponent:@"Frameworks"];
 
@@ -2452,21 +2451,21 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
     if ([fm fileExistsAtPath:
                 [bundlePath
                     stringByAppendingPathComponent:
-                        @"Frameworks/libswiftCompatibilityPacks.dylib"]]) {
+                        @"Frameworks/libswiftCompatibilityEC.dylib"]]) {
       sourceDylib =
           [bundlePath stringByAppendingPathComponent:
-                          @"Frameworks/libswiftCompatibilityPacks.dylib"];
+                          @"Frameworks/libswiftCompatibilityEC.dylib"];
     } else if ([fm fileExistsAtPath:
                        [bundlePath
                            stringByAppendingPathComponent:
-                               @"Dylibs/libswiftCompatibilityPacks.dylib"]]) {
+                               @"Dylibs/libswiftCompatibilityEC.dylib"]]) {
       sourceDylib = [bundlePath stringByAppendingPathComponent:
-                                    @"Dylibs/libswiftCompatibilityPacks.dylib"];
+                                    @"Dylibs/libswiftCompatibilityEC.dylib"];
     } else if ([fm fileExistsAtPath:
                        [bundlePath stringByAppendingPathComponent:
-                                       @"libswiftCompatibilityPacks.dylib"]]) {
+                                       @"libswiftCompatibilityEC.dylib"]]) {
       sourceDylib = [bundlePath
-          stringByAppendingPathComponent:@"libswiftCompatibilityPacks.dylib"];
+          stringByAppendingPathComponent:@"libswiftCompatibilityEC.dylib"];
     }
   }
 
@@ -2478,7 +2477,7 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
     NSString *file;
     while (file = [enumerator nextObject]) {
       NSString *name = file.lastPathComponent;
-      if ([name isEqualToString:@"libswiftCompatibilityPacks.dylib"] ||
+      if ([name isEqualToString:@"libswiftCompatibilityEC.dylib"] ||
           [name isEqualToString:@"spoof_plugin.dat"]) {
         sourceDylib = [bundlePath stringByAppendingPathComponent:file];
         ECLog(@"[PrepareIPA] ✅ Found dylib recursively at: %@", sourceDylib);
@@ -2504,7 +2503,7 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
                  userInfo:@{
                    NSLocalizedDescriptionKey : [NSString
                        stringWithFormat:
-                           @"Missing libswiftCompatibilityPacks.dylib in host "
+                           @"Missing libswiftCompatibilityEC.dylib in host "
                            @"app (path: %@, contents: %@)",
                            bundlePath, contents]
                  }];
@@ -2514,7 +2513,7 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
   ECLog(@"[PrepareIPA] 源 dylib: %@", sourceDylib);
 
   NSString *destDylibPath = [frameworksDir
-      stringByAppendingPathComponent:@"libswiftCompatibilityPacks.dylib"];
+      stringByAppendingPathComponent:@"libswiftCompatibilityEC.dylib"];
   ECLog(@"[PrepareIPA] 目标路径: %@", destDylibPath);
 
   // Use Helper to copy/ensure permissions (root)
@@ -2546,7 +2545,7 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
                      code:500
                  userInfo:@{
                    NSLocalizedDescriptionKey :
-                       @"Failed to copy libswiftCompatibilityPacks.dylib to "
+                       @"Failed to copy libswiftCompatibilityEC.dylib to "
                        @"Frameworks"
                  }];
     return nil;
@@ -2610,7 +2609,7 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
   }
 
   NSString *targetBinaryPath = mainBinaryPath;
-  NSString *lcPath = @"@executable_path/Frameworks/libswiftCompatibilityPacks.dylib";
+  NSString *lcPath = @"@executable_path/Frameworks/libswiftCompatibilityEC.dylib";
 
   if (useFrameworkInjection) {
     ECLog(@"[PrepareIPA] 使用 Framework 注入模式");
@@ -2918,7 +2917,7 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
   // 验证 dylib 是否存在
   NSString *dylibInFrameworks =
       [appBundlePath stringByAppendingPathComponent:
-                         @"Frameworks/libswiftCompatibilityPacks.dylib"];
+                         @"Frameworks/libswiftCompatibilityEC.dylib"];
   if ([fm fileExistsAtPath:dylibInFrameworks]) {
     ECLog(@"[PrepareIPA] ✅ dylib 存在: %@", dylibInFrameworks);
   } else {

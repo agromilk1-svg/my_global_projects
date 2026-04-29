@@ -440,26 +440,8 @@ void installLdid(NSString *ldidToCopyPath, NSString *ldidVersion) {
 
 #endif
 
-BOOL isLdidInstalled(void) {
-  // 1. 检查当前主 APP 包内的 ldid (iOS App 模式)
-  NSString *bundleLdidPath =
-      [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"ldid"];
-  if ([[NSFileManager defaultManager] fileExistsAtPath:bundleLdidPath]) {
-    return YES;
-  }
+// isLdidInstalled 定义在 TSUtil.m 中，此处通过 extern (第 54 行) 引用
 
-  // 2. 检查 Helper 工具所在目录下的 ldid (RootHelper 模式)
-  NSString *selfLdidPath = [[getExecutablePath() stringByDeletingLastPathComponent]
-      stringByAppendingPathComponent:@"ldid"];
-  if ([[NSFileManager defaultManager] fileExistsAtPath:selfLdidPath]) {
-    return YES;
-  }
-
-  // 3. 兼容：检查 TrollStore 的 Documents 路径
-  NSString *trollStoreLdidPath =
-      [trollStoreAppPath() stringByAppendingPathComponent:@"ldid"];
-  return [[NSFileManager defaultManager] fileExistsAtPath:trollStoreLdidPath];
-}
 
 int spawn_process(const char *path, char *const argv[]) {
   pid_t pid;
@@ -1026,6 +1008,8 @@ int signApp(NSString *appPath, BOOL isUserInstall) {
       includingPropertiesForKeys:nil
                          options:0
                     errorHandler:nil];
+  NSMutableDictionary *mainEntitlementsToUse = nil;
+  
   while (fileURL = [enumerator nextObject]) {
     NSString *filePath = fileURL.path;
     if ([filePath.lastPathComponent isEqualToString:@"Info.plist"]) {
@@ -1071,6 +1055,7 @@ int signApp(NSString *appPath, BOOL isUserInstall) {
           }
                                   .mutableCopy;
         }
+        mainEntitlementsToUse = entitlementsToUse;
       }
 
       if (!entitlementsToUse)
@@ -1207,7 +1192,9 @@ int signApp(NSString *appPath, BOOL isUserInstall) {
   // recursively signs everything
   // 【Antigravity 修复】为 WDA 添加包含判断，普通应用必须执行此递归签名
   // 否则框架将保留原始证书，导致启动立刻被 AMFI crash
-  int r = signAdhoc(appPath, nil);
+  // 【Antigravity 致命修复】ldid 递归签名如果不传 Entitlements，会直接清空主二进制的权限！
+  // 必须传入我们在枚举时保存的主程序 mainEntitlementsToUse。
+  int r = signAdhoc(appPath, mainEntitlementsToUse);
   if (r != 0) {
     if ([appPath containsString:@"WebDriverAgentRunner"]) {
       NSLog(@"[signApp] Ignoring recursive sign failure (175) for WDA...");

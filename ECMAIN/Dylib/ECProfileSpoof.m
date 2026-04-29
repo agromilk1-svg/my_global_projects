@@ -488,54 +488,32 @@ void ECProfileSpoofInitialize(void) {
 
     ECPSLog(@"📌 Profile ID: %@, HOME: %@", g_profileId, g_profileHome);
 
-    // 2. 覆写 CFPreferences 缓存（AppleLanguages / AppleLocale）
-    NSString *langCode = [mgr spoofValueForKey:@"preferredLanguage"];
-    if (!langCode) {
-      NSString *lc = [mgr spoofValueForKey:@"languageCode"];
-      NSString *cc = [mgr spoofValueForKey:@"countryCode"];
-      if (lc && cc) langCode = [NSString stringWithFormat:@"%@-%@", lc, cc];
-    }
-    NSString *localeId = [mgr spoofValueForKey:@"localeIdentifier"];
+    // 2. [v2429 跳过] CFPreferences 覆写已在 ECDeviceSpoof constructor 中异步完成
+    //    此处不再重复调用，避免额外的 cfprefsd 同步 IPC 阻塞
+    ECPSLog(@"⏭️ 跳过 CFPreferences 覆写（已在 ECDeviceSpoof 中处理）");
 
-    if (langCode) {
-      CFArrayRef langs = (__bridge_retained CFArrayRef)@[langCode, @"en"];
-      CFPreferencesSetValue(CFSTR("AppleLanguages"), langs,
-          kCFPreferencesAnyApplication, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost);
-      CFRelease(langs);
-      ECPSLog(@"🌐 已覆写 AppleLanguages: %@", langCode);
-    }
-    if (localeId) {
-      CFPreferencesSetValue(CFSTR("AppleLocale"), (__bridge CFStringRef)localeId,
-          kCFPreferencesAnyApplication, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost);
-      ECPSLog(@"🌐 已覆写 AppleLocale: %@", localeId);
-    }
+    // 3. 注册 fishhook — 合并为单次 rebind_symbols 调用
+    //    原来 14 次独立 rebind_symbols 各自遍历全部 image，开销巨大
+    //    合并后只遍历一次，显著降低启动耗时
+    struct rebinding rebindings[] = {
+      {"NSHomeDirectory", (void *)hooked_NSHomeDirectory, (void **)&original_NSHomeDirectory},
+      {"NSSearchPathForDirectoriesInDomains", (void *)hooked_NSSearchPath, (void **)&original_NSSearchPath},
+      {"getenv", (void *)hooked_getenv, (void **)&original_getenv},
+      {"open", (void *)hooked_open, (void **)&original_open},
+      {"stat", (void *)hooked_stat, (void **)&original_stat},
+      {"lstat", (void *)hooked_lstat, (void **)&original_lstat},
+      {"access", (void *)hooked_access, (void **)&original_access},
+      {"sysctl", (void *)hooked_sysctl, (void **)&original_sysctl},
+      {"sysctlbyname", (void *)hooked_sysctlbyname, (void **)&original_sysctlbyname},
+      {"uname", (void *)hooked_uname, (void **)&original_uname},
+      {"SecItemAdd", (void *)hooked_SecItemAdd, (void **)&original_SecItemAdd},
+      {"SecItemCopyMatching", (void *)hooked_SecItemCopyMatching, (void **)&original_SecItemCopyMatching},
+      {"SecItemUpdate", (void *)hooked_SecItemUpdate, (void **)&original_SecItemUpdate},
+      {"SecItemDelete", (void *)hooked_SecItemDelete, (void **)&original_SecItemDelete},
+    };
+    rebind_symbols(rebindings, sizeof(rebindings) / sizeof(rebindings[0]));
 
-    // 3. 注册 fishhook
-    ec_register_rebinding("NSHomeDirectory", (void *)hooked_NSHomeDirectory,
-                          (void **)&original_NSHomeDirectory);
-    ec_register_rebinding("NSSearchPathForDirectoriesInDomains",
-                          (void *)hooked_NSSearchPath, (void **)&original_NSSearchPath);
-    ec_register_rebinding("getenv", (void *)hooked_getenv, (void **)&original_getenv);
-    ec_register_rebinding("open", (void *)hooked_open, (void **)&original_open);
-    ec_register_rebinding("stat", (void *)hooked_stat, (void **)&original_stat);
-    ec_register_rebinding("lstat", (void *)hooked_lstat, (void **)&original_lstat);
-    ec_register_rebinding("access", (void *)hooked_access, (void **)&original_access);
-    ec_register_rebinding("sysctl", (void *)hooked_sysctl, (void **)&original_sysctl);
-    ec_register_rebinding("sysctlbyname", (void *)hooked_sysctlbyname,
-                          (void **)&original_sysctlbyname);
-    ec_register_rebinding("uname", (void *)hooked_uname, (void **)&original_uname);
-
-    // Keychain
-    ec_register_rebinding("SecItemAdd", (void *)hooked_SecItemAdd,
-                          (void **)&original_SecItemAdd);
-    ec_register_rebinding("SecItemCopyMatching", (void *)hooked_SecItemCopyMatching,
-                          (void **)&original_SecItemCopyMatching);
-    ec_register_rebinding("SecItemUpdate", (void *)hooked_SecItemUpdate,
-                          (void **)&original_SecItemUpdate);
-    ec_register_rebinding("SecItemDelete", (void *)hooked_SecItemDelete,
-                          (void **)&original_SecItemDelete);
-
-    ECPSLog(@"✅ fishhook 注册完成");
+    ECPSLog(@"✅ fishhook 批量注册完成 (14 项，单次遍历)");
 
     // 4. ObjC Swizzle
     Class deviceClass = [UIDevice class];
@@ -576,8 +554,17 @@ void ECProfileSpoofInitialize(void) {
 #pragma mark - Constructor
 // ============================================================================
 
+// [v2429] 方案 C 总开关 — 设为 NO 可完全跳过此 dylib 的所有初始化
+// 用于排查启动崩溃时隔离 ECProfileSpoof 的影响
+static const BOOL EC_ENABLE_PROFILE_SPOOF = NO;
+
 __attribute__((constructor(101))) static void profilec_constructor(void) {
   @autoreleasepool {
+    if (!EC_ENABLE_PROFILE_SPOOF) {
+      ECPSLog(@"⚠️ [ProfileSpoof] 总开关已关闭，跳过全部初始化");
+      return;
+    }
+
     // 0. 抹除注入痕迹
     sanitizeMainBinaryHeader();
 

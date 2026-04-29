@@ -1,5 +1,5 @@
 #
-# libswiftCompatibilityPacks.dylib Makefile
+# libswiftCompatibilityEC.dylib Makefile
 # 设备信息伪装动态库编译脚本
 #
 
@@ -7,7 +7,7 @@ SDK = $(shell xcrun --sdk iphoneos --show-sdk-path)
 CC = xcrun -sdk iphoneos clang
 ARCH = arm64
 MIN_IOS = 14.0
-DYLIB_NAME = libswiftCompatibilityPacks.dylib
+DYLIB_NAME = libswiftCompatibilityEC.dylib
 
 SOURCES = \
 	ECDeviceSpoof.m \

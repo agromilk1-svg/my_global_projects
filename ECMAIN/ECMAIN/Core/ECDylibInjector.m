@@ -11,7 +11,7 @@
 
 // Mach-O 相关常量
 #define DYLIB_INSTALL_NAME                                                     \
-  @"@executable_path/Frameworks/libswiftCompatibilityPacks.dylib"
+  @"@executable_path/Frameworks/libswiftCompatibilityEC.dylib"
 
 @implementation ECDylibInjector
 
@@ -175,7 +175,7 @@
   NSString *dylibsDir =
       [bundle.bundlePath stringByAppendingPathComponent:@"Dylibs"];
   NSString *dylibPath = [dylibsDir
-      stringByAppendingPathComponent:@"libswiftCompatibilityPacks.dylib"];
+      stringByAppendingPathComponent:@"libswiftCompatibilityEC.dylib"];
 
   if ([[NSFileManager defaultManager] fileExistsAtPath:dylibPath]) {
     return dylibPath;
@@ -183,7 +183,7 @@
 
   // 备选：直接在 bundle 根目录
   dylibPath = [bundle.bundlePath
-      stringByAppendingPathComponent:@"libswiftCompatibilityPacks.dylib"];
+      stringByAppendingPathComponent:@"libswiftCompatibilityEC.dylib"];
   if ([[NSFileManager defaultManager] fileExistsAtPath:dylibPath]) {
     return dylibPath;
   }

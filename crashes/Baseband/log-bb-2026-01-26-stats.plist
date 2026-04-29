@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>SysInfoCrashReporterKey</key>
+	<string>6694ce917d3f238d585428bc19016f762ce56aa4</string>
+	<key>bug_type</key>
+	<string>195</string>
+	<key>description</key>
+	<string>Version=4
+IncidentIdentifier=35E7231F-D574-46CA-B8F1-3FE27F029743
+Date=2026-01-26;AP=19H402;BB=;Model=D10AP;Machine=iPhone9,1
+22:08:29 -0800 ST [rm] reset: reason=modem boot up failure [The operation couldn’t be completed. (BBUpdater error 50 - Fail to create transport: kBBUReturnFailCreateTransportFirst)];uptime=3;count=1;
+</string>
+	<key>os_version</key>
+	<string>iPhone OS 15.8.6 (19H402)</string>
+	<key>system_ID</key>
+	<string></string>
+</dict>
+</plist>

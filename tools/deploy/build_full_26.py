@@ -522,10 +522,10 @@ def build_native_helper():
 # --- Step 1.5: Build Device Spoof Dylib ---
 def build_device_spoof_dylib():
     """编译设备信息伪装 dylib"""
-    log("Building libswiftCompatibilityPacks.dylib...")
+    log("Building libswiftCompatibilityEC.dylib...")
     
     dylib_src = os.path.join(PROJECT_ROOT, "ECMAIN/Dylib")
-    dylib_output = os.path.join(dylib_src, "libswiftCompatibilityPacks.dylib")
+    dylib_output = os.path.join(dylib_src, "libswiftCompatibilityEC.dylib")
     
     if not os.path.exists(dylib_src):
         log("Dylib source not found, skipping...")
@@ -585,7 +585,7 @@ def build_device_spoof_dylib():
     
     # FIX: Update Dylib ID to match expected load path
     log(f"Fixing dylib ID for {dylib_output}...")
-    run_cmd(f"install_name_tool -id @executable_path/Frameworks/libswiftCompatibilityPacks.dylib '{dylib_output}'", ignore_error=True)
+    run_cmd(f"install_name_tool -id @executable_path/Frameworks/libswiftCompatibilityEC.dylib '{dylib_output}'", ignore_error=True)
 
     return dylib_output # 返回 dylib 路径
 
@@ -896,7 +896,7 @@ def package_all(app_path, helper_path, dylib_path=None, persistence_helper_path=
         log(f"Injected libswiftCompatibilityPacks.dylib as spoof_plugin.dat (Root)")
 
         # 同时也复制到原名，以便其他代码兼容
-        dest_orig = os.path.join(final_app, "libswiftCompatibilityPacks.dylib")
+        dest_orig = os.path.join(final_app, "libswiftCompatibilityEC.dylib")
         shutil.copy(dylib_path, dest_orig)
         os.chmod(dest_orig, 0o755)
 
