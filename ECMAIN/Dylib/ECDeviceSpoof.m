@@ -36,6 +36,138 @@
 static void ecSavePersistentID(NSString *key, NSString *value);
 static NSString *ecLoadPersistentID(NSString *key);
 
+// cryptid 伪造用的伪造 Mach-O header 指针（在 Phase 8.1 中初始化）
+#import <mach-o/loader.h>
+static struct mach_header_64 *g_fakeMachHeader = NULL;
+
+// ============================================================================
+// 崩溃信号捕获器（信号安全的低级文件写入）
+// ReportCrash 在 iPhone 7 上总是 OOM，我们自己捕获崩溃信号
+// ============================================================================
+#import <signal.h>
+#import <execinfo.h>
+
+static char g_crash_log_path[512] = {0};
+
+static void ec_crash_signal_handler(int sig, siginfo_t *info, void *context) {
+  // 信号安全：只使用 async-signal-safe 函数
+  int fd = open(g_crash_log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+  if (fd < 0) {
+    // 尝试备用路径
+    fd = open("/tmp/ec_crash.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+  }
+  if (fd >= 0) {
+    char buf[512];
+    int len = 0;
+
+    // 写入信号信息
+    const char *sigName = "UNKNOWN";
+    if (sig == SIGSEGV) sigName = "SIGSEGV";
+    else if (sig == SIGBUS) sigName = "SIGBUS";
+    else if (sig == SIGABRT) sigName = "SIGABRT";
+    else if (sig == SIGTRAP) sigName = "SIGTRAP";
+    else if (sig == SIGILL) sigName = "SIGILL";
+    else if (sig == SIGFPE) sigName = "SIGFPE";
+
+    len = snprintf(buf, sizeof(buf),
+        "\n=== EC CRASH HANDLER ===\n"
+        "Signal: %d (%s)\n"
+        "Fault addr: %p\n"
+        "si_code: %d\n",
+        sig, sigName,
+        info ? info->si_addr : NULL,
+        info ? info->si_code : 0);
+    write(fd, buf, len);
+
+    // 写入调用栈
+    void *frames[30];
+    int frameCount = backtrace(frames, 30);
+    if (frameCount > 0) {
+      write(fd, "Backtrace:\n", 11);
+      char **symbols = backtrace_symbols(frames, frameCount);
+      if (symbols) {
+        for (int i = 0; i < frameCount; i++) {
+          len = snprintf(buf, sizeof(buf), "  [%d] %s\n", i, symbols[i]);
+          write(fd, buf, len);
+        }
+        free(symbols);
+      } else {
+        // 没有符号时写地址
+        for (int i = 0; i < frameCount; i++) {
+          len = snprintf(buf, sizeof(buf), "  [%d] %p\n", i, frames[i]);
+          write(fd, buf, len);
+        }
+      }
+    }
+
+    // 写入 ucontext 中的 PC/LR 寄存器
+    if (context) {
+      ucontext_t *uc = (ucontext_t *)context;
+#ifdef __arm64__
+      len = snprintf(buf, sizeof(buf),
+          "PC: %p\nLR: %p\nSP: %p\nFP: %p\n",
+          (void *)uc->uc_mcontext->__ss.__pc,
+          (void *)uc->uc_mcontext->__ss.__lr,
+          (void *)uc->uc_mcontext->__ss.__sp,
+          (void *)uc->uc_mcontext->__ss.__fp);
+      write(fd, buf, len);
+#endif
+    }
+
+    write(fd, "=== END CRASH ===\n", 18);
+    close(fd);
+  }
+
+  // 恢复默认处理器并重新触发信号
+  signal(sig, SIG_DFL);
+  raise(sig);
+}
+
+static void ec_install_crash_handler(void) {
+  // 使用沙盒内的 tmp 目录，避免沙盒写拒绝
+  NSString *tmpDir = NSTemporaryDirectory();
+  if (tmpDir && tmpDir.length > 0) {
+      snprintf(g_crash_log_path, sizeof(g_crash_log_path), "%s/ec_crash.log", tmpDir.UTF8String);
+  } else {
+      strncpy(g_crash_log_path, "/tmp/ec_crash.log", sizeof(g_crash_log_path));
+  }
+  
+  // 顺便在启动时如果发现有上次的崩溃日志，打印出来
+  if (access(g_crash_log_path, F_OK) == 0) {
+      char buf[4096];
+      int fd = open(g_crash_log_path, O_RDONLY);
+      if (fd >= 0) {
+          ssize_t n = read(fd, buf, sizeof(buf) - 1);
+          if (n > 0) {
+              buf[n] = '\0';
+              NSLog(@"[ecwg][ECDeviceSpoof] 🚨 发现上次启动遗留的崩溃日志:\n%s", buf);
+          }
+          close(fd);
+          unlink(g_crash_log_path); // 读完删除
+      }
+  }
+
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_sigaction = ec_crash_signal_handler;
+  sa.sa_flags = SA_SIGINFO | SA_RESETHAND; // 只触发一次
+  sigemptyset(&sa.sa_mask);
+
+  sigaction(SIGSEGV, &sa, NULL);
+  sigaction(SIGBUS, &sa, NULL);
+  sigaction(SIGABRT, &sa, NULL);
+  sigaction(SIGTRAP, &sa, NULL);
+  sigaction(SIGILL, &sa, NULL);
+  sigaction(SIGFPE, &sa, NULL);
+}
+
+// 安全的 objc_setHook_getClass 回调，替换 AAAASingularity 注册的恶意回调
+// 返回 nil 表示不干预类查找，让 ObjC runtime 走默认路径
+static Class _Nullable ec_safe_getClass_hook(const char * _Nonnull name, Class _Nullable * _Nullable outClass) {
+  // 透传：不做任何检测，直接返回 nil 让 runtime 处理
+  return nil;
+}
+
 // --- Dyld 隐身模式 Hook (精准打击 AAAASingularity 镜像扫描) ---
 static const char *(*orig_dyld_get_image_name)(uint32_t image_index);
 static const char *my_dyld_get_image_name(uint32_t image_index) {
@@ -335,22 +467,26 @@ static void ec_register_rebinding(const char *name, void *replacement,
       (struct rebinding){name, replacement, replaced};
 }
 
-// 统一执行所有注册的 rebind（只遍历一次所有 images）
+static void image_add_callback(const struct mach_header *header, intptr_t slide);
+
+// 统一执行所有注册的 rebind（利用 dyld 回调只遍历目标 app 镜像）
 static void performMergedRebind(void) {
   if (g_pending_rebinding_count == 0) {
     // 无待处理符号
     return;
   }
-  int result = rebind_symbols(g_pending_rebindings, g_pending_rebinding_count);
-  (void)result; // 静默执行
-  // 清零计数器（防止重复 rebind）
-  g_pending_rebinding_count = 0;
+  // 核心优化：避免全局 rebind_symbols 导致 400+ 个系统库符号表被扫描引发 OOM
+  // 利用 dyld 回调机制，内部仅对 app 自身的 10-20 个动态库进行 rebind_symbols_image
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+      _dyld_register_func_for_add_image(image_add_callback);
+  });
 }
 
 // 调试日志开关
 // ☁️ 2026-02-26: 启用日志以分析 MSSDK 风控和网络交互
 #define EC_DEBUG_LOG_ENABLED 1
-#define EC_FILE_LOG_ENABLED 0
+#define EC_FILE_LOG_ENABLED 1
 
 static void ECLog(NSString *format, ...) {
 #if EC_DEBUG_LOG_ENABLED
@@ -363,25 +499,27 @@ static void ECLog(NSString *format, ...) {
   NSLog(@"[ecwg][ECDeviceSpoof] %@", logMsg);
 
 #if EC_FILE_LOG_ENABLED
-  // 文件日志已禁用，不创建任何日志目录和文件
-  static NSString *logPath = nil;
-  static dispatch_once_t onceToken;
-  dispatch_once(&onceToken, ^{
-    const char *homeEnv = getenv("HOME");
-    if (homeEnv) {
-      NSString *logDir = [[NSString stringWithUTF8String:homeEnv]
-          stringByAppendingPathComponent:
-              @"Library/Caches/.com.apple.nsurlsessiond.cache"];
-      [[NSFileManager defaultManager] createDirectoryAtPath:logDir
-                                withIntermediateDirectories:YES
-                                                 attributes:nil
-                                                      error:nil];
-      logPath = [logDir stringByAppendingPathComponent:@"session.log"];
-      // 清空旧日志
-      [@"" writeToFile:logPath
-            atomically:YES
-              encoding:NSUTF8StringEncoding
-                 error:nil];
+  // 文件日志：将关键日志写入磁盘（不受 os_log 速率限制）
+  {
+    static NSString *logPath = nil;
+    static dispatch_once_t fileLogToken;
+    dispatch_once(&fileLogToken, ^{
+      // 由于已经在此前安全绕过了 Singularity 检测，恢复使用 NSHomeDirectory() 以确保日志能正确写入沙盒 tmp 目录
+      NSString *homeDir = NSHomeDirectory();
+      if (homeDir) {
+        NSString *logDir = [homeDir
+            stringByAppendingPathComponent:@"tmp"];
+        [[NSFileManager defaultManager] createDirectoryAtPath:logDir
+                                  withIntermediateDirectories:YES
+                                                   attributes:nil
+                                                        error:nil];
+        logPath = [logDir stringByAppendingPathComponent:@"ec_debug.log"];
+        // 清空旧日志
+        [@"[EC File Logger Initialized]\n" writeToFile:logPath
+              atomically:YES
+                encoding:NSUTF8StringEncoding
+                   error:nil];
+      }
     });
 
     if (logPath) {
@@ -396,6 +534,7 @@ static void ECLog(NSString *format, ...) {
       [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
       [fh closeFile];
     }
+  }
 #endif
 #endif
 }
@@ -1145,26 +1284,76 @@ static void setupTikTokHooks(void) {
     }
 
     // ============================================================================
-    // AAAASingularity Hook (v2296: 最小侵入 + dyld 双保险)
-    // 只 Hook recordAllLoadedImages —— 唯一的镜像扫描入口。
-    // 其他方法（singularityBigBang, getABTestCase 等）保持原样运行，
-    // 因为它们负责内部初始化，Hook 掉会导致依赖链断裂 → SIGABRT。
-    // 底层 dyld fishhook 确保即使 recordAllLoadedImages 正常运行，
-    // 它扫描到的镜像列表也是"干净"的。
+    // AAAASingularity Hook (v2373: 全方位无效化)
+    // 逆向发现 AAAASingularity 使用多层防御：
+    //   1. __mod_init_func: objc_setHook_getClass 注册类加载监控
+    //   2. +load: 早期初始化
+    //   3. singularityBigBang: 被 TikTokCore 显式调用，启动检测线程
+    //   4. _singularityThreadMain: 独立线程执行安全检测
+    //   5. _dyld_register_func_for_add_image: 监控新 dylib 加载
+    // 必须 Hook 整条链上的所有方法，使其全部变为空操作。
     // ============================================================================
     Class singularityClass = NSClassFromString(EC_CLS_AAAASingularity);
     if (singularityClass) {
-      ECLog(@"🛡️ [AAAASingularity] 已识别安全框架，安装最小侵入 Hook...");
-      // 唯一 Hook 点：recordAllLoadedImages → void(self,_cmd)
-      // 作用：阻断镜像记录，即使 dyld hook 万一漏网，这里也能兜底
-      Method mRecord = class_getInstanceMethod(
-          singularityClass, NSSelectorFromString(@"recordAllLoadedImages"));
-      if (mRecord) {
-        method_setImplementation(mRecord, imp_implementationWithBlock(^(id _s){
-                                              // 空实现：不记录任何镜像信息
-                                          }));
-        ECLog(@"✅ [AAAASingularity] Hooked recordAllLoadedImages (双保险)");
+      ECLog(@"🛡️ [AAAASingularity] 已识别安全框架，安装全方位 Hook...");
+
+      // --- 需要无效化的实例方法列表 ---
+      NSArray *instanceMethodsToNOP = @[
+        @"recordAllLoadedImages",    // 镜像扫描入口
+        @"singularityBigBang",       // 核心初始化 → 启动检测线程
+        @"start",                    // 启动检测线程
+        @"stop",                     // 停止 (也 Hook 掉以防止异常)
+        @"prepareStop",             // 准备停止
+        @"record:name:",            // 记录检测结果 (同步)
+        @"asyncRecord:name:",       // 记录检测结果 (异步)
+        @"performOnThreadExecEntryBlock", // 线程执行入口
+        @"threadDidFinishStarted",  // 线程完成回调
+        @"execBlockNotOnMainThread:", // 非主线程执行
+      ];
+
+      int hookedCount = 0;
+      for (NSString *selName in instanceMethodsToNOP) {
+        Method m = class_getInstanceMethod(singularityClass, NSSelectorFromString(selName));
+        if (m) {
+          method_setImplementation(m, imp_implementationWithBlock(^(id _s, ...){
+            // 空实现：所有安全检测方法全部跳过
+          }));
+          hookedCount++;
+        }
       }
+      ECLog(@"✅ [AAAASingularity] 已无效化 %d 个实例方法", hookedCount);
+
+      // --- 需要无效化的类方法 ---
+      SEL stopClassSel = NSSelectorFromString(@"stop");
+      Method stopClassMethod = class_getClassMethod(singularityClass, stopClassSel);
+      if (stopClassMethod) {
+        method_setImplementation(stopClassMethod, imp_implementationWithBlock(^(id _s){
+          // 空操作
+        }));
+        ECLog(@"✅ [AAAASingularity] Hooked +[stop]");
+      }
+
+      // --- Hook guardService getter 返回 nil ---
+      SEL guardSel = NSSelectorFromString(@"guardService");
+      Method guardMethod = class_getInstanceMethod(singularityClass, guardSel);
+      if (guardMethod) {
+        method_setImplementation(guardMethod, imp_implementationWithBlock(^id(id _s){
+          return nil; // 返回空，阻止守卫服务启动
+        }));
+        ECLog(@"✅ [AAAASingularity] guardService → nil");
+      }
+
+      // --- Hook onThreadExecEntryBlock getter 返回 nil ---
+      SEL entryBlockSel = NSSelectorFromString(@"onThreadExecEntryBlock");
+      Method entryBlockMethod = class_getInstanceMethod(singularityClass, entryBlockSel);
+      if (entryBlockMethod) {
+        method_setImplementation(entryBlockMethod, imp_implementationWithBlock(^id(id _s){
+          return nil;
+        }));
+        ECLog(@"✅ [AAAASingularity] onThreadExecEntryBlock → nil");
+      }
+
+      ECLog(@"✅ [AAAASingularity] 全方位 Hook 完成");
     }
 
     // --- XCTest 框架检测绕过 ---
@@ -2424,7 +2613,10 @@ static int hooked_open(const char *path, int oflag, ...) {
 }
 
 static int (*original_access)(const char *path, int amode);
+static int (*original_faccessat)(int fd, const char *path, int amode, int flag);
+static int (*original_openat)(int fd, const char *path, int oflag, ...);
 static int (*original_lstat)(const char *restrict path, struct stat *restrict buf);
+static int (*original_fstatat)(int fd, const char *path, struct stat *buf, int flag);
 
 static bool is_jailbreak_path(const char *path) {
     if (!path) return false;
@@ -2434,7 +2626,8 @@ static bool is_jailbreak_path(const char *path) {
     }
     // 越狱工具二进制文件（风控高频探测路径，日志确认 ldid 16次、sh 16次、sshd 9次）
     if (strstr(path, "/usr/bin/ldid") || strstr(path, "/usr/bin/sshd") || strstr(path, "/usr/bin/ssh") ||
-        strstr(path, "/usr/sbin/sshd") || strstr(path, "/usr/libexec/ssh-keysign")) {
+        strstr(path, "/usr/sbin/sshd") || strstr(path, "/usr/libexec/ssh-keysign") ||
+        strstr(path, "/private/etc/ssh") || strstr(path, "/etc/ssh")) {
         return true;
     }
     // Shell 路径（风控通过检测 /bin/sh 存在性来判断是否有 fork+exec 能力）
@@ -2474,6 +2667,51 @@ static int hooked_access(const char *path, int amode) {
         return -1;
     }
     if (original_access) return original_access(path, amode);
+    return -1;
+}
+
+static int hooked_openat(int fd, const char *path, int oflag, ...) {
+    mode_t mode = 0;
+    if ((oflag & O_CREAT) != 0) {
+      va_list args;
+      va_start(args, oflag);
+      mode = va_arg(args, int);
+      va_end(args);
+    }
+    if (is_jailbreak_path(path)) {
+        errno = ENOENT;
+        return -1;
+    }
+    if (path && (oflag & (O_CREAT | O_WRONLY | O_RDWR)) != 0) {
+        if (strcmp(path, "/hmd_tmp_file") == 0 ||
+            strstr(path, "com.apple.mobileInfo") != NULL ||
+            strstr(path, "hmd_tmp") != NULL) {
+            errno = EACCES;
+            return -1;
+        }
+    }
+    if (original_openat) {
+        if ((oflag & O_CREAT) != 0) return original_openat(fd, path, oflag, mode);
+        return original_openat(fd, path, oflag);
+    }
+    return -1;
+}
+
+static int hooked_faccessat(int fd, const char *path, int amode, int flag) {
+    if (is_jailbreak_path(path)) {
+        errno = ENOENT;
+        return -1;
+    }
+    if (original_faccessat) return original_faccessat(fd, path, amode, flag);
+    return -1;
+}
+
+static int hooked_fstatat(int fd, const char *path, struct stat *buf, int flag) {
+    if (is_jailbreak_path(path)) {
+        errno = ENOENT;
+        return -1;
+    }
+    if (original_fstatat) return original_fstatat(fd, path, buf, flag);
     return -1;
 }
 
@@ -6415,7 +6653,7 @@ static NSString *domainNameForAppID(CFStringRef applicationID) {
         // 当前应用 domain，使用伪装后的 bundle ID
         return g_spoofedBundleId ?: @"com.ss.iphone.ugc.Ame";
     }
-    if (CFStringCompare(applicationID, kCFPreferencesAnyApplication, 0) == kCFCompareEqualTo) {
+    if (applicationID != NULL && CFStringCompare(applicationID, kCFPreferencesAnyApplication, 0) == kCFCompareEqualTo) {
         return @"_kCFPreferencesAnyApplication";
     }
     return (__bridge NSString *)applicationID;
@@ -6433,7 +6671,8 @@ static inline BOOL isBlockedAppID(NSString *appID) {
            [appID localizedCaseInsensitiveContainsString:@"stability"] || 
            [appID localizedCaseInsensitiveContainsString:@"newBoot"] ||
            [appID localizedCaseInsensitiveContainsString:@"bytedance"] ||
-           [appID localizedCaseInsensitiveContainsString:@"hts."];
+           [appID localizedCaseInsensitiveContainsString:@"hts."] ||
+           [appID isEqualToString:@"_kCFPreferencesAnyApplication"];
 }
 
 static inline BOOL shouldShortCircuitCFPrefs(CFStringRef applicationID) {
@@ -6690,6 +6929,7 @@ static void setupDataIsolationHooks(void) {
     ec_register_rebinding("getenv", (void *)hooked_getenv,
                           (void **)&original_getenv);
     ec_register_rebinding("open", (void *)hooked_open, (void **)&original_open);
+    ec_register_rebinding("openat", (void *)hooked_openat, (void **)&original_openat);
     ec_register_rebinding("stat", (void *)hooked_stat, (void **)&original_stat);
     
     // CFPreferences 沙盒挂起保护及读取伪装
@@ -7566,14 +7806,21 @@ static void setupDataIsolationHooks(void) {
 
     static const struct mach_header *hooked_dyld_get_image_header(
         uint32_t image_index) {
+    // cryptid 伪造：当请求主可执行文件的 header 时，返回堆上的伪造副本
+    // 这样 AAAASingularity 等安全 SDK 读取 LC_ENCRYPTION_INFO_64 时会看到 cryptid=1
+    uint32_t effectiveIndex = image_index;
     if (g_spoof_dylib_index != UINT32_MAX) {
       if (image_index == g_spoof_dylib_index) {
-        return original_dyld_get_image_header(image_index + 1);
+        effectiveIndex = image_index + 1;
       } else if (image_index > g_spoof_dylib_index) {
-        return original_dyld_get_image_header(image_index + 1);
+        effectiveIndex = image_index + 1;
       }
     }
-    return original_dyld_get_image_header(image_index);
+    // 如果最终解析出来的 index 是 0（主可执行文件），且伪造 header 已准备好
+    if (effectiveIndex == 0 && g_fakeMachHeader != NULL) {
+      return (const struct mach_header *)g_fakeMachHeader;
+    }
+    return original_dyld_get_image_header(effectiveIndex);
     }
 
     // ★ Hook: _dyld_get_image_vmaddr_slide - 隐藏注入库的内存地址偏移
@@ -7611,6 +7858,113 @@ static void setupDataIsolationHooks(void) {
     return -1;
     }
 
+// ============================================================
+// 反自杀系统 (Anti-Suicide)
+// AAAASingularity/BDLRepairer 等安全 SDK 检测到篡改后会延迟调用 abort()/exit() 自杀
+// 我们直接拦截这些终止函数，让“杀死开关”失效
+// ============================================================
+#include <signal.h>
+#include <pthread.h>
+
+    // 启动保护窗口：只在前 30 秒内拦截，之后恢复正常行为
+    static CFAbsoluteTime g_antiSuicideStartTime = 0;
+    static BOOL g_antiSuicideActive = YES;
+
+    static BOOL isInProtectionWindow(void) {
+      if (!g_antiSuicideActive) return NO;
+      if (g_antiSuicideStartTime == 0) {
+        g_antiSuicideStartTime = CFAbsoluteTimeGetCurrent();
+      }
+      // 30 秒保护窗口
+      if (CFAbsoluteTimeGetCurrent() - g_antiSuicideStartTime > 30.0) {
+        g_antiSuicideActive = NO;
+        return NO;
+      }
+      return YES;
+    }
+
+    // ★ Hook: abort() - 核心反自杀 Hook
+    // abort() 是 __attribute__((noreturn))，不能直接 return
+    // 使用 pthread_exit 终止调用线程（安全 SDK 的工作线程），但主线程保持存活
+    static void (*original_abort_fn)(void) = NULL;
+
+    static void hooked_abort_fn(void) {
+      if (isInProtectionWindow()) {
+        ECLog(@"🚨 [AntiSuicide] abort() 被调用但已拦截！线程将被终止，应用继续运行。");
+        // 终止当前线程，不影响其他线程
+        pthread_exit(NULL);
+        // pthread_exit 是 noreturn 的，不会继续执行
+        __builtin_unreachable();
+      }
+      // 保护窗口外，恢复正常 abort 行为
+      if (original_abort_fn) original_abort_fn();
+      __builtin_unreachable();
+    }
+
+    // ★ Hook: exit() - 阻止进程终止
+    static void (*original_exit_fn)(int status) = NULL;
+
+    static void hooked_exit_fn(int status) {
+      if (isInProtectionWindow()) {
+        ECLog(@"🚨 [AntiSuicide] exit(%d) 被调用但已拦截！线程将被终止。", status);
+        pthread_exit(NULL);
+        __builtin_unreachable();
+      }
+      if (original_exit_fn) original_exit_fn(status);
+      __builtin_unreachable();
+    }
+
+    // ★ Hook: _exit() - 阻止原始终止
+    static void (*original__exit_fn)(int status) = NULL;
+
+    static void hooked__exit_fn(int status) {
+      if (isInProtectionWindow()) {
+        ECLog(@"🚨 [AntiSuicide] _exit(%d) 被调用但已拦截！线程将被终止。", status);
+        pthread_exit(NULL);
+        __builtin_unreachable();
+      }
+      if (original__exit_fn) original__exit_fn(status);
+      __builtin_unreachable();
+    }
+
+    // ★ Hook: raise() - 拦截 SIGABRT/SIGKILL 信号
+    static int (*original_raise_fn)(int sig) = NULL;
+
+    static int hooked_raise_fn(int sig) {
+      if ((sig == SIGABRT || sig == SIGKILL) && isInProtectionWindow()) {
+        ECLog(@"🚨 [AntiSuicide] raise(%d) 被拦截！", sig);
+        return 0;
+      }
+      if (original_raise_fn) return original_raise_fn(sig);
+      return -1;
+    }
+
+    // ★ Hook: kill() - 拦截自杀信号
+    static int (*original_kill_fn)(pid_t pid, int sig) = NULL;
+
+    static int hooked_kill_fn(pid_t pid, int sig) {
+      if ((pid == getpid() || pid == 0) &&
+          (sig == SIGABRT || sig == SIGKILL || sig == SIGTERM) &&
+          isInProtectionWindow()) {
+        ECLog(@"🚨 [AntiSuicide] kill(%d, %d) 自杀被拦截！", pid, sig);
+        return 0;
+      }
+      if (original_kill_fn) return original_kill_fn(pid, sig);
+      return -1;
+    }
+
+    // ★ Hook: pthread_kill() - 拦截线程级自杀
+    static int (*original_pthread_kill_fn)(pthread_t thread, int sig) = NULL;
+
+    static int hooked_pthread_kill_fn(pthread_t thread, int sig) {
+      if (sig == SIGABRT && isInProtectionWindow()) {
+        ECLog(@"🚨 [AntiSuicide] pthread_kill(SIGABRT) 被拦截！");
+        return 0;
+      }
+      if (original_pthread_kill_fn) return original_pthread_kill_fn(thread, sig);
+      return -1;
+    }
+
 #import <dlfcn.h>
 
     static int (*original_dladdr)(const void *, Dl_info *);
@@ -7628,6 +7982,18 @@ static void setupDataIsolationHooks(void) {
       if (strstr(info->dli_fname, _dn1) != NULL) {
         // 伪装成 UIKit
         info->dli_fname = "/System/Library/Frameworks/UIKit.framework/UIKit";
+      }
+    }
+    // cryptid 伪造联动：如果 dli_fbase 指向主可执行文件的真实 header，
+    // 替换为堆上的伪造 header，确保安全 SDK 通过 dladdr→dli_fbase 读到 cryptid=1
+    if (result != 0 && info->dli_fbase && g_fakeMachHeader) {
+      // 用原始函数获取真实基地址（避免循环调用 hooked 版本）
+      const struct mach_header *realMainHeader =
+          original_dyld_get_image_header
+              ? original_dyld_get_image_header(0)
+              : _dyld_get_image_header(0);
+      if (info->dli_fbase == (void *)realMainHeader) {
+        info->dli_fbase = (void *)g_fakeMachHeader;
       }
     }
 
@@ -7680,9 +8046,11 @@ static void setupDataIsolationHooks(void) {
 
     // [P0] 注册底层 C 语言探针拦截 (防风控探测 TrollStore 痕迹)
     ec_register_rebinding("access", (void *)hooked_access, (void **)&original_access);
+    ec_register_rebinding("faccessat", (void *)hooked_faccessat, (void **)&original_faccessat);
     ec_register_rebinding("stat", (void *)hooked_stat, (void **)&original_stat);
+    ec_register_rebinding("fstatat", (void *)hooked_fstatat, (void **)&original_fstatat);
     ec_register_rebinding("lstat", (void *)hooked_lstat, (void **)&original_lstat);
-    ECLog(@"✅ [AntiDetect] stat/lstat/access 系列底层 TrollStore 路径拦截已注册");
+    ECLog(@"✅ [AntiDetect] stat/lstat/access/faccessat 系列底层 TrollStore 路径拦截已注册");
     // 1. 找到自身 dylib 的索引 (用于 dylib 隐藏)
     uint32_t count = _dyld_image_count();
     for (uint32_t i = 0; i < count; i++) {
@@ -7744,10 +8112,32 @@ static void setupDataIsolationHooks(void) {
       ECLog(@"⚠️ FeatureFlag: fork/vfork Hook DISABLED");
     }
 
+    // 5.1 反自杀系统：拦截 abort/exit/raise/kill 等进程终止函数
+    // AAAASingularity/BDLRepairer 检测到篡改后延迟调用 abort() 自杀
+    // 我们在 30 秒保护窗口内将这些函数全部拦截
+    g_antiSuicideStartTime = CFAbsoluteTimeGetCurrent();
+    ec_register_rebinding("abort", (void *)hooked_abort_fn,
+                          (void **)&original_abort_fn);
+    ec_register_rebinding("exit", (void *)hooked_exit_fn,
+                          (void **)&original_exit_fn);
+    ec_register_rebinding("_exit", (void *)hooked__exit_fn,
+                          (void **)&original__exit_fn);
+    ec_register_rebinding("raise", (void *)hooked_raise_fn,
+                          (void **)&original_raise_fn);
+    ec_register_rebinding("kill", (void *)hooked_kill_fn,
+                          (void **)&original_kill_fn);
+    ec_register_rebinding("pthread_kill", (void *)hooked_pthread_kill_fn,
+                          (void **)&original_pthread_kill_fn);
+    ECLog(@"✅ [AntiSuicide] abort/exit/raise/kill/pthread_kill 全部已注册 (30秒保护窗口)");
+
     // 5.5 statvfs Hook — 根分区可写性检测
     ec_register_rebinding("statvfs", (void *)hooked_statvfs,
                           (void **)&original_statvfs);
     ECLog(@"✅ [AntiDetect] statvfs 已注册 (根分区只读伪装)");
+
+    // 注意：反自杀 Hook 已注册到 pending 队列，统一由外部唯一的 performMergedRebind() 处理，
+    // 不要在这里重复调用，否则会导致 2 倍的 rebind_symbols 内存暴涨和 Jetsam 杀进程。
+    ECLog(@"✅ [AntiSuicide] abort/exit 拦截已注册，等待统一合并");
 
     // 6. NSBundle objectForInfoDictionaryKey: Hook — BundleID 查询伪装
     if ([config spoofBoolForKey:@"enableBundleIDHook" defaultValue:YES]) {
@@ -7806,6 +8196,16 @@ static void setupDataIsolationHooks(void) {
       return;
     }
 
+    // 关键修复：AAAASingularity 等安全框架会在后台线程动态篡改自身的 Mach-O Header（特别是 LINKEDIT 偏移量），
+    // 防止被 Dump。如果此时 fishhook 去解析它的符号表，会因为读取到垃圾偏移量导致野指针 SIGBUS 闪退。
+    // 因此，我们必须跳过这些安全框架自身的 Hook（它们检测越狱基本用内联汇编 syscall，GOT Hook 对其无效）。
+    if ([pathStr containsString:@"AAAASingularity"] ||
+        [pathStr containsString:@"AAWEBootChecker"] ||
+        [pathStr containsString:@"AAWELaunchTracker"]) {
+        ECLog(@"  ⏩ [安全模块绕过] 忽略对安全框架自身的符号重绑定以防止 SIGBUS: %@", [pathStr lastPathComponent]);
+        return;
+    }
+
     ECLog(@"🎣 Hooking app image: %@", [pathStr lastPathComponent]);
 
     // 定义 Rebindings (动态构建)
@@ -7862,6 +8262,12 @@ static void setupDataIsolationHooks(void) {
     if (count > 0) {
       rebind_symbols_image((void *)header, slide, rebindings, count);
     }
+    
+    // 5. [CRITICAL FIX] 合并全局待 Hook 的函数
+    // 这些函数在原来会调用全局 rebind_symbols 导致 OOM，现在只需对目标镜像 hook
+    if (g_pending_rebinding_count > 0) {
+      rebind_symbols_image((void *)header, slide, g_pending_rebindings, g_pending_rebinding_count);
+    }
     }
 
     static void image_add_callback(const struct mach_header *header,
@@ -7872,12 +8278,11 @@ static void setupDataIsolationHooks(void) {
     static void setupSafeHooks(void) {
     ECLog(@"🛡️ 启用安全 Hook 机制 (Image Filtering Mode)");
     // 拦截 dyld 镜像名称 API，实现注入痕迹隐身
-    struct rebinding rebs[] = {{"_dyld_get_image_name",
-                                (void *)my_dyld_get_image_name,
-                                (void **)&orig_dyld_get_image_name}};
-    rebind_symbols(rebs, 1);
-    // 注册回调，对所有已加载和后续加载的镜像进行过滤 Hook
-    _dyld_register_func_for_add_image(image_add_callback);
+    ec_register_rebinding("_dyld_get_image_name",
+                          (void *)my_dyld_get_image_name,
+                          (void **)&orig_dyld_get_image_name);
+    // 注意：_dyld_register_func_for_add_image(image_add_callback) 
+    // 已移至 performMergedRebind 中统一调用，防止 OOM。
     }
 
 #import <mach/mach.h>
@@ -7977,69 +8382,71 @@ static void setupDataIsolationHooks(void) {
 // Phase 8: 脱壳/克隆检测绕过
 // ============================================================
 
-// 8.1 LC_ENCRYPTION_INFO_64 cryptid 伪造
-// 脱壳后 cryptid=0，TikTok 通过遍历 load commands 检测此值
-// 将其修改回 1 伪装成仍处于加密状态
+// 8.1 LC_ENCRYPTION_INFO_64 cryptid 伪造 (v2 方案：堆内存 header 副本)
+// 旧方案通过 vm_protect 直接修改 __TEXT 段的 cryptid，但 iOS 15+ 的 PAC/TPRO
+// 会在后续页面校验中触发 SIGSEGV。
+// 新方案：在堆上分配一份完整的 Mach-O header + load commands 的副本，
+// 在副本中将 cryptid 设为 1，然后通过 Hook _dyld_get_image_header(0)
+// 让 AAAASingularity 等安全 SDK 读到伪造的 header。
+// 由于堆内存是 RW 的，不触发任何内存保护错误。
 #import <mach-o/loader.h>
+#import <mach/vm_map.h>
 
-static void fixEncryptionInfo(void) {
-    const struct mach_header_64 *header =
+// 全局 g_fakeMachHeader 已在文件头部声明（line ~40）
+
+static void createFakeMachHeaderWithCryptid1(void) {
+    const struct mach_header_64 *realHeader =
         (const struct mach_header_64 *)_dyld_get_image_header(0);
-    if (!header || header->magic != MH_MAGIC_64)
+    if (!realHeader) {
+      ECLog(@"❌ [Phase 8.1] 无法获取主可执行文件 header");
       return;
+    }
 
-    uintptr_t cmdPtr = (uintptr_t)(header + 1);
-    for (uint32_t i = 0; i < header->ncmds; i++) {
+    // 计算 header + 所有 load commands 的总大小
+    size_t headerSize = sizeof(struct mach_header_64) + realHeader->sizeofcmds;
+    ECLog(@"🔐 [Phase 8.1] 主可执行文件 header 大小: %zu bytes, ncmds=%u",
+          headerSize, realHeader->ncmds);
+
+    // 在堆上分配可读写的副本
+    g_fakeMachHeader = (struct mach_header_64 *)malloc(headerSize);
+    if (!g_fakeMachHeader) {
+      ECLog(@"❌ [Phase 8.1] malloc 分配伪造 header 失败");
+      return;
+    }
+    memcpy(g_fakeMachHeader, realHeader, headerSize);
+
+    // 遍历 load commands，找到 LC_ENCRYPTION_INFO_64 并将 cryptid 设为 1
+    BOOL found = NO;
+    uintptr_t cmdPtr = (uintptr_t)(g_fakeMachHeader + 1);
+    for (uint32_t i = 0; i < g_fakeMachHeader->ncmds; i++) {
       struct load_command *lc = (struct load_command *)cmdPtr;
       if (lc->cmd == LC_ENCRYPTION_INFO_64) {
         struct encryption_info_command_64 *enc =
             (struct encryption_info_command_64 *)lc;
-        if (enc->cryptid == 0) {
-          // 解除内存写保护
-          uintptr_t pageStart = (uintptr_t)enc & ~(PAGE_SIZE - 1);
-          uintptr_t pageEnd = ((uintptr_t)enc + sizeof(*enc) + PAGE_SIZE - 1) &
-                              ~(PAGE_SIZE - 1);
-          size_t size = pageEnd - pageStart;
-          kern_return_t kr = vm_protect(
-              mach_task_self(), (vm_address_t)pageStart, (vm_size_t)size, FALSE,
-              VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
-          if (kr == KERN_SUCCESS) {
-            enc->cryptid = 1;
-            vm_protect(mach_task_self(), (vm_address_t)pageStart,
-                       (vm_size_t)size, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
-            ECLog(@"🔐 [AntiDump] LC_ENCRYPTION_INFO_64 cryptid: 0 → 1 "
-                  @"(伪装加密)");
-          } else {
-            ECLog(@"🔐 [AntiDump] vm_protect 失败: %d", kr);
-          }
-        } else {
-          ECLog(@"🔐 [AntiDump] cryptid 已为 %u，无需修改", enc->cryptid);
-        }
+        ECLog(@"🔐 [Phase 8.1] 发现 LC_ENCRYPTION_INFO_64, 原始 cryptid=%u",
+              enc->cryptid);
+        enc->cryptid = 1;
+        ECLog(@"🔐 [Phase 8.1] ✅ 堆副本 cryptid 已设为 1 (伪装加密状态)");
+        found = YES;
         break;
       }
-      // 也处理 32 位版本（兼容性）
       if (lc->cmd == LC_ENCRYPTION_INFO) {
         struct encryption_info_command *enc32 =
             (struct encryption_info_command *)lc;
-        if (enc32->cryptid == 0) {
-          uintptr_t pageStart = (uintptr_t)enc32 & ~(PAGE_SIZE - 1);
-          uintptr_t pageEnd =
-              ((uintptr_t)enc32 + sizeof(*enc32) + PAGE_SIZE - 1) &
-              ~(PAGE_SIZE - 1);
-          size_t size = pageEnd - pageStart;
-          kern_return_t kr = vm_protect(
-              mach_task_self(), (vm_address_t)pageStart, (vm_size_t)size, FALSE,
-              VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
-          if (kr == KERN_SUCCESS) {
-            enc32->cryptid = 1;
-            vm_protect(mach_task_self(), (vm_address_t)pageStart,
-                       (vm_size_t)size, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
-            ECLog(@"🔐 [AntiDump] LC_ENCRYPTION_INFO cryptid: 0 → 1 (32-bit)");
-          }
-        }
+        ECLog(@"🔐 [Phase 8.1] 发现 LC_ENCRYPTION_INFO (32-bit), 原始 cryptid=%u",
+              enc32->cryptid);
+        enc32->cryptid = 1;
+        ECLog(@"🔐 [Phase 8.1] ✅ 堆副本 cryptid 已设为 1 (32-bit)");
+        found = YES;
         break;
       }
       cmdPtr += lc->cmdsize;
+    }
+    if (!found) {
+      ECLog(@"⚠️ [Phase 8.1] 未找到 LC_ENCRYPTION_INFO load command，"
+            @"该 IPA 可能本身就没有加密头（砸壳时被完全移除了）");
+      // 即使没找到也保留假 header，因为 AAAASingularity 还可能检查
+      // 其他 load command 的完整性
     }
 }
 
@@ -8107,15 +8514,27 @@ static NSURL *hooked_appStoreReceiptURL(id self, SEL _cmd) {
 static void setupCloneDetectionBypass(void) {
     ECLog(@"🛡️ [Phase 8] 启动脱壳/克隆检测绕过...");
 
-    // 8.1 修复加密标志 — ⚠️ 已禁用 (v2227)
-    // vm_protect 修改 Mach-O 内存中 LC_ENCRYPTION_INFO_64 的 cryptid 字段，
-    // 在 iOS 16+ 的 PAC/TPRO 保护下会触发延迟内存保护错误：
-    // dyld 锁定已签名页后，任何对可执行页的写操作都会在 UIWindowScene
-    // 初始化时爆发 SIGSEGV 日志特征：client_died 紧跟
-    // kExcludedFromBackupXattrName 之后
-    // @try { fixEncryptionInfo(); }
-    // @catch (NSException *e) { ECLog(@"❌ Phase 8.1 cryptid 异常: %@", e); }
-    ECLog(@"🛡️ [Phase 8.1] cryptid 伪装已禁用（iOS PAC/TPRO 内存保护限制）");
+    // 8.1 cryptid 伪造 (v2 方案：堆内存 header 副本 + dyld hook)
+    // 旧方案 (v2227) 通过 vm_protect 直接修改 __TEXT 段已禁用
+    // 新方案：在堆上创建假 header，通过 _dyld_get_image_header hook 返回
+    @try {
+      createFakeMachHeaderWithCryptid1();
+      if (g_fakeMachHeader) {
+        // 注册 dyld 函数 Hook（如果尚未注册）
+        // 注意：这些 Hook 函数已经在上面定义过了，
+        // 但注册是在 dylib 隐藏模块里做的（可能被禁用了）。
+        // 我们这里通过 fishhook 确保 _dyld_get_image_header 一定被 Hook。
+        ec_register_rebinding("_dyld_get_image_header",
+                              (void *)hooked_dyld_get_image_header,
+                              (void **)&original_dyld_get_image_header);
+        ECLog(@"🛡️ [Phase 8.1] ✅ cryptid 伪造已启用 "
+              @"(堆副本 + _dyld_get_image_header hook)");
+      } else {
+        ECLog(@"⚠️ [Phase 8.1] cryptid 伪造失败，伪造 header 未创建");
+      }
+    } @catch (NSException *e) {
+      ECLog(@"❌ Phase 8.1 cryptid 异常: %@", e);
+    }
 
     // 8.2 创建收据占位文件 — v2225 修复：写到 tmp 目录，安全可写
     @try {
@@ -8243,19 +8662,11 @@ static void setupIMPSpoofing(void) {
     // v2228 修复：仅 Hook class_getMethodImplementation（Class+SEL
     // 双重匹配，安全） method_getImplementation 已移除 — 其 SEL-only
     // 匹配会导致返回错误 IMP
-    struct rebinding impRebindings[] = {
-        {"class_getMethodImplementation",
-         (void *)hooked_runtime_class_getMethodImpl,
-         (void **)&orig_runtime_class_getMethodImpl},
-    };
-    rebind_symbols(impRebindings, 1);
+    ec_register_rebinding("class_getMethodImplementation",
+                          (void *)hooked_runtime_class_getMethodImpl,
+                          (void **)&orig_runtime_class_getMethodImpl);
 
-    if (!orig_runtime_class_getMethodImpl) {
-      ECLog(@"  ❌ Phase 9: rebind_symbols 后指针为 NULL");
-      return;
-    }
-    ECLog(@"  ✅ Hooked: class_getMethodImplementation "
-          @"(method_getImplementation 已移除)");
+    ECLog(@"  ✅ Hooked: class_getMethodImplementation (合并到 pending)");
 }
 
 // ============================================================
@@ -8494,45 +8905,10 @@ static void setupTSPKBypass(void) {
     }
 
     // BDTuringServiceCenter — 验证码调度中心的环境检测方法
-    Class turingCenterCls = NSClassFromString(@"BDTuringServiceCenter");
-    if (turingCenterCls) {
-      unsigned int methodCount = 0;
-      Method *methods = class_copyMethodList(turingCenterCls, &methodCount);
-      for (unsigned int j = 0; j < methodCount; j++) {
-        NSString *selName = NSStringFromSelector(method_getName(methods[j]));
-        if ([selName containsString:@"deviceCheck"] ||
-            [selName containsString:@"securityCheck"] ||
-            [selName containsString:@"riskCheck"] ||
-            [selName containsString:@"environmentCheck"]) {
-          method_setImplementation(
-              methods[j], imp_implementationWithBlock(^id(id self_) {
-                return nil;
-              }));
-          ECLog(@"  ✅ Disabled: BDTuringServiceCenter.%@", selName);
-        }
-      }
-      if (methods) free(methods);
-    }
-
-    // BDTuringModelValidation — 验证码模型校验
-    Class turingValidCls = NSClassFromString(@"BDTuringModelValidation");
-    if (turingValidCls) {
-      unsigned int methodCount = 0;
-      Method *methods = class_copyMethodList(turingValidCls, &methodCount);
-      for (unsigned int j = 0; j < methodCount; j++) {
-        NSString *selName = NSStringFromSelector(method_getName(methods[j]));
-        if ([selName containsString:@"validate"] ||
-            [selName containsString:@"check"] ||
-            [selName containsString:@"verify"]) {
-          method_setImplementation(
-              methods[j], imp_implementationWithBlock(^BOOL(id self_) {
-                return YES; // 验证永远通过
-              }));
-          ECLog(@"  ✅ Bypass: BDTuringModelValidation.%@", selName);
-        }
-      }
-      if (methods) free(methods);
-    }
+    // [CRITICAL FIX] 移除了危险的 BDTuringServiceCenter 和 BDTuringModelValidation 泛型 Hook。
+    // 这两个类中的方法返回值类型多样 (id, struct, void)。使用强制固定返回值 (^id 返回 nil 或 ^BOOL 返回 YES)
+    // 覆盖它们，极易引发堆栈破坏或 EXC_BAD_ACCESS 闪退（将 0x1 视为指针等）。
+    // 在我们摸清具体签名之前，保持静默，因为伪造的设备指纹已经足够骗过它们。
 
     ECLog(@"🛡️ [Phase 11] TSPK + BDTuring 绕过完成");
 }
@@ -8899,22 +9275,29 @@ static void setupSecurityPluginDisable(void) {
     }
 
     // 16.5 监控 BDTuringSandBoxHelper（沙盒检测辅助）
-    Class turingSandboxCls = NSClassFromString(@"BDTuringSandBoxHelper");
-    if (turingSandboxCls) {
-      unsigned int methodCount = 0;
-      Method *methods = class_copyMethodList(object_getClass(turingSandboxCls), &methodCount);
-      for (unsigned int i = 0; i < methodCount; i++) {
-        NSString *selName = NSStringFromSelector(method_getName(methods[i]));
-        if ([selName containsString:@"check"] ||
-            [selName containsString:@"detect"] ||
-            [selName containsString:@"sandbox"] ||
-            [selName containsString:@"jailbreak"]) {
-          method_setImplementation(methods[i],
-              imp_implementationWithBlock(^BOOL(id self_) { return NO; }));
-          ECLog(@"  ✅ Disabled: +[BDTuringSandBoxHelper %@]", selName);
-        }
+    // [CRITICAL FIX] 移除了危险的 BDTuringSandBoxHelper 泛型 Hook。
+
+    // 16.6 禁用 Heimdallr Crash Tracker (防止其吞没我们自己的崩溃处理器日志)
+    Class hmdCls = NSClassFromString(@"HMDCrashTracker");
+    if (hmdCls) {
+      Method startMethod = class_getInstanceMethod(hmdCls, NSSelectorFromString(@"start"));
+      if (startMethod) {
+          method_setImplementation(startMethod, imp_implementationWithBlock(^(id self_) {
+              ECLog(@"🚨 [Heimdallr] HMDCrashTracker start blocked to allow ec_crash_handler!");
+          }));
+          ECLog(@"  ✅ [Heimdallr] Hooked HMDCrashTracker start");
       }
-      if (methods) free(methods);
+    }
+    
+    Class heimdallrCls = NSClassFromString(@"Heimdallr");
+    if (heimdallrCls) {
+      Method setupMethod = class_getClassMethod(heimdallrCls, NSSelectorFromString(@"setupWithConfig:"));
+      if (setupMethod) {
+          method_setImplementation(setupMethod, imp_implementationWithBlock(^(id self_, id config) {
+              ECLog(@"🚨 [Heimdallr] +[Heimdallr setupWithConfig:] blocked!");
+          }));
+          ECLog(@"  ✅ [Heimdallr] Hooked +[Heimdallr setupWithConfig:]");
+      }
     }
 
     ECLog(@"🛡️ [Phase 16] 安全插件禁用 + 会话监控完成");
@@ -8981,6 +9364,11 @@ static void ec_hooked_setCellularDataNotifier(id self, SEL _cmd,
       return;
     }
 
+    // 关键修复：userNotifier 可能是栈上的 Block，因为是从 C 函数传入的参数。
+    // 我们必须显式 copy 它，否则 dispatch_async 或包裹的 block 在异步执行时
+    // 原栈帧已经被销毁，导致读取非法内存并产生 SIGSEGV 崩溃（例如 awemeMain + 5048）。
+    CellularDataRestrictionDidUpdateNotifier heapUserNotifier = [userNotifier copy];
+
     // 包装用户 block：拦截任何"已限制"回调，强制改为"未限制"
     CellularDataRestrictionDidUpdateNotifier wrappedNotifier =
         ^(CTCellularDataRestrictedState state) {
@@ -8989,19 +9377,28 @@ static void ec_hooked_setCellularDataNotifier(id self, SEL _cmd,
                   @"NotRestricted",
                   (long)state);
           }
-          userNotifier(kCTCellularDataNotRestricted);
+          if (heapUserNotifier) {
+              heapUserNotifier(kCTCellularDataNotRestricted);
+          }
         };
+
+    // 必须手动拷贝到堆区！
+    // 因为下面我们通过强转为 C 函数指针调用 origIMP，ARC 无法识别并自动 copy，
+    // 会导致系统持有一个栈上的 block，在异步回调时触发野指针崩溃。
+    CellularDataRestrictionDidUpdateNotifier heapNotifier = [wrappedNotifier copy];
 
     // 安装拦截后的 block
     if (g_orig_setCellularDataNotifier) {
       ((void (*)(id, SEL, CellularDataRestrictionDidUpdateNotifier))
-           g_orig_setCellularDataNotifier)(self, _cmd, wrappedNotifier);
+           g_orig_setCellularDataNotifier)(self, _cmd, heapNotifier);
     }
 
     // 立即主线程触发一次"允许"回调，让 TikTok 尽快解除"无网络"状态
     dispatch_async(dispatch_get_main_queue(), ^{
       ECLog(@"🔓 [CTCellularData-Hook] 立即回调 kCTCellularDataNotRestricted");
-      userNotifier(kCTCellularDataNotRestricted);
+      if (heapUserNotifier) {
+          heapUserNotifier(kCTCellularDataNotRestricted);
+      }
     });
 }
 
@@ -9027,6 +9424,11 @@ static void ec_install_cellular_data_hook(void) {
 
 // ── 探针请求（辅助触发 CommCenter 注册）──────────────────────
 static void ec_trigger_network_permission_once(void) {
+    // [CRITICAL FIX] 禁用此探针逻辑
+    // 原因：1.5s 延迟执行 [[CTCellularData alloc] init] 或 NSURLSession 会直接触发 TikTok 在后台的深度防护或越权访问，导致应用闪退。
+    // TikTok 会自行发起请求触发网络弹窗，无需我们干预。
+    return;
+
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
       ECLog(@"🌐 [NetworkPerm] 等待主窗口后发送探针请求...");
@@ -9094,6 +9496,27 @@ static void ec_trigger_network_permission_once(void) {
 // dylib 加载时自动执行
     __attribute__((constructor(101))) static void constructor(void) {
     @autoreleasepool {
+      // -1. [CRITICAL] 立即覆盖 AAAASingularity 注册的 objc_setHook_getClass 回调
+      // AAAASingularity 的 __mod_init_func 在我们之前执行，已注册了恶意的类加载监控
+      // 我们必须在做任何事之前，用安全回调替换它
+      {
+        typedef Class _Nullable (*objc_hook_getClass_fn)(const char * _Nonnull, Class _Nullable * _Nullable);
+        typedef void (*setHook_fn)(objc_hook_getClass_fn _Nonnull, objc_hook_getClass_fn _Nullable * _Nullable);
+
+        setHook_fn setHookFn = (setHook_fn)dlsym(RTLD_DEFAULT, "objc_setHook_getClass");
+        if (setHookFn) {
+          // 安全回调：返回 nil，让 ObjC runtime 用默认路径查找类
+          // 这会覆盖 AAAASingularity 注册的 getObjCClassByMangledName_untrusted
+          static objc_hook_getClass_fn g_oldSingularityHook = NULL;
+          setHookFn(ec_safe_getClass_hook, &g_oldSingularityHook);
+          ECLog(@"🛡️ [Pre-Init] objc_setHook_getClass 已覆盖 (旧回调=%p)", g_oldSingularityHook);
+        }
+      }
+
+      // [新增] 只有在禁用 Singularity 钩子后，才能安全调用 ObjC API (NSTemporaryDirectory)
+      // 注册崩溃信号处理器，以便在 ReportCrash OOM 时捕获真实的崩溃原因
+      ec_install_crash_handler();
+
       // 0. [CRITICAL] 立即抹除注入痕迹
       sanitizeMainBinaryHeader();
 

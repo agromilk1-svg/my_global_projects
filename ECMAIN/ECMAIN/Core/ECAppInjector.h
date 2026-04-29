@@ -135,6 +135,7 @@ extern NSNotificationName const kECLogNotification;
             customBundleId:(nullable NSString *)customBundleId
          customDisplayName:(nullable NSString *)customDisplayName
           workingDirectory:(nullable NSString *)workingDirectory
+     useFrameworkInjection:(BOOL)useFrameworkInjection
                      error:(NSError **)error;
 
 /**

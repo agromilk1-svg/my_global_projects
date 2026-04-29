@@ -3890,11 +3890,13 @@ static NSString *gActiveWDASessionId = nil;
   //    注意：prepareIPAForInjection 内部会自动生成包含所有 Hook 开关的完整配置
   //    伪装参数必须在注入完成之后再覆盖写入，否则会被 injector 内部逻辑覆盖
   [self log:@"⚙️ 正在注入 Dylib..."];
+  BOOL useFrameworkInjection = [config[@"use_framework_injection"] boolValue];
   NSString *preparedPath = [injector prepareIPAForInjection:ipaPath
                                                manualTeamID:nil
                                              customBundleId:customBundleId
                                           customDisplayName:customDisplayName
                                            workingDirectory:tempDir
+                                      useFrameworkInjection:useFrameworkInjection
                                                       error:&error];
   if (!preparedPath) {
     NSString *errMsg = error.localizedDescription ?: @"注入准备失败";

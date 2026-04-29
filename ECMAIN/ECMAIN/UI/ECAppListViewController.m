@@ -94,6 +94,24 @@ int proc_pidpath(int pid, void *buffer, uint32_t buffersize);
 
 - (void)installOriginalIPA:(NSString *)path;
 
+- (void)showAdvancedInjectionConfigForPath:(NSString *)path
+                          originalBundleId:(NSString *)originalBundleId
+                              originalName:(NSString *)originalName
+                          workingDirectory:(NSString *)workingDirectory
+                     useFrameworkInjection:(BOOL)useFrameworkInjection;
+
+- (void)showDeviceSpoofConfigForPath:(NSString *)path
+                      customBundleId:(NSString *)customBundleId
+                   customDisplayName:(NSString *)customDisplayName
+                    workingDirectory:(NSString *)workingDirectory
+               useFrameworkInjection:(BOOL)useFrameworkInjection;
+
+- (void)performInjectInstall:(NSString *)path
+              customBundleId:(NSString *)customBundleId
+           customDisplayName:(NSString *)customDisplayName
+            workingDirectory:(NSString *)workingDirectory
+       useFrameworkInjection:(BOOL)useFrameworkInjection;
+
 @end
 
 // Shim for NSExtension to avoid import issues
@@ -925,11 +943,18 @@ extern NSString *rootHelperPath(void);
                                             [self installOriginalIPA:path];
                                           }]];
 
-  // 注入安装 (System) - New Feature
-  [alert addAction:[UIAlertAction actionWithTitle:@"注入并安装 (System)"
+  // 注入安装 (System) - 修改主程序
+  [alert addAction:[UIAlertAction actionWithTitle:@"注入并安装 (主程序)"
                                             style:UIAlertActionStyleDestructive
                                           handler:^(UIAlertAction *action) {
-                                            [self installIPAWithInjection:path];
+                                            [self installIPAWithInjection:path useFrameworkInjection:NO];
+                                          }]];
+
+  // 注入安装 (方案C) - 新功能：注入 Framework 并安装
+  [alert addAction:[UIAlertAction actionWithTitle:@"原版注入安装 (方案C)"
+                                            style:UIAlertActionStyleDestructive
+                                          handler:^(UIAlertAction *action) {
+                                            [self installIPAWithInjection:path useFrameworkInjection:YES];
                                           }]];
 
   // 分身安装 (User) - Hidden by User Request
@@ -1022,7 +1047,7 @@ extern NSString *rootHelperPath(void);
 
 #pragma mark - Install with Injection
 
-- (void)installIPAWithInjection:(NSString *)path {
+- (void)installIPAWithInjection:(NSString *)path useFrameworkInjection:(BOOL)useFrameworkInjection {
   // 1. 显示加载中
   UIAlertController *loadingAlert =
       [UIAlertController alertControllerWithTitle:@"正在读取 IPA..."
@@ -1186,7 +1211,9 @@ extern NSString *rootHelperPath(void);
                                                                                                                       customDisplayName:
                                                                                                                           customDisplayName
                                                                                                                        workingDirectory:
-                                                                                                                           tempDir];
+                                                                                                                           tempDir
+                                                                                                                   useFrameworkInjection:
+                                                                                                                        useFrameworkInjection];
                                                                                                      }]];
 
                                                                        // 高级选项：手动输入
@@ -1211,7 +1238,9 @@ extern NSString *rootHelperPath(void);
                                                                                                                        originalName:
                                                                                                                            originalName
                                                                                                                    workingDirectory:
-                                                                                                                       tempDir];
+                                                                                                                       tempDir
+                                                                                                              useFrameworkInjection:
+                                                                                                                   useFrameworkInjection];
                                                                                            }]];
 
                                                                        [self
@@ -1230,7 +1259,8 @@ extern NSString *rootHelperPath(void);
 - (void)showAdvancedInjectionConfigForPath:(NSString *)path
                           originalBundleId:(NSString *)originalBundleId
                               originalName:(NSString *)originalName
-                          workingDirectory:(NSString *)workingDirectory {
+                          workingDirectory:(NSString *)workingDirectory
+                     useFrameworkInjection:(BOOL)useFrameworkInjection {
   UIAlertController *configDialog = [UIAlertController
       alertControllerWithTitle:@"🔧 高级配置"
                        message:@"手动设置 Bundle ID 和桌面名称"
@@ -1278,7 +1308,9 @@ extern NSString *rootHelperPath(void);
                                                 customBundleId:customBundleId
                                              customDisplayName:customDisplayName
                                               workingDirectory:
-                                                  workingDirectory];
+                                                  workingDirectory
+                                         useFrameworkInjection:
+                                              useFrameworkInjection];
                             }]];
 
   [self presentViewController:configDialog animated:YES completion:nil];
@@ -1288,7 +1320,8 @@ extern NSString *rootHelperPath(void);
 - (void)showDeviceSpoofConfigForPath:(NSString *)path
                       customBundleId:(NSString *)customBundleId
                    customDisplayName:(NSString *)customDisplayName
-                    workingDirectory:(NSString *)workingDirectory {
+                    workingDirectory:(NSString *)workingDirectory
+               useFrameworkInjection:(BOOL)useFrameworkInjection {
   // 创建设备信息配置页面
   ECDeviceInfoViewController *configVC =
       [[ECDeviceInfoViewController alloc] init];
@@ -1340,7 +1373,8 @@ extern NSString *rootHelperPath(void);
     [weakSelf performInjectInstall:path
                     customBundleId:customBundleId
                  customDisplayName:customDisplayName
-                  workingDirectory:workingDirectory];
+                  workingDirectory:workingDirectory
+             useFrameworkInjection:useFrameworkInjection];
   };
 
   // 设置取消回调
@@ -1361,7 +1395,8 @@ extern NSString *rootHelperPath(void);
 - (void)performInjectInstall:(NSString *)path
               customBundleId:(NSString *)customBundleId
            customDisplayName:(NSString *)customDisplayName
-            workingDirectory:(NSString *)workingDirectory {
+            workingDirectory:(NSString *)workingDirectory
+       useFrameworkInjection:(BOOL)useFrameworkInjection {
   UIAlertController *progress =
       [UIAlertController alertControllerWithTitle:@"正在准备注入..."
                                           message:@"正在处理 IPA，请稍候..."
@@ -1377,6 +1412,7 @@ extern NSString *rootHelperPath(void);
                 customBundleId:customBundleId
              customDisplayName:customDisplayName
               workingDirectory:workingDirectory
+         useFrameworkInjection:useFrameworkInjection
                          error:&error];
 
     if (!preparedBundlePath) {

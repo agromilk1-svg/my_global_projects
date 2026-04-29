@@ -440,6 +440,27 @@ void installLdid(NSString *ldidToCopyPath, NSString *ldidVersion) {
 
 #endif
 
+BOOL isLdidInstalled(void) {
+  // 1. 检查当前主 APP 包内的 ldid (iOS App 模式)
+  NSString *bundleLdidPath =
+      [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"ldid"];
+  if ([[NSFileManager defaultManager] fileExistsAtPath:bundleLdidPath]) {
+    return YES;
+  }
+
+  // 2. 检查 Helper 工具所在目录下的 ldid (RootHelper 模式)
+  NSString *selfLdidPath = [[getExecutablePath() stringByDeletingLastPathComponent]
+      stringByAppendingPathComponent:@"ldid"];
+  if ([[NSFileManager defaultManager] fileExistsAtPath:selfLdidPath]) {
+    return YES;
+  }
+
+  // 3. 兼容：检查 TrollStore 的 Documents 路径
+  NSString *trollStoreLdidPath =
+      [trollStoreAppPath() stringByAppendingPathComponent:@"ldid"];
+  return [[NSFileManager defaultManager] fileExistsAtPath:trollStoreLdidPath];
+}
+
 int spawn_process(const char *path, char *const argv[]) {
   pid_t pid;
   int status;
@@ -2986,6 +3007,13 @@ int MAIN_NAME(int argc, char *argv[], char *envp[]) {
       BOOL useCustomMethod = [args containsObject:@"custom"];
       NSString *appPath = args.lastObject;
       ret = uninstallAppByPath(appPath, useCustomMethod);
+    } else if ([cmd isEqualToString:@"register-app"]) {
+      if (args.count < 2) return -3;
+      NSString *appPath = args[1];
+      BOOL unregOk = registerPath(appPath, YES, YES);
+      BOOL regOk = registerPath(appPath, NO, YES);
+      NSLog(@"[RootHelper] register-app: %@ unreg=%d reg=%d", appPath, unregOk, regOk);
+      ret = regOk ? 0 : 1;
     } else if ([cmd isEqualToString:@"refresh"]) {
       // 【Antigravity 修复】无条件强制 System 注册，防止重启后应用消失
       refreshAppRegistrations(YES);

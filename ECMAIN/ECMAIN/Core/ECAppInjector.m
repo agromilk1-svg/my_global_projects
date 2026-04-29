@@ -322,6 +322,177 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
   }
 }
 
+/// 无效化安全框架的初始化入口
+/// 通过将 __mod_init_func 指向的构造函数和 ObjC +load 方法入口改为 RET 指令
+/// 在注入阶段（重签名前）执行，让 AAAASingularity 等安全 SDK 无法初始化
+- (BOOL)neutralizeSecurityFramework:(NSString *)binaryPath {
+  NSString *name = [binaryPath lastPathComponent];
+  ECLog(@"[Neutralize] 🛡️ 开始无效化安全框架: %@", name);
+
+  NSData *data = [NSData dataWithContentsOfFile:binaryPath];
+  if (!data || data.length < sizeof(struct mach_header_64)) {
+    ECLog(@"[Neutralize] ❌ 无法读取二进制");
+    return NO;
+  }
+
+  const void *bytes = data.bytes;
+
+  // 处理 FAT 二进制
+  uint32_t sliceOffset = 0;
+  uint32_t magic = *(const uint32_t *)bytes;
+  if (magic == FAT_CIGAM || magic == FAT_MAGIC) {
+    const struct fat_header *fatHeader = (const struct fat_header *)bytes;
+    uint32_t nfat_arch = OSSwapBigToHostInt32(fatHeader->nfat_arch);
+    for (uint32_t i = 0; i < nfat_arch; i++) {
+      const struct fat_arch *arch =
+          (const struct fat_arch *)(bytes + sizeof(struct fat_header) +
+                                    i * sizeof(struct fat_arch));
+      cpu_type_t cputype = OSSwapBigToHostInt32(arch->cputype);
+      if (cputype == CPU_TYPE_ARM64) {
+        sliceOffset = OSSwapBigToHostInt32(arch->offset);
+        break;
+      }
+    }
+  }
+
+  const struct mach_header_64 *header =
+      (const struct mach_header_64 *)(bytes + sliceOffset);
+  if (header->magic != MH_MAGIC_64) {
+    ECLog(@"[Neutralize] ⚠️ 不是 64 位 Mach-O，跳过");
+    return YES;
+  }
+
+  NSMutableData *modifiedData = [data mutableCopy];
+  BOOL modified = NO;
+
+  // ARM64 RET 指令: 0xD65F03C0
+  const uint32_t retInstruction = 0xD65F03C0;
+
+  // 遍历 load commands
+  const uint8_t *ptr =
+      (const uint8_t *)bytes + sliceOffset + sizeof(struct mach_header_64);
+
+  for (uint32_t i = 0; i < header->ncmds; i++) {
+    const struct load_command *lc = (const struct load_command *)ptr;
+
+    if ((ptr - (const uint8_t *)bytes) + sizeof(struct load_command) >
+        data.length) {
+      break;
+    }
+
+    if (lc->cmd == LC_SEGMENT_64) {
+      const struct segment_command_64 *seg =
+          (const struct segment_command_64 *)ptr;
+      const struct section_64 *sections =
+          (const struct section_64 *)(ptr + sizeof(struct segment_command_64));
+
+      for (uint32_t j = 0; j < seg->nsects; j++) {
+        const struct section_64 *sect = &sections[j];
+
+        // 1. 找到 __mod_init_func，将每个函数指针指向的函数头部改为 RET
+        if (strcmp(sect->sectname, "__mod_init_func") == 0 &&
+            strcmp(sect->segname, "__DATA") == 0) {
+          uint32_t numPtrs = (uint32_t)(sect->size / 8); // 64-bit 函数指针
+          ECLog(@"[Neutralize] 📍 找到 __mod_init_func: %u 个构造函数", numPtrs);
+
+          for (uint32_t k = 0; k < numPtrs; k++) {
+            uint32_t ptrFileOffset = sect->offset + k * 8;
+            if (ptrFileOffset + 8 > data.length) break;
+
+            // 读取函数指针值（RVA）
+            uint64_t funcRVA = 0;
+            [data getBytes:&funcRVA range:NSMakeRange(ptrFileOffset, 8)];
+
+            // 计算函数在文件中的偏移
+            // 需要找到函数所在的 __TEXT segment，计算 file offset
+            // 函数 RVA 是相对于 Mach-O 基地址的
+            // 在非 FAT 的情况下，__TEXT 段的 vmaddr 通常就是基地址
+            // 遍历 segments 找到包含此 RVA 的 segment
+            uint32_t funcFileOffset = 0;
+            const uint8_t *ptr2 =
+                (const uint8_t *)bytes + sliceOffset + sizeof(struct mach_header_64);
+            for (uint32_t m = 0; m < header->ncmds; m++) {
+              const struct load_command *lc2 = (const struct load_command *)ptr2;
+              if (lc2->cmd == LC_SEGMENT_64) {
+                const struct segment_command_64 *seg2 =
+                    (const struct segment_command_64 *)ptr2;
+                if (funcRVA >= seg2->vmaddr &&
+                    funcRVA < seg2->vmaddr + seg2->vmsize) {
+                  funcFileOffset = sliceOffset +
+                                   (uint32_t)(funcRVA - seg2->vmaddr) +
+                                   (uint32_t)(seg2->fileoff);
+                  break;
+                }
+              }
+              ptr2 += lc2->cmdsize;
+            }
+
+            if (funcFileOffset > 0 && funcFileOffset + 4 <= data.length) {
+              ECLog(@"[Neutralize] 🔧 构造函数 #%u RVA=0x%llx → 文件偏移 0x%x → RET",
+                    k, funcRVA, funcFileOffset);
+              [modifiedData replaceBytesInRange:NSMakeRange(funcFileOffset, 4)
+                                     withBytes:&retInstruction];
+              modified = YES;
+            } else {
+              ECLog(@"[Neutralize] ⚠️ 构造函数 #%u RVA=0x%llx 无法定位文件偏移", k, funcRVA);
+            }
+          }
+        }
+
+        // 2. 找到 __objc_nlclslist，将 +load 方法的 IMP 也改为 RET
+        // 这个 section 包含指向 class_t 结构的指针
+        // 更简单的做法是直接清零这个 section 的内容，
+        // 让 runtime 找不到需要 +load 的类
+        if (strcmp(sect->sectname, "__objc_nlclslist") == 0 &&
+            strcmp(sect->segname, "__DATA") == 0) {
+          ECLog(@"[Neutralize] 📍 找到 __objc_nlclslist: 大小=%llu bytes", sect->size);
+          // 将整个 section 清零，防止 ObjC runtime 调用 +load
+          uint8_t *zeros = calloc(1, (size_t)sect->size);
+          if (zeros) {
+            [modifiedData replaceBytesInRange:NSMakeRange(sect->offset, (NSUInteger)sect->size)
+                                   withBytes:zeros];
+            free(zeros);
+            modified = YES;
+            ECLog(@"[Neutralize] 🔧 __objc_nlclslist 已清零 (+load 被禁用)");
+          }
+        }
+      }
+    }
+
+    ptr += lc->cmdsize;
+  }
+
+  if (!modified) {
+    ECLog(@"[Neutralize] ⚠️ 未找到可修改的初始化入口");
+    return YES;
+  }
+
+  // 写入临时文件，通过 root helper 复制回去
+  NSString *tempPath = [NSTemporaryDirectory()
+      stringByAppendingPathComponent:
+          [NSString stringWithFormat:@"neutralize_%@.bin",
+                                     [[NSUUID UUID] UUIDString]]];
+
+  if (![modifiedData writeToFile:tempPath atomically:YES]) {
+    ECLog(@"[Neutralize] ❌ 写入临时文件失败");
+    return NO;
+  }
+
+  NSString *stdOut = nil;
+  NSString *stdErr = nil;
+  int ret = spawnRoot(rootHelperPath(), @[ @"copy-file", tempPath, binaryPath ],
+                      &stdOut, &stdErr);
+  [[NSFileManager defaultManager] removeItemAtPath:tempPath error:nil];
+
+  if (ret == 0) {
+    ECLog(@"[Neutralize] ✅ 安全框架 %@ 已成功无效化", name);
+    return YES;
+  } else {
+    ECLog(@"[Neutralize] ❌ 写回失败 (ret=%d): %@", ret, stdErr);
+    return NO;
+  }
+}
+
 - (NSString *)getOutputFromHelper:(NSArray *)args {
   NSString *stdOut = nil;
   NSString *stdErr = nil;
@@ -741,6 +912,17 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
     // ★ 在签名前先修补 cryptid (使脱壳二进制看起来仍然加密)
     [self patchCryptidForBinary:binaryPath];
 
+    // ★★ 安全框架无效化：禁用 AAAASingularity/AAWEBootChecker 等的初始化
+    NSString *binaryName = binaryPath.lastPathComponent;
+    NSArray *securityFrameworks = @[@"AAAASingularity", @"AAWEBootChecker", @"BDLRepairer"];
+    for (NSString *fw in securityFrameworks) {
+      if ([binaryName isEqualToString:fw]) {
+        ECLog(@"[Bundle Resign] 🛡️ 检测到安全框架 %@，执行无效化...", fw);
+        [self neutralizeSecurityFramework:binaryPath];
+        break;
+      }
+    }
+
     int ret;
     if (teamID && teamID.length > 0) {
       // 有 Team ID：使用 sign-binary 命令
@@ -894,6 +1076,20 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
   NSError *mainInjectError = nil;
   NSString *lcPath =
       [@"@executable_path" stringByAppendingPathComponent:kSpoofDylibName];
+      
+  // 针对高防应用 (TikTok) 强制走 Framework 注入，避免修改主程序导致 AMFI 崩溃
+  if ([appName containsString:@"TikTok"]) {
+    ECLog(@"⚠️ 检测到 TikTok，强制使用 Framework 注入避免 CT 签名失效...");
+    [fm removeItemAtPath:tempDylibPath error:nil]; // Framework注入自己会拷贝
+    NSError *fwError = nil;
+    if ([self injectIntoFrameworksOfApp:appPath teamID:teamID dylibName:kSpoofDylibName markerName:kInjectionMarker error:&fwError]) {
+      ECLog(@"✅ 通过 Framework 注入成功: %@", appName);
+      return YES;
+    }
+    if (error) *error = fwError;
+    ECLog(@"❌ 强制 Framework 注入失败: %@", fwError);
+    return NO;
+  }
 
   BOOL injectSuccess = [self processBinary:binaryPath
                       injectingDylibAtPath:tempDylibPath
@@ -930,17 +1126,6 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
     [[NSFileManager defaultManager] removeItemAtPath:tempDylibPath error:nil];
 
     // NOTE: We do NOT resign other binaries in the bundle.
-    // ...
-  } else {
-    ECLog(@"❌ Injection/Signing process failed.");
-    if (error)
-      *error = mainInjectError;
-    [[NSFileManager defaultManager] removeItemAtPath:tempDylibPath error:nil];
-    return NO;
-  }
-
-  if (injectSuccess) { // Just simpler logic structure to match original flow
-                       // where next step is marker creation
 
     // ── loose .dylib 签名策略 ────────────────────────────────────────────────
     // 注意: 不要在这里预签名 Frameworks/ 下的 loose .dylib！
@@ -963,31 +1148,37 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
           markerPath);
 
     ECLog(@"✅ 注入主程序成功: %@", appPath.lastPathComponent);
+    
+    // 重建 TrustCache
+    ECLog(@"[Injector] 正在触发内核 TrustCache 重建...");
+    int regRet = spawnRoot(rootHelperPath(), @[ @"register-app", appPath ], nil, nil);
+    ECLog(@"[Injector] TrustCache 重建完成: ret=%d", regRet);
+
     return YES;
-  }
+  } else {
+    ECLog(@"❌ Injection/Signing process failed.");
+    [[NSFileManager defaultManager] removeItemAtPath:tempDylibPath error:nil];
 
-  // 注入失败，检查是否因为加密 (Code 20)
-  if (mainInjectError.code == 20) {
-    ECLog(@"⚠️ 主程序已加密 (FairPlay)，尝试注入 Frameworks (Bypass Scheme)...");
-    NSError *fwError = nil;
-    if ([self injectIntoFrameworksOfApp:appPath teamID:teamID error:&fwError]) {
-      ECLog(@"✅ 通过 Framework 注入成功 workaround!");
-      return YES;
-    } else {
-      ECLog(@"❌ Framework 注入也失败: %@", fwError);
-      // 返回主程序的加密错误，让用户明确知道是因为加密导致
-      if (error)
-        *error = mainInjectError;
-
-      ECLog(@"[注入失败] ❌ %@, 原因: 主程序加密且 Framework 注入失败",
-            appName);
-      return NO;
+    // 注入失败，检查是否因为加密 (Code 20) 或 Sealed App Bundle 导致文件不可访问 (Code 100)
+    if (mainInjectError.code == 20 || mainInjectError.code == 100) {
+      if (mainInjectError.code == 100) {
+        ECLog(@"⚠️ 主二进制不可访问 (iOS Sealed App Bundle)，回退到 Framework 注入...");
+      } else {
+        ECLog(@"⚠️ 主程序已加密 (FairPlay)，尝试注入 Frameworks (Bypass Scheme)...");
+      }
+      NSError *fwError = nil;
+      if ([self injectIntoFrameworksOfApp:appPath teamID:teamID dylibName:kSpoofDylibName markerName:kInjectionMarker error:&fwError]) {
+        ECLog(@"✅ 通过 Framework 注入成功 workaround!");
+        return YES;
+      } else {
+        ECLog(@"❌ Framework 注入也失败: %@", fwError);
+      }
     }
+    
+    if (error)
+      *error = mainInjectError;
+    return NO;
   }
-
-  if (error)
-    *error = mainInjectError;
-  return NO;
 }
 
 // ============================================================================
@@ -1070,6 +1261,21 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
 
   // 6. 注入 Load Command
   NSString *lcPath = [@"@executable_path" stringByAppendingPathComponent:kProfileCDylibName];
+
+  // 针对高防应用 (TikTok) 强制走 Framework 注入，避免修改主程序导致 AMFI 崩溃
+  if ([appName containsString:@"TikTok"]) {
+    ECLog(@"[方案C] ⚠️ 检测到 TikTok，强制使用 Framework 注入避免 CT 签名失效...");
+    [fm removeItemAtPath:tempDylibPath error:nil]; // 不再需要临时签名，Framework注入自己会拷贝
+    NSError *fwError = nil;
+    if ([self injectIntoFrameworksOfApp:appPath teamID:teamID dylibName:kProfileCDylibName markerName:@".ecprofilec_injected" error:&fwError]) {
+      ECLog(@"[方案C] ✅ 通过 Framework 注入成功: %@", appName);
+      return YES;
+    }
+    if (error) *error = fwError;
+    ECLog(@"[方案C] ❌ 强制 Framework 注入失败: %@", fwError);
+    return NO;
+  }
+
   NSError *mainInjectError = nil;
   BOOL injectSuccess = [self processBinary:binaryPath
                        injectingDylibAtPath:tempDylibPath
@@ -1101,12 +1307,37 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
     spawnRoot(rootHelperPath(), @[@"chmod-file", @"666", markerPath], nil, nil);
 
     ECLog(@"[方案C] ✅ 注入成功: %@", appName);
+
+    // ⚠️ 不要调用 register-app！
+    // registerPath 会重新扫描整个 Bundle 的所有二进制来重建 TrustCache，
+    // 但由于被修改的框架导致 CodeResources 哈希不匹配，
+    // 系统会判定整个 Bundle 签名完整性被破坏，
+    // 导致未修改的框架（如 TikTokCore）也丢失信任缓存，引发 Library missing 闪退。
+    // 被修改的框架已经通过 sign-binary 获得了独立的 CT bypass 签名，可以直接运行。
+
     return YES;
   } else {
-    ECLog(@"[方案C] ❌ 注入/签名失败");
+    ECLog(@"[方案C] ❌ 注入/签名失败 (code=%ld)", (long)mainInjectError.code);
+    [fm removeItemAtPath:tempDylibPath error:nil];
+
+    // 如果因为主二进制不可访问（Sealed App Bundle）或加密，回退到 Framework 注入
+    if (mainInjectError.code == 100 || mainInjectError.code == 20) {
+      if (mainInjectError.code == 100) {
+        ECLog(@"[方案C] ⚠️ 主二进制不可访问 (iOS Sealed App Bundle)，回退到 Framework 注入...");
+      } else {
+        ECLog(@"[方案C] ⚠️ 主程序加密，回退到 Framework 注入...");
+      }
+      NSError *fwError = nil;
+      if ([self injectIntoFrameworksOfApp:appPath teamID:teamID dylibName:kProfileCDylibName markerName:@".ecprofilec_injected" error:&fwError]) {
+        ECLog(@"[方案C] ✅ 通过 Framework 回退注入成功: %@", appName);
+        return YES;
+      } else {
+        ECLog(@"[方案C] ❌ Framework 回退注入也失败: %@", fwError);
+      }
+    }
+
     if (error)
       *error = mainInjectError;
-    [fm removeItemAtPath:tempDylibPath error:nil];
     return NO;
   }
 }
@@ -1362,6 +1593,35 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
     // 恢复后，备份文件被移动（消失），这也是合理的
   }
 
+  // 1.5 恢复 Frameworks 目录中的备份
+  // ⚠️ 不能用 NSFileManager 列举其他 App 的目录——ECMAIN 的沙盒无权访问！
+  // 必须使用 RootHelper 的 list-dir 命令来获取 Frameworks 目录内容。
+  NSString *frameworksDir = [appPath stringByAppendingPathComponent:@"Frameworks"];
+  NSString *listOut = nil;
+  int listRet = spawnRoot(rootHelperPath(), @[ @"list-dir", frameworksDir ], &listOut, nil);
+  if (listRet == 0 && listOut.length > 0) {
+    NSArray *fwItems = [listOut componentsSeparatedByString:@"\n"];
+    for (NSString *item in fwItems) {
+      NSString *trimmed = [item stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+      if (trimmed.length == 0) continue;
+      if ([trimmed.pathExtension isEqualToString:@"framework"]) {
+        NSString *fwPath = [frameworksDir stringByAppendingPathComponent:trimmed];
+        NSString *fwName = [trimmed stringByDeletingPathExtension];
+        NSString *fwBinaryPath = [fwPath stringByAppendingPathComponent:fwName];
+        NSString *fwBackupPath = [fwBinaryPath stringByAppendingPathExtension:@"ec_bak"];
+        ECLog(@"[Eject] 尝试恢复 Framework 备份: %@", fwBackupPath);
+        spawnRoot(rootHelperPath(), @[ @"move-file", fwBackupPath, fwBinaryPath ], nil, nil);
+        spawnRoot(rootHelperPath(), @[ @"chmod-file", @"755", fwBinaryPath ], nil, nil);
+        
+        // 清理老版本遗留在 Frameworks 内的散装 dylib
+        NSString *legacyDylib = [fwPath stringByAppendingPathComponent:kProfileCDylibName];
+        spawnRoot(rootHelperPath(), @[ @"remove-file", legacyDylib ], nil, nil);
+      }
+    }
+  } else {
+    ECLog(@"[Eject] ⚠️ 无法列举 Frameworks 目录 (list-dir ret=%d)", listRet);
+  }
+
   // 2. 使用 trollstorehelper 删除 dylib 文件 & 标记
   NSString *dylibPath =
       [appPath stringByAppendingPathComponent:kSpoofDylibName];
@@ -1369,11 +1629,18 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
   NSString *dylibCPath =
       [appPath stringByAppendingPathComponent:kProfileCDylibName];
   spawnRoot(rootHelperPath(), @[ @"remove-file", dylibCPath ], nil, nil);
+  
+  // 新版本: Dylib 放在 Frameworks 根目录
+  NSString *fwDylibCPath = [appPath stringByAppendingPathComponent:[NSString stringWithFormat:@"Frameworks/%@", kProfileCDylibName]];
+  spawnRoot(rootHelperPath(), @[ @"remove-file", fwDylibCPath ], nil, nil);
 
   // 3. 删除注入标记
   NSString *markerPath =
       [appPath stringByAppendingPathComponent:kInjectionMarker];
   spawnRoot(rootHelperPath(), @[ @"remove-file", markerPath ], nil, nil);
+  NSString *markerCPath =
+      [appPath stringByAppendingPathComponent:@".ecprofilec_injected"];
+  spawnRoot(rootHelperPath(), @[ @"remove-file", markerCPath ], nil, nil);
 
   // 4. 删除 Bundle 内的配置文件 (Frameworks/device.plist)
   NSString *configPath =
@@ -1382,6 +1649,11 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
   spawnRoot(rootHelperPath(), @[ @"remove-file", configPath ], nil, nil);
 
   ECLog(@"✅ 已移除注入 (及恢复备份): %@", appPath.lastPathComponent);
+  
+  // ⚠️ 不要调用 register-app！
+  // 如果备份恢复成功，Bundle 已经回到原始状态，原有的 TrustCache 条目仍然有效。
+  // 如果调用 register-app 反而会破坏其他框架的信任条目。
+  
   return YES;
 }
 
@@ -1392,14 +1664,17 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
 - (ECInjectionStatus)injectionStatusForApp:(NSString *)appPath {
   NSFileManager *fm = [NSFileManager defaultManager];
 
-  // 检查注入标记
+  // 检查注入标记 (方案 B & 方案 C)
   NSString *markerPath =
       [appPath stringByAppendingPathComponent:kInjectionMarker];
-  if ([fm fileExistsAtPath:markerPath]) {
+  NSString *markerCPath =
+      [appPath stringByAppendingPathComponent:@".ecprofilec_injected"];
+      
+  if ([fm fileExistsAtPath:markerPath] || [fm fileExistsAtPath:markerCPath]) {
     ECLog(@"[Status] ✅ Found marker for: %@", appPath.lastPathComponent);
     return ECInjectionStatusInjected;
   } else {
-    ECLog(@"[Status] ❌ Marker not found at: %@", markerPath);
+    ECLog(@"[Status] ❌ Marker not found");
   }
 
   // 检查 load command
@@ -1696,59 +1971,66 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
   ECLog(@"[ProcessBinary] ✅ 注入成功");
 
   // 3. 签名 & CT Bypass
-  ECLog(@"[ProcessBinary] 签名 TeamID: %@", teamID ?: @"(none)");
-  // Pass backupPath as the source for entitlements to avoid issues with
-  // modified binary
-  NSMutableArray *signArgs =
-      [NSMutableArray arrayWithObjects:@"sign-binary", tempBinary,
-                                       teamID ?: @"", backupPath, nil];
-
+  // ⚠️ 必须使用与 TrollStore 安装时 CTLoop 完全一致的签名流程！
+  // CTLoop 的流程是：signAdhoc(path, nil) → apply_coretrust_bypass(path, NULL)
+  // 即：不传 entitlements，不传 TeamID。
+  // 如果使用 sign-binary（传 TeamID + entitlements），产生的签名格式
+  // 会被 System 级安装的 App Store Fast Path 校验拒绝（errno=1: code signature invalid）。
+  ECLog(@"[ProcessBinary] 使用 CTLoop 兼容签名流程 (sign-adhoc-only + ct-bypass)...");
+  
+  // Step 1: Ad-hoc 签名（不传 entitlements，与 CTLoop 一致）
   NSString *signOut, *signErr;
-  int signRet = spawnRoot(rootHelperPath(), signArgs, &signOut, &signErr);
-  ECLog(@"[ProcessBinary] sign-binary ret=%d", signRet);
+  int signRet = spawnRoot(rootHelperPath(), @[@"sign-adhoc-only", tempBinary], &signOut, &signErr);
+  ECLog(@"[ProcessBinary] sign-adhoc-only ret=%d", signRet);
 
   if (signRet != 0) {
-    ECLog(@"[ProcessBinary] ❌ Main binary signing failed: ret=%d, err:%@",
+    ECLog(@"[ProcessBinary] ❌ Ad-hoc signing failed: ret=%d, err:%@",
           signRet, signErr);
     if (error)
       *error = [NSError errorWithDomain:@"ECAppInjector"
                                    code:signRet
                                userInfo:@{
                                  NSLocalizedDescriptionKey : [NSString
-                                     stringWithFormat:@"sign-binary failed: %@",
+                                     stringWithFormat:@"sign-adhoc-only failed: %@",
                                                       signErr ?: @"unknown"]
                                }];
     [[NSFileManager defaultManager] removeItemAtPath:tempBinary error:nil];
     return NO;
   }
-  ECLog(@"[ProcessBinary] ✅ Main binary signed with CT bypass");
+  
+  // Step 2: CoreTrust bypass（不传 TeamID，与 CTLoop 一致）
+  int ctRet = spawnRoot(rootHelperPath(), @[@"ct-bypass", tempBinary], nil, nil);
+  ECLog(@"[ProcessBinary] ct-bypass ret=%d", ctRet);
+  
+  if (ctRet != 0) {
+    ECLog(@"[ProcessBinary] ❌ CT bypass failed: ret=%d", ctRet);
+    if (error)
+      *error = [NSError errorWithDomain:@"ECAppInjector"
+                                   code:ctRet
+                               userInfo:@{
+                                 NSLocalizedDescriptionKey : @"ct-bypass failed"
+                               }];
+    [[NSFileManager defaultManager] removeItemAtPath:tempBinary error:nil];
+    return NO;
+  }
+  ECLog(@"[ProcessBinary] ✅ Binary signed with CTLoop-compatible bypass");
 
-  // 4. Sign injected dylib with pure ad-hoc (NO TeamID, NO CT bypass pre-applied)
-  // 策略: 让 CTLoop 在安装时对 dylib 做唯一一次 CT bypass。
-  // sign-binary 总是做 ldid+CT bypass，CTLoop 再做一次就产生无效签名。
-  // sign-adhoc-only 只做 ldid ad-hoc，产生标准 SHA256 CD，
-  // CTLoop 从这个干净的 ad-hoc 签名做一次 CT bypass 即可正常加载。
-  ECLog(@"[ProcessBinary] Signing dylib (sign-adhoc-only, no CT pre-bypass): %@", dylibPath);
+  // 4. Sign injected dylib with CTLoop-compatible bypass
+  // 同样使用与 CTLoop 一致的流程：sign-adhoc-only + ct-bypass
+  ECLog(@"[ProcessBinary] Signing dylib (CTLoop-compatible): %@", dylibPath);
 
-  NSString *dylibSignOut, *dylibSignErr;
-  int dylibSignRet = spawnRoot(rootHelperPath(),
-      @[@"sign-adhoc-only", dylibPath], &dylibSignOut, &dylibSignErr);
-  ECLog(@"[ProcessBinary] sign-adhoc-only ret=%d", dylibSignRet);
+  int dylibAdhocRet = spawnRoot(rootHelperPath(),
+      @[@"sign-adhoc-only", dylibPath], nil, nil);
+  ECLog(@"[ProcessBinary] sign-adhoc-only (dylib) ret=%d", dylibAdhocRet);
+  
+  int dylibCtRet = spawnRoot(rootHelperPath(),
+      @[@"ct-bypass", dylibPath], nil, nil);
+  ECLog(@"[ProcessBinary] ct-bypass (dylib) ret=%d", dylibCtRet);
 
-  if (dylibSignRet != 0) {
-    ECLog(@"[ProcessBinary] ⚠️ Dylib ad-hoc-only signing failed: %@, trying sign-binary fallback",
-          dylibSignErr);
-    // Fallback: sign-binary without TeamID（仍可能有二次 bypass 问题，但至少签了）
-    int fallbackRet = spawnRoot(rootHelperPath(),
-        @[@"sign-binary", dylibPath], &dylibSignOut, &dylibSignErr);
-    ECLog(@"[ProcessBinary] sign-binary fallback ret=%d", fallbackRet);
-    if (fallbackRet == 0) {
-      ECLog(@"[ProcessBinary] ✅ Fallback sign-binary succeeded");
-    } else {
-      ECLog(@"[ProcessBinary] ❌ Both signing methods failed for dylib");
-    }
+  if (dylibAdhocRet != 0 || dylibCtRet != 0) {
+    ECLog(@"[ProcessBinary] ❌ Dylib signing failed: adhoc=%d, ct=%d", dylibAdhocRet, dylibCtRet);
   } else {
-    ECLog(@"[ProcessBinary] ✅ Dylib signed (CTLoop will do CT bypass on install)");
+    ECLog(@"[ProcessBinary] ✅ Dylib signed with CTLoop-compatible bypass");
   }
 
 
@@ -1798,104 +2080,199 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
   return YES;
 }
 
+
 /// 回退方案：尝试注入 Frameworks
 - (BOOL)injectIntoFrameworksOfApp:(NSString *)appPath
                            teamID:(NSString *)teamID
+                        dylibName:(NSString *)dylibName
+                       markerName:(NSString *)markerName
                             error:(NSError **)error {
   NSString *frameworksDir =
       [appPath stringByAppendingPathComponent:@"Frameworks"];
   NSFileManager *fm = [NSFileManager defaultManager];
 
-  // 检查 Frameworks 目录是否存在
-  BOOL isDir;
-  if (![fm fileExistsAtPath:frameworksDir isDirectory:&isDir] || !isDir) {
-    if (error)
-      *error = [NSError errorWithDomain:@"ECAppInjector"
-                                   code:21
-                               userInfo:@{
-                                 NSLocalizedDescriptionKey :
-                                     @"无 Frameworks 目录，无法进行回退注入"
-                               }];
-    return NO;
-  }
+  // ⚠️ 由于 ECMAIN 在沙盒中，可能无法通过 NSFileManager 看到其他 App 的 Frameworks 目录。
+  //    使用 root helper 的 list-dir 命令来获取真实目录内容。
+  ECLog(@"[FrameworkInject] 尝试列出 Frameworks 目录: %@", frameworksDir);
 
+  // 先尝试本地 NSFileManager
   NSArray *contents = [fm contentsOfDirectoryAtPath:frameworksDir error:nil];
-  if (contents.count == 0) {
-    if (error)
-      *error =
-          [NSError errorWithDomain:@"ECAppInjector"
-                              code:22
-                          userInfo:@{
-                            NSLocalizedDescriptionKey : @"Frameworks 目录为空"
-                          }];
-    return NO;
+
+  // 如果本地列不出来，通过 root helper 列目录
+  if (!contents || contents.count == 0) {
+    ECLog(@"[FrameworkInject] NSFileManager 无法列出 Frameworks，尝试通过 Root Helper...");
+    NSString *listOut = nil;
+    int listRet = spawnRoot(rootHelperPath(), @[@"list-dir", frameworksDir], &listOut, nil);
+    if (listRet == 0 && listOut.length > 0) {
+      // list-dir 输出的是文件数量，但详细内容在 NSLog 中
+      // 我们需要一个已知的 Framework 列表来尝试
+      // 使用 print-teamid 成功过的路径来确认 Frameworks 存在
+      ECLog(@"[FrameworkInject] Root Helper list-dir 成功，目录存在");
+    } else {
+      ECLog(@"[FrameworkInject] Root Helper list-dir 也失败: ret=%d", listRet);
+      if (error)
+        *error = [NSError errorWithDomain:@"ECAppInjector"
+                                     code:21
+                                 userInfo:@{
+                                   NSLocalizedDescriptionKey :
+                                       @"无 Frameworks 目录，无法进行回退注入"
+                                 }];
+      return NO;
+    }
   }
 
-  for (NSString *item in contents) {
-    if ([item.pathExtension isEqualToString:@"framework"]) {
-      NSString *fwPath = [frameworksDir stringByAppendingPathComponent:item];
-      NSString *fwName = [item stringByDeletingPathExtension];
-      NSString *binaryPath = [fwPath stringByAppendingPathComponent:fwName];
+  // 构建候选 Framework 列表
+  // 策略: 使用已知的常见 TikTok Frameworks 作为候选，或从 root helper 获取
+  NSMutableArray *candidateFrameworks = [NSMutableArray array];
 
-      if ([fm fileExistsAtPath:binaryPath]) {
-        ECLog(@"尝试注入 Framework: %@", item);
-
-        // 将 dylib 复制到 Framework 内部 (最稳妥)
-        NSString *dylibDest =
-            [fwPath stringByAppendingPathComponent:kSpoofDylibName];
-
-        // 源 dylib 路径
-        NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
-        NSString *sourceDylib =
-            [bundlePath stringByAppendingPathComponent:
-                            @"Dylibs/libswiftCompatibilityPacks.dylib"];
-        if (![fm fileExistsAtPath:sourceDylib])
-          sourceDylib = [bundlePath stringByAppendingPathComponent:
-                                        @"libswiftCompatibilityPacks.dylib"];
-
-        // 复制 dylib
-        spawnRoot(rootHelperPath(), @[ @"remove-file", dylibDest ], nil, nil);
-        spawnRoot(rootHelperPath(), @[ @"copy-file", sourceDylib, dylibDest ],
-                  nil, nil);
-        spawnRoot(rootHelperPath(), @[ @"chmod-file", @"755", dylibDest ], nil,
-                  nil);
-
-        // 如果主程序 Team ID 获取失败（加密），尝试从 Framework 获取
-        NSString *effectiveTeamID = teamID;
-        if (!effectiveTeamID || effectiveTeamID.length == 0) {
-          ECLog(@"[FrameworkInject] 主程序 Team ID 为空，尝试从 Framework "
-                @"提取...");
-          effectiveTeamID = [self fetchTeamIDFromBinary:binaryPath];
-        }
-        if (effectiveTeamID) {
-          ECLog(@"[FrameworkInject] 使用 Team ID: %@", effectiveTeamID);
-        } else {
-          ECLog(@"[FrameworkInject] ⚠️ 无法获取任何 Team ID，将使用默认签名");
-        }
-
-        // 注入 Load Command: @loader_path/libswiftCompatibilityPacks.dylib
-        NSError *fwError = nil;
-        if ([self processBinary:binaryPath
-                injectingDylibAtPath:dylibDest
-                     loadCommandPath:
-                         @"@loader_path/libswiftCompatibilityPacks.dylib"
-                              teamID:effectiveTeamID
-                               error:&fwError]) {
-          ECLog(@"✅ 成功注入到 Framework: %@", item);
-
-          // 创建标记，表明通过 Framework 注入
-          NSString *markerPath =
-              [appPath stringByAppendingPathComponent:kInjectionMarker];
-          spawnRoot(rootHelperPath(), @[ @"touch-file", markerPath ], nil, nil);
-
-          return YES;
-        } else {
-          ECLog(@"Framework %@ 注入失败 (Code %ld): %@", item,
-                (long)fwError.code, fwError.localizedDescription);
-        }
+  // 如果本地能列出来，直接用
+  if (contents && contents.count > 0) {
+    for (NSString *item in contents) {
+      if ([item.pathExtension isEqualToString:@"framework"]) {
+        [candidateFrameworks addObject:item];
       }
     }
   }
+
+  // 如果候选列表为空（沙盒限制），使用已知 Framework 名称作为候选
+  if (candidateFrameworks.count == 0) {
+    ECLog(@"[FrameworkInject] 沙盒限制，使用预定义 Framework 候选列表...");
+    NSArray *knownFrameworks = @[
+      @"Masonry.framework",
+      @"AFNetworking.framework",
+      @"SDWebImage.framework",
+      @"libvcn.framework",
+      @"byted_cert.framework",
+      @"Alog.framework",
+      @"TTNetworkManager.framework",
+    ];
+    [candidateFrameworks addObjectsFromArray:knownFrameworks];
+  }
+
+  // 【防篡改策略】对候选列表进行重新排序和过滤
+  // 字节跳动的底层库 (如 libvcn, crypto, TikTokCore) 可能带有相互校验或者文件大小校验
+  // 一旦强行注入 LC，会触发主动 abort() 或闪退。因此我们应该优先注入到无防篡改的开源/第三方框架中。
+  NSArray *preferredFrameworks = @[@"SpotifyLogin.framework", @"SCSDKCreativeKit.framework", @"SCSDKCoreKit.framework", @"Masonry.framework", @"AFNetworking.framework", @"SDWebImage.framework"];
+  NSArray *dangerousFrameworks = @[@"AAWE", @"TTF", @"TTP", @"byte", @"libvcn", @"crypto", @"TikTokCore", @"byted_cert", @"AAAASingularity", @"WCDBSQLCipher", @"BDLRepairer", @"Appsec"];
+  
+  NSMutableArray *sortedCandidates = [NSMutableArray array];
+  // 1. 先加入优先推荐的框架
+  for (NSString *pref in preferredFrameworks) {
+    if ([candidateFrameworks containsObject:pref]) {
+      [sortedCandidates addObject:pref];
+    }
+  }
+  // 2. 加入普通的框架（过滤掉危险框架）
+  for (NSString *fw in candidateFrameworks) {
+    if ([sortedCandidates containsObject:fw]) continue;
+    BOOL isDangerous = NO;
+    for (NSString *danger in dangerousFrameworks) {
+      if ([fw containsString:danger]) {
+        isDangerous = YES; break;
+      }
+    }
+    if (!isDangerous) {
+      [sortedCandidates addObject:fw];
+    }
+  }
+  // 3. 最后如果都没找到，只能死马当活马医加入危险框架
+  for (NSString *fw in candidateFrameworks) {
+    if (![sortedCandidates containsObject:fw]) {
+      [sortedCandidates addObject:fw];
+    }
+  }
+  
+  candidateFrameworks = sortedCandidates;
+  ECLog(@"[FrameworkInject] 排序后的候选 Frameworks: %@", candidateFrameworks);
+
+  for (NSString *item in candidateFrameworks) {
+    NSString *fwPath = [frameworksDir stringByAppendingPathComponent:item];
+    NSString *fwName = [item stringByDeletingPathExtension];
+    NSString *binaryPath = [fwPath stringByAppendingPathComponent:fwName];
+
+    // 通过 root helper 的 print-teamid 来验证此文件是否可以被 root 访问
+    NSString *tidOut = nil;
+    int tidRet = spawnRoot(rootHelperPath(), @[@"print-teamid", binaryPath], &tidOut, nil);
+    
+    if (tidRet == 0 || tidRet == 1) {
+      // ret=0 表示拿到了 teamid, ret=1 可能只是没有 teamid 但文件存在
+      // 关键是 echelper 能够打开这个文件
+      ECLog(@"[FrameworkInject] Framework 可访问: %@ (print-teamid ret=%d)", item, tidRet);
+
+      // 【终极修正 Library Missing】将 dylib 放到主程序的 Frameworks 目录下！
+      // iOS 严格校验 App Bundle 结构，根目录只能放主可执行文件，第三方库必须放在 Frameworks 目录。
+      NSString *frameworksDir = [appPath stringByAppendingPathComponent:@"Frameworks"];
+      NSString *dylibDest = [frameworksDir stringByAppendingPathComponent:dylibName];
+
+      // 源 dylib 路径
+      NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
+      NSString *sourceDylib =
+          [bundlePath stringByAppendingPathComponent:
+                          [NSString stringWithFormat:@"Dylibs/%@", dylibName]];
+      if (![fm fileExistsAtPath:sourceDylib])
+        sourceDylib = [bundlePath stringByAppendingPathComponent:dylibName];
+
+      // 复制 dylib 到 App 的 Frameworks 目录
+      spawnRoot(rootHelperPath(), @[ @"remove-file", dylibDest ], nil, nil);
+      spawnRoot(rootHelperPath(), @[ @"copy-file", sourceDylib, dylibDest ], nil, nil);
+      spawnRoot(rootHelperPath(), @[ @"chmod-file", @"755", dylibDest ], nil, nil);
+
+      // 如果主程序 Team ID 获取失败（加密），尝试从 Framework 获取
+      NSString *effectiveTeamID = teamID;
+      if (!effectiveTeamID || effectiveTeamID.length == 0) {
+        ECLog(@"[FrameworkInject] 主程序 Team ID 为空，尝试从 Framework "
+              @"提取...");
+        // 使用 print-teamid 的输出
+        if (tidRet == 0 && tidOut.length > 0) {
+          effectiveTeamID = [tidOut stringByTrimmingCharactersInSet:
+              [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        }
+        if (!effectiveTeamID || effectiveTeamID.length == 0) {
+          effectiveTeamID = [self fetchTeamIDFromBinary:binaryPath];
+        }
+      }
+      if (effectiveTeamID) {
+        ECLog(@"[FrameworkInject] 使用 Team ID: %@", effectiveTeamID);
+      } else {
+        ECLog(@"[FrameworkInject] ⚠️ 无法获取任何 Team ID，将使用默认签名");
+      }
+
+      // 注入 Load Command: @executable_path/Frameworks/<dylibName>
+      // 这样不论从哪一层 Framework 加载，都能找到 Frameworks 目录下的外挂库。
+      // 而且这刚好与外挂库自带的 LC_ID_DYLIB 一致。
+      NSString *loadCmdPath = [NSString stringWithFormat:@"@executable_path/Frameworks/%@", dylibName];
+      NSError *fwError = nil;
+      if ([self processBinary:binaryPath
+              injectingDylibAtPath:dylibDest
+                   loadCommandPath:loadCmdPath
+                            teamID:effectiveTeamID
+                             error:&fwError]) {
+        ECLog(@"✅ 成功注入到 Framework: %@", item);
+
+        // 创建标记，表明通过 Framework 注入
+        if (markerName) {
+            NSString *markerPath =
+                [appPath stringByAppendingPathComponent:markerName];
+            spawnRoot(rootHelperPath(), @[ @"touch-file", markerPath ], nil, nil);
+            spawnRoot(rootHelperPath(), @[ @"chmod-file", @"666", markerPath ], nil, nil);
+        }
+
+        // ⚠️ 不要调用 register-app！
+        // registerPath 会重新扫描整个 Bundle，破坏未修改框架的 TrustCache 信任条目。
+        // 被注入的框架已经通过 sign-binary 获得了独立的 CT bypass 签名。
+        // 原始未修改的框架保留着 App Store 的原始 TrustCache 条目，无需重建。
+        ECLog(@"[FrameworkInject] ✅ 注入完成，保留原始 TrustCache 不做重建");
+
+        return YES;
+      } else {
+        ECLog(@"Framework %@ 注入失败 (Code %ld): %@", item,
+              (long)fwError.code, fwError.localizedDescription);
+      }
+    } else {
+      ECLog(@"[FrameworkInject] Framework 不可访问: %@ (print-teamid ret=%d)", item, tidRet);
+    }
+  }
+
 
   if (error)
     *error = [NSError errorWithDomain:@"ECAppInjector"
@@ -1920,6 +2297,7 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
                        customBundleId:customBundleId
                     customDisplayName:customDisplayName
                      workingDirectory:nil
+                useFrameworkInjection:NO
                                 error:error];
 }
 
@@ -1929,6 +2307,7 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
             customBundleId:(nullable NSString *)customBundleId
          customDisplayName:(nullable NSString *)customDisplayName
           workingDirectory:(nullable NSString *)workingDirectory
+     useFrameworkInjection:(BOOL)useFrameworkInjection
                      error:(NSError **)error {
   ECLog(@"[PrepareIPA] 开始处理 IPA: %@", ipaPath);
   if (customBundleId) {
@@ -2202,8 +2581,7 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
     ECLog(@"[PrepareIPA] ⚠️ 未找到配置文件 (%@)，将使用默认模板", configSource);
   }
 
-  // 5. 注入主二进制
-  // Find executable
+  // 5. 注入二进制 (主程序或 Framework)
   NSDictionary *plistForExec = [NSDictionary
       dictionaryWithContentsOfFile:
           [appBundlePath stringByAppendingPathComponent:@"Info.plist"]];
@@ -2219,30 +2597,90 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
     return nil;
   }
 
-  NSString *binaryPath =
+  NSString *mainBinaryPath =
       [appBundlePath stringByAppendingPathComponent:execName];
 
-  // Determine TeamID (Scan binary if not provided)
+  // Determine TeamID (Scan main binary if not provided)
   if (!teamID) {
-    NSDictionary *entitlements = dumpEntitlementsFromBinaryAtPath(binaryPath);
+    NSDictionary *entitlements = dumpEntitlementsFromBinaryAtPath(mainBinaryPath);
     if (entitlements) {
       teamID = entitlements[@"com.apple.developer.team-identifier"];
     }
     ECLog(@"[PrepareIPA] Auto-detected TeamID: %@", teamID);
   }
 
-  ECLog(@"[PrepareIPA] Injecting binary: %@", binaryPath);
+  NSString *targetBinaryPath = mainBinaryPath;
+  NSString *lcPath = @"@executable_path/Frameworks/libswiftCompatibilityPacks.dylib";
+
+  if (useFrameworkInjection) {
+    ECLog(@"[PrepareIPA] 使用 Framework 注入模式");
+    NSArray *contents = [fm contentsOfDirectoryAtPath:frameworksDir error:nil];
+    NSMutableArray *candidateFrameworks = [NSMutableArray array];
+    if (contents && contents.count > 0) {
+      for (NSString *item in contents) {
+        if ([item.pathExtension isEqualToString:@"framework"]) {
+          [candidateFrameworks addObject:item];
+        }
+      }
+    }
+    
+    NSArray *preferredFrameworks = @[@"SpotifyLogin.framework", @"SCSDKCreativeKit.framework", @"SCSDKCoreKit.framework", @"Masonry.framework", @"AFNetworking.framework", @"SDWebImage.framework"];
+    NSArray *dangerousFrameworks = @[@"AAWE", @"TTF", @"TTP", @"byte", @"libvcn", @"crypto", @"TikTokCore", @"byted_cert", @"AAAASingularity", @"WCDBSQLCipher", @"BDLRepairer", @"Appsec"];
+    
+    NSMutableArray *sortedCandidates = [NSMutableArray array];
+    for (NSString *pref in preferredFrameworks) {
+      if ([candidateFrameworks containsObject:pref]) {
+        [sortedCandidates addObject:pref];
+      }
+    }
+    for (NSString *fw in candidateFrameworks) {
+      if ([sortedCandidates containsObject:fw]) continue;
+      BOOL isDangerous = NO;
+      for (NSString *danger in dangerousFrameworks) {
+        if ([fw containsString:danger]) {
+          isDangerous = YES; break;
+        }
+      }
+      if (!isDangerous) {
+        [sortedCandidates addObject:fw];
+      }
+    }
+    for (NSString *fw in candidateFrameworks) {
+      if (![sortedCandidates containsObject:fw]) {
+        [sortedCandidates addObject:fw];
+      }
+    }
+    
+    NSString *selectedFramework = nil;
+    NSString *selectedFrameworkBinary = nil;
+    
+    for (NSString *item in sortedCandidates) {
+      NSString *fwPath = [frameworksDir stringByAppendingPathComponent:item];
+      NSString *fwName = [item stringByDeletingPathExtension];
+      NSString *fwBinaryPath = [fwPath stringByAppendingPathComponent:fwName];
+      
+      if ([fm fileExistsAtPath:fwBinaryPath]) {
+        selectedFramework = item;
+        selectedFrameworkBinary = fwBinaryPath;
+        break;
+      }
+    }
+    
+    if (selectedFrameworkBinary) {
+      targetBinaryPath = selectedFrameworkBinary;
+      ECLog(@"[PrepareIPA] 找到合适的 Framework 注入目标: %@", selectedFramework);
+    } else {
+      ECLog(@"[PrepareIPA] ⚠️ 找不到合适的 Framework，退回主程序注入");
+    }
+  }
+
+  ECLog(@"[PrepareIPA] Injecting binary: %@", targetBinaryPath);
 
   // Call processBinary
-  // dylibPath: Absolute path to the dylib INSIDE the temp bundle (this will be
-  // signed) lcPath:
-  // @executable_path/Frameworks/libswiftCompatibilityPacks.dylib (this is the
-  // LC)
   BOOL injectSuccess = [self
-             processBinary:binaryPath
+             processBinary:targetBinaryPath
       injectingDylibAtPath:destDylibPath
-           loadCommandPath:
-               @"@executable_path/Frameworks/libswiftCompatibilityPacks.dylib"
+           loadCommandPath:lcPath
                     teamID:teamID
                      error:error];
 
@@ -2253,8 +2691,35 @@ NSNotificationName const kECLogNotification = @"kECLogNotification";
   }
 
   // Clean up backup file created by processBinary
-  NSString *backupPath = [binaryPath stringByAppendingString:@".ec_bak"];
+  NSString *backupPath = [targetBinaryPath stringByAppendingString:@".ec_bak"];
   [fm removeItemAtPath:backupPath error:nil];
+
+  // 5.5 ★★★ 安全框架无效化 ★★★
+  // 在签名前，遍历 Frameworks 目录，对安全框架的二进制进行 patch
+  // 将 __mod_init_func 指向的构造函数和 +load 方法入口改为 RET 指令
+  {
+    NSArray *securityFrameworkNames = @[@"AAAASingularity", @"AAWEBootChecker", @"BDLRepairer"];
+    NSArray *fwContents = [fm contentsOfDirectoryAtPath:frameworksDir error:nil];
+    for (NSString *item in fwContents) {
+      if (![item.pathExtension isEqualToString:@"framework"]) continue;
+      NSString *fwName = [item stringByDeletingPathExtension];
+      BOOL isSecurityFW = NO;
+      for (NSString *secName in securityFrameworkNames) {
+        if ([fwName isEqualToString:secName]) {
+          isSecurityFW = YES;
+          break;
+        }
+      }
+      if (!isSecurityFW) continue;
+
+      NSString *fwBinaryPath = [[frameworksDir stringByAppendingPathComponent:item]
+                                stringByAppendingPathComponent:fwName];
+      if ([fm fileExistsAtPath:fwBinaryPath]) {
+        ECLog(@"[PrepareIPA] 🛡️ 检测到安全框架 %@，执行无效化...", fwName);
+        [self neutralizeSecurityFramework:fwBinaryPath];
+      }
+    }
+  }
 
   // 6. 写入配置文件 (device.plist) - 强制覆盖
   // 将配置文件写入 Frameworks 目录，确保不被系统安装过程清理
